@@ -57,6 +57,7 @@ for name in $for_stages; do
     app) stage app make -C app test ;;
     ko-test) stage ko-test make -C app ko-test ;;
     visual) stage visual make -C app visual ONLY="${VISUAL_ONLY:-}" ;;
+    koa-visual) stage koa-visual make -C koa visual ;;
     ts) stage ts bash -c 'make -C koa typecheck test && scripts/test-pi.sh' ;;
     verus) stage verus verus ;;
     *) echo "Unknown stage: $name" >&2; status=1 ;;

@@ -1,0 +1,37 @@
+{
+  "pane": "pane_1",
+  "theme": {
+    "--ko-focus": "rgba(0,122,255,0.5)",
+    "--ko-font-family": "\".AppleSystemUIFontMonospaced\", monospace",
+    "--ko-font-size": "13.0px",
+    "--ko-cell-width": "8.0px",
+    "--ko-cell-height": "15.5px",
+    "--ko-appearance": "light",
+    "--ko-inset-top": "0px",
+    "--ko-bg": "rgb(255,249,236)",
+    "--ko-fg": "rgb(66,66,66)",
+    "--ko-cursor": "rgb(170,170,170)",
+    "--ko-color-0": "rgb(34,34,34)",
+    "--ko-color-1": "rgb(164,0,46)",
+    "--ko-color-2": "rgb(0,133,80)",
+    "--ko-color-3": "rgb(220,104,42)",
+    "--ko-color-4": "rgb(1,76,166)",
+    "--ko-color-5": "rgb(149,12,147)",
+    "--ko-color-6": "rgb(18,131,153)",
+    "--ko-color-7": "rgb(172,172,172)",
+    "--ko-color-8": "rgb(132,132,132)",
+    "--ko-color-9": "rgb(173,29,29)",
+    "--ko-color-10": "rgb(23,130,88)",
+    "--ko-color-11": "rgb(240,218,74)",
+    "--ko-color-12": "rgb(51,130,225)",
+    "--ko-color-13": "rgb(218,33,216)",
+    "--ko-color-14": "rgb(0,142,196)",
+    "--ko-color-15": "rgb(146,146,146)",
+    "--ko-selection-bg": "rgb(66,66,66)",
+    "--ko-selection-fg": "rgb(255,249,236)"
+  },
+  "cell": {
+    "width": 8,
+    "height": 15.5
+  }
+}

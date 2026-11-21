@@ -21,7 +21,7 @@ else
 fi
 printf 'Base: %s\n' "$base"
 if [[ -z $paths ]]; then echo 'no changes'; exit 0; fi
-all='build build-linux lint unit e2e ts verus app ko-test visual'
+all='build build-linux lint unit e2e ts verus app ko-test visual koa-visual'
 stages=' '
 e2e=' '
 visual=' '
@@ -57,7 +57,7 @@ while IFS= read -r path; do
           *) adds='build lint-sh lint-rs e2e';
              if [[ $e2e != *" $module:: "* ]]; then e2e+="$module:: "; fi ;;
         esac ;;
-      page|replay) adds='build lint ts' ;;
+      page|replay) adds='build lint ts koa-visual' ;;
       snapshot)
         adds=visual; name=${path#app/VisualTests/__Snapshots__/}; name=${name%%/*}
         visual_file "app/VisualTests/$name.swift" ;;
@@ -78,6 +78,8 @@ ko_pane_wire/* ko_server/* ko_wire/*|build lint unit e2e verus app ko-test
 ko_client/* share/ko/*.json|build lint unit e2e app ko-test
 ko_sys/* ko_vt_sys/*|build build-linux lint unit e2e
 ko/* ko_*/* fuzz/* share/ko/*|build lint unit e2e
+koa/testdata/theme-*.json|ko-test koa-visual
+koa/visual/*|koa-visual
 koa/page/*|page
 koa/testdata/replay.ts koa/testdata/scenario.ts koa/testdata/scenario-parts.ts koa/testdata/scenarios/*|replay
 koa/* webview/* .pi/* koa/scripts/* scripts/test-pi.sh|build lint ts
@@ -93,7 +95,7 @@ kow/*|lint-sh
 TABLE
 done <<< "$paths"
 selected=
-for stage in build build-linux lint lint-rs lint-sh unit e2e ts verus app ko-test visual; do
+for stage in build build-linux lint lint-rs lint-sh unit e2e ts verus app ko-test visual koa-visual; do
   [[ $stages == *" $stage "* ]] || continue
   case $stage in
     lint-rs|lint-sh) [[ $stages != *' lint '* ]] || continue ;;

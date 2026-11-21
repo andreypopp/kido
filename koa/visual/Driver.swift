@@ -1,31 +1,18 @@
 import AppKit
-import KoClientKit
 import WebKit
-import KoClient
-import KoModel
-import SidebarFeed
-#if !KOA_HOST
-@testable import Kido
-#endif
 
 @MainActor final class KoaDriver: KoaContext {
     func run() async throws {
         switch fixture {
-        case .placeInset: try await testKoaWebviewPlaceInset()
-        case .quoteSelection: try await testKoaWebviewQuoteSelection()
         case .dots: try await testKoaWebviewDots()
         case .runStepsTransitions: try await testKoaWebviewRunStepsTransitions()
         case .scrollbarJumpMountsHistory: try await testKoaWebviewScrollbarJumpMountsHistory()
-        case .selectAllCopiesTheWholeTranscript: try await testKoaWebviewSelectAllCopiesTheWholeTranscript()
-        case .findSkippedHistory: try await testKoaWebviewFindSkippedHistory()
         case .bangCompletion: try await testKoaWebviewBangCompletion()
         case .bang: try await testKoaWebviewBang()
         case .composerFootResponsive: try await testKoaWebviewComposerFootResponsive()
         case .composerFootStates: try await testKoaWebviewComposerFootStates()
         case .composerStateGeometryWide: try await testKoaWebviewComposerStateGeometryWide()
         case .composerStateGeometryNarrow: try await testKoaWebviewComposerStateGeometryNarrow()
-        case .focusBorderTranscript: try await testKoaWebviewFocusBorderTranscript()
-        case .composerFocus: try await testKoaWebviewComposerFocus()
         case .commandsNarrow: try await testKoaWebviewCommandsNarrow()
         case .mockupStates: try await testKoaWebviewMockupStates()
         case .notices: try await testKoaWebviewNotices()
@@ -39,7 +26,6 @@ import SidebarFeed
         case .exit: try await testKoaWebviewExit()
         case .failed: try await testKoaWebviewFailed()
         case .rhythm: try await testKoaWebviewRhythm()
-        case .threadsModes: try await testKoaWebviewThreadsModes()
         case .threads: try await testKoaWebviewThreads()
         case .threadsFilter: try await testKoaWebviewThreadsFilter()
         case .threadsFilterPanel: try await testKoaWebviewThreadsFilterPanel()
@@ -49,7 +35,6 @@ import SidebarFeed
         case .jobs: try await testKoaWebviewJobs()
         case .lightbox: try await testKoaWebviewLightbox()
         case .paths: try await testKoaWebviewPaths()
-        case .previewHover: try await testKoaWebviewPreviewHover()
         case .media: try await testKoaWebviewMedia()
         case .attachments: try await testKoaWebviewAttachments()
         case .userMarkdown: try await testKoaWebviewUserMarkdown()
@@ -61,8 +46,7 @@ import SidebarFeed
         case .sessions: try await testKoaWebviewSessions()
         }
     }
-
-    private enum KoaScenario: String { case transcript, dialogs, controls, exit, failed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, reveal, preview, lightbox, agents, composer, questions, bang, commands, notices, latest, sessions, views, jobs, paths, threads }
+    private enum KoaScenario: String { case transcript, dialogs, controls, exit, failed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, reveal, lightbox, agents, composer, questions, bang, commands, notices, latest, sessions, views, jobs, paths, threads }
     // The off-screen WKWebView reports no document focus. The page's pane-focus hook gives the pane focus; the composer ring keeps its real state.
     private enum CaptureTarget {
         case page
@@ -105,7 +89,7 @@ import SidebarFeed
             return .component(".newmsgs", .init(top: 4, left: 4, bottom: 4, right: 4))
         case (.latest, "latest-new"):
             return .component("#latest", .init(top: 4, left: 4, bottom: 4, right: 4))
-        case (.threads, "threads-block"), (.threads, "threads-block-filter"), (.threads, "threads-filter-panel"):
+        case (.threads, "threads-filter-panel"):
             return .component(".thread-panel:not([hidden])", .init(top: 8, left: 8, bottom: 8, right: 8))
         case (.threads, "threads-many"), (.threads, "threads-many-narrow"):
             return .component(".thread-capsule", .init(top: 4, left: 4, bottom: 4, right: 4))
@@ -145,8 +129,6 @@ import SidebarFeed
             return .component(".user", .init(top: 4, left: 4, bottom: 4, right: 4))
         case (.lightbox, "media-lightbox"):
             return .component(".lightbox", .init(top: 0, left: 0, bottom: 0, right: 0))
-        case (.preview, "media-preview-hover"):
-            return .component(".step:has(.preview-file)", .init(top: 4, left: 4, bottom: 4, right: 4))
         case (.paths, "path-links"):
             return .component(".assistant .msg.prose", .init(top: 8, left: 8, bottom: 8, right: 8))
         case (.userMarkdown, "user-markdown"), (.userMarkdown, "user-quote"), (.userMarkdown, "user-code"):
@@ -247,12 +229,12 @@ import SidebarFeed
         case .composer:
             let fits = try await webviewJS(web, "(()=>{const foot=document.querySelector('.field .foot'),field=document.querySelector('#field');return foot.scrollWidth<=foot.clientWidth&&foot.getBoundingClientRect().right<=field.getBoundingClientRect().right&&Math.abs(document.querySelector('#dock').getBoundingClientRect().bottom-innerHeight)<.1})()")
             try requireEqual(fits, "true", "The footer fits its field and bottom edge at the current width")
-        case .transcript, .dialogs, .controls, .exit, .failed, .markdown, .media, .attachments, .reveal, .preview, .lightbox, .questions, .commands, .notices, .latest, .sessions, .jobs, .paths:
+        case .transcript, .dialogs, .controls, .exit, .failed, .markdown, .media, .attachments, .reveal, .lightbox, .questions, .commands, .notices, .latest, .sessions, .jobs, .paths:
             break
         }
     }
     private func resizeKoa(_ web: WKWebView, width: CGFloat, height: CGFloat) async throws {
-        koaContentSize(window: window, width: width, height: height)
+        self.resize(NSSize(width: width, height: height))
         window.contentView?.layoutSubtreeIfNeeded()
         web.superview?.layoutSubtreeIfNeeded()
         let viewportWidth = Int(web.bounds.width)
@@ -264,27 +246,21 @@ import SidebarFeed
         guard measured else { return }
         _ = try await webviewJS(web, "new Promise((resolve,reject)=>{let previous,stable=0,frame;const timer=setTimeout(()=>{cancelAnimationFrame(frame);reject(Error('Koa capture did not settle'))},5000);function sample(){const cursor=document.querySelector('#prompt .cm-cursor')?.getBoundingClientRect();const state=JSON.stringify([document.querySelector('#scroll').scrollTop,document.querySelector('#dock').getBoundingClientRect().height,cursor?[cursor.x,cursor.y,cursor.width,cursor.height]:null]);stable=koaPendingFrames.size===0&&state===previous?stable+1:0;previous=state;if(stable>=2){clearTimeout(timer);resolve(true)}else frame=requestAnimationFrame(sample)}frame=requestAnimationFrame(sample)})")
     }
-    private func takeKoaSnapshot(_ pane: PaneView, name: String, appearance: String, scenario: KoaScenario) async throws {
-        if name == "focus-border-transcript" {
-            try await webviewSnapshot(pane, name + appearance, testName: "testKoaWebviewMockupStates()")
-        } else {
-            switch try captureTarget(name, scenario: scenario) {
-            case .page:
-                try await webviewPageSnapshot(name + appearance, testName: "testKoaWebviewMockupStates()")
-            case let .component(selector, padding):
-                try await koaComponentSnapshot(name + appearance, crop: selector, padding: padding, testName: "testKoaWebviewMockupStates()")
-            }
+    private func takeKoaSnapshot(name: String, appearance: String, scenario: KoaScenario) async throws {
+        switch try captureTarget(name, scenario: scenario) {
+        case .page:
+            try await webviewPageSnapshot(name + appearance, testName: "testKoaWebviewMockupStates()")
+        case let .component(selector, padding):
+            try await koaComponentSnapshot(name + appearance, crop: selector, padding: padding, testName: "testKoaWebviewMockupStates()")
         }
     }
     private func prepareCapture(name: String, scenario: KoaScenario, measured: Bool, latestText: String) async throws {
-        let web = try requireValue(backend.browser())
+        let web = try requireValue(browser)
         if scenario == .threads {
             let ready: String
             switch name {
-            case "threads-block-filter", "threads-filter", "threads-filter-narrow", "threads-filter-panel":
+            case "threads-filter", "threads-filter-narrow", "threads-filter-panel":
                 ready = "document.querySelector('.thread-entry.current')?.dataset.thread==='sidebar'&&document.querySelector('#items').textContent.includes('Verification passed; I merge the unit next.')&&\(koaIdle)"
-            case "threads-block", "threads-line-resize", "threads-block-resize":
-                ready = "document.querySelector('#items').textContent.includes('Also look at the Linux flake in the sweep test when you have a minute.')"
             case "threads-marks", "threads-marks-narrow":
                 ready = "document.querySelector('#items').textContent.includes('A fix is in the test’s wait.')"
             case "threads-two", "threads-many", "threads-many-narrow":
@@ -301,15 +277,14 @@ import SidebarFeed
         let aboveBottom = scenario == .jobs && name.contains("service")
         let top = scenario == .questions || scenario == .media || scenario == .lightbox || scenario == .agents || scenario == .composer || scenario == .views || scenario == .threads && (name == "threads-two" || name.contains("many"))
         window.contentView?.layoutSubtreeIfNeeded()
-        backend.browser()?.superview?.layoutSubtreeIfNeeded()
+        browser?.superview?.layoutSubtreeIfNeeded()
         let viewportHeight = try await webviewJS(web, "innerHeight")
         try requireEqual(viewportHeight, String(Int(web.bounds.height)), "The page fills the native webview at capture \(name)")
         let viewportWidth = try await webviewJS(web, "innerWidth")
         try requireEqual(viewportWidth, String(Int(web.bounds.width)), "The page fills the native webview width at capture \(name)")
         let initialScroll: String = top || aboveBottom ? "0" : scenario == .latest ? "scroll.scrollTop" : "scroll.scrollHeight"
-        let focusComposer: Bool = name != "focus-border-transcript"
         let stopFollowing: Bool = top || aboveBottom
-        _ = try await webviewJS(web, "(()=>{if(\(focusComposer)&&!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');if(\(stopFollowing))scroll.dispatchEvent(new WheelEvent('wheel',{deltaY:-1,bubbles:true}));scroll.scrollTop=\(initialScroll);if(\(ordered))document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()")
+        _ = try await webviewJS(web, "(()=>{if(!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');if(\(stopFollowing))scroll.dispatchEvent(new WheelEvent('wheel',{deltaY:-1,bubbles:true}));scroll.scrollTop=\(initialScroll);if(\(ordered))document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()")
         try await webviewUntil(web, "(()=>{const dock=document.querySelector('#dock');return Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===dock.getBoundingClientRect().height})()")
         let latestAtTop: Bool = top || scenario == .latest && name.hasSuffix("new")
         let scrollPosition: String = latestAtTop ? "0" : scenario == .latest ? "document.querySelector('.newmsgs').offsetTop-300" : aboveBottom ? "0" : "scroll.scrollHeight"
@@ -337,29 +312,12 @@ import SidebarFeed
         }
     }
     private func driveThreads(_ web: WKWebView, phases: [String], capture: (String) async throws -> Void, advance: () async throws -> Void) async throws {
-        if phases.first == "threads-block" {
-            try await webviewUntil(web, "document.querySelector('#threads').dataset.mode==='block'&&document.querySelectorAll('.thread-entry').length===9")
-            let placed = try await webviewJS(web, "(()=>{const host=document.querySelector('#threads'),panel=host.querySelector('.thread-panel'),box=panel.getBoundingClientRect(),column=document.querySelector('#transcript').getBoundingClientRect(),style=getComputedStyle(panel),inset=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ko-inset-top'))||0;return !host.querySelector('.thread-capsule')&&Math.abs(box.left-column.right-20)<.5&&Math.abs(box.top-inset-8)<.5&&Math.abs(box.width-Math.min(360,innerWidth-column.width-28))<.5&&style.borderTopWidth==='0px'&&style.boxShadow==='none'&&style.backgroundColor==='rgba(0, 0, 0, 0)'&&[...panel.querySelectorAll('.thread-entry')].every(row=>Math.abs(row.getBoundingClientRect().height-28)<.5)})()")
-            try requireEqual(placed, "true", "The block stands directly beside the transcript")
-            try await capture("threads-block")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.thread-entry[data-thread=sidebar]').click();return true})()")
-            try await webviewUntil(web, "document.querySelector('.thread-entry.current')?.dataset.thread==='sidebar'&&document.querySelector('.thread-all')!==null&&\(koaIdle)")
-            try await capture("threads-block-filter")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.thread-entry.current').click();return true})()")
-            koaContentSize(window: window, width: 470, height: 560)
-            try await webviewUntil(web, "document.querySelector('#threads').dataset.mode==='line'&&document.querySelector('.thread-overflow')!==null")
-            try await capture("threads-line-resize")
-            koaContentSize(window: window, width: 1400, height: 560)
-            try await webviewUntil(web, "document.querySelector('#threads').dataset.mode==='block'&&!document.querySelector('.thread-panel').hidden")
-            try await capture("threads-block-resize")
-            return
-        }
         for (index, name) in phases.enumerated() {
             if index > 0 {
                 _ = try await webviewJS(web, "(()=>{document.querySelector('.thread-clear')?.click();document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));window.composer.setText('');return true})()")
                 try await advance()
             }
-            koaContentSize(window: window, width: name == "threads-marks-narrow" ? 470 : 980, height: 560)
+            self.resize(NSSize(width: name == "threads-marks-narrow" ? 448 : 960, height: 557.5))
         try await webviewUntil(web, "!document.querySelector('#threads').hidden&&document.querySelector('.thread-capsule')!==null")
         if name == "threads-many" || name == "threads-many-narrow" {
             let expected = name == "threads-many" ? 9 : 4
@@ -390,7 +348,7 @@ import SidebarFeed
         }
         try await capture(name)
         if name == "threads-many" || name == "threads-filter" {
-            koaContentSize(window: window, width: 470, height: 560)
+            self.resize(NSSize(width: 448, height: 557.5))
             try await koaMeasured(web, "#threads")
             try await capture(name + "-narrow")
         }
@@ -475,9 +433,9 @@ import SidebarFeed
             let roomy = try await shape()
             try require(roomy.more && !roomy.hidden, "Middle ancestors shorten to one … button first")
             var lastSize = width
-            for size in [width, 420, 300, 230, width] {
+            for size in [width, 400, 280, 208, width] {
                 let previous = try await webviewJS(web, "document.querySelector('#scroll').clientWidth")
-                koaContentSize(window: window, width: size, height: 560)
+                self.resize(NSSize(width: size, height: 557.5))
                 if size != lastSize { try await webviewUntil(web, "document.querySelector('#scroll').clientWidth!==\(previous)") }
                 lastSize = size
                 try await webviewUntil(web, "(()=>{const column=document.querySelector('#transcript').getBoundingClientRect(),bar=document.querySelector('#bar');return Math.abs(Number.parseFloat(bar.style.maxWidth)-(column.width-16))<=.5&&column.width<=\(Int(size))})()")
@@ -518,7 +476,7 @@ import SidebarFeed
             let hint = try await text("document.querySelector('#prompt .cm-placeholder')?.textContent??''")
             try requireEqual(hint, placeholder, "The composer names the viewed agent")
         }
-        for currentWidth in (pairedWidths ? [width, 470] : [width]) {
+        for currentWidth in (pairedWidths ? [width, 448] : [width]) {
             try await resizeKoa(web, width: currentWidth, height: height)
             _ = try await webviewJS(web, "(()=>{const r=document.querySelector('#dock').getBoundingClientRect();window.koaRootDocks??={};window.koaRootDocks[innerWidth]=JSON.stringify([r.top,r.bottom,r.height]);return true})()")
         }
@@ -562,10 +520,10 @@ import SidebarFeed
         return
     }
     private func koaComponentSnapshot(_ name: String, crop selector: String, padding: NSEdgeInsets, testName: String) async throws {
-        let web = try requireValue(backend.browser())
+        let web = try requireValue(browser)
         let drivingSize = window.contentLayoutRect.size
         defer {
-            if window.contentLayoutRect.size != drivingSize { koaContentSize(window: window, width: drivingSize.width, height: drivingSize.height) }
+            if window.contentLayoutRect.size != drivingSize { self.resize(NSSize(width: drivingSize.width, height: drivingSize.height)) }
         }
         let encoded = String(decoding: try JSONEncoder().encode(selector), as: UTF8.self)
         for _ in 0..<3 {
@@ -615,13 +573,13 @@ import SidebarFeed
         }
     }
     private func scrollPage(module: String, key: String, ready: String = "") async throws -> WKWebView {
-        WebviewPaneView.visualInitialScript = Self.paneFocus
-        WebviewPaneView.visualInitialScript?.append("const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[1700000012000]))}static now(){return 1700000012000}};window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};")
-        addTeardownBlock { WebviewPaneView.visualInitialScript = nil }
+        var initialScript = Self.paneFocus
+        initialScript.append("const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[1700000012000]))}static now(){return 1700000012000}};window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};")
+
         let assets = try replayRoot()
-        try await backend.start(module, key, assets, 700, 560)
-        try await wait("koa page") { self.backend.browser() != nil }
-        let web = try requireValue(backend.browser())
+        try await start(module: module, key: key, assets: assets, viewport: NSSize(width: 680, height: 557.5), initialScripts: [initialScript])
+        try await wait("koa page") { self.browser != nil }
+        let web = try requireValue(browser)
         assertReplayRan(web)
         try await wait("koa document loaded") {
             guard let scheme = web.url?.scheme else { return false }
@@ -642,58 +600,8 @@ import SidebarFeed
     func koaMeasured(_ web: WKWebView, _ selector: String, within seconds: Double = 5) async throws {
         _ = try await webviewJS(web, "new Promise((resolve,reject)=>{const targets=[...document.querySelectorAll(\(String(reflecting: selector)))];if(!targets.length){reject(Error('Koa measurement target missing: '+\(String(reflecting: selector))));return}const timer=setTimeout(()=>{observer.disconnect();reject(Error('Koa measurement deadline: '+\(String(reflecting: selector))))},\(seconds * 1000));const observer=new ResizeObserver(()=>{clearTimeout(timer);observer.disconnect();resolve(true)});targets.forEach(target=>observer.observe(target))})", within: seconds)
     }
-    func testKoaWebviewPlaceInset() async throws {
-        let web = try await scrollPage(module: "scroll-follow", key: "testKoaWebviewPlaceInset")
-        let pane = try requireValue(backend.pane())
-        pane.place = PanePlace(session: "Elsewhere", window: "Another window", destination: WindowID(number: 2))
-        pane.layoutSubtreeIfNeeded()
-        try require(pane.placeVisible)
-        try await webviewUntil(web, "getComputedStyle(document.documentElement).getPropertyValue('--ko-inset-top').trim()==='30px'")
-        _ = try await webviewJS(web, "(()=>{document.querySelector('.thread-overflow').click();return true})()")
-        try await webviewUntil(web, "document.querySelector('.thread-panel')?.hidden===false")
-        let result = try await webviewJS(web, #"""
-          (()=>{
-            const body=document.body,root=document.documentElement,transcript=document.querySelector('#transcript'),dock=document.querySelector('#dock'),panel=document.querySelector('.thread-panel');
-            const bar=document.createElement('div');bar.className='bar';body.append(bar);
-            const threads=document.querySelector('#threads');
-            const measure=()=>({padding:parseFloat(getComputedStyle(transcript).paddingTop),bar:parseFloat(getComputedStyle(bar).top),threads:parseFloat(getComputedStyle(threads).top),panel:parseFloat(getComputedStyle(panel).top),available:parseFloat(getComputedStyle(panel).maxHeight),dock:dock.getBoundingClientRect().top});
-            const original=body.className;
-            const results=['','viewing','viewing jobmode','with-threads'].map(state=>{
-              body.className=state;root.style.setProperty('--ko-inset-top','0px');const before=measure();
-              root.style.setProperty('--ko-inset-top','30px');const after=measure();
-              return after.padding-before.padding===30&&after.bar-before.bar===30&&after.threads-before.threads===30&&after.panel-before.panel===30&&before.available-after.available===30&&after.panel>=30&&after.dock===before.dock;
-            });
-            body.className=original;bar.remove();return results.every(Boolean);
-          })()
-          """#)
-        try requireEqual(result, "true")
-        pane.place = nil
-        pane.layoutSubtreeIfNeeded()
-        try await webviewUntil(web, "getComputedStyle(document.documentElement).getPropertyValue('--ko-inset-top').trim()==='0px'")
-    }
 
-    func testKoaWebviewQuoteSelection() async throws {
-        let web = try await scrollPage(module: "scroll-follow", key: "QuoteSelection")
-        try await webviewUntil(web, "document.querySelector('#items .assistant p')?.textContent==='Keep the composer in this pane.'")
-        for theme in ["light", "dark"] {
-            if theme == "dark" {
-                try await darken()
-                backend.updateTheme()
-                try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='dark'")
-            }
-            for append in [false, true] {
-            _ = try await webviewJS(web, "(()=>{composer.setText('');const select=index=>{const range=document.createRange();range.selectNodeContents(document.querySelectorAll('#items .assistant p')[index]);const selection=getSelection();selection.removeAllRanges();selection.addRange(range)};window.quoteMeasure=()=>{const reply=document.querySelector('#items .assistant p').getBoundingClientRect();return {scrollTop:document.querySelector('#scroll').scrollTop,top:reply.top,bottom:reply.bottom,dock:document.querySelector('#dock').getBoundingClientRect().top}};window.quoteBefore=quoteMeasure();select(0);window.__koQuoteSelection();" + (append ? "composer.setText(composer.text()+'Keep this draft.');select(1);window.__koQuoteSelection();" : "") + "return true})()")
-            try await koaMeasured(web, "#dock")
-            try await webviewUntil(web, "document.querySelector('#prompt .cm-content')===document.activeElement&&document.querySelector('#prompt .cm-line:last-child').textContent===''")
-            let geometry = try await webviewJS(web, "({before:quoteBefore,after:quoteMeasure()})")
-            NSLog("Quote geometry: %@", geometry)
-            let visible = try await webviewJS(web, "(()=>{const after=quoteMeasure();return quoteBefore.bottom>0&&quoteBefore.top<quoteBefore.dock&&after.bottom>0&&after.top<after.dock})()")
-            guard visible == "true" else { try require(false, "Quoted reply visibility: " + geometry); return }
-            _ = try await webviewJS(web, "(()=>{const style=document.createElement('style');style.textContent='.cm-cursor{visibility:visible!important;animation:none!important}';document.head.append(style);return true})()")
-            if theme == "light" && append { try await webviewPageSnapshot("light", crop: "#composer", padding: .init(), testName: "testKoaWebviewQuoteSelectionAppend()") }
-            }
-        }
-    }
+
     func testKoaWebviewDots() async throws {
         let web = try await scrollPage(module: "dots", key: "testKoaWebviewDots")
         _ = try await webviewJS(web, "(()=>{const style=document.createElement('style');style.textContent='*,*::before,*::after{transition:none!important}.grow{animation:none!important}';document.head.append(style);return true})()")
@@ -759,16 +667,13 @@ import SidebarFeed
         try await webviewUntil(web, "document.querySelectorAll('.run.working .dots').length===1")
         try await pinAnimations()
         try await webviewPageSnapshot("light-bare", crop: ".run.working", padding: .init(top: 4, left: 4, bottom: 4, right: 4), testName: "testKoaWebviewDots()")
-        try await darken()
-        backend.updateTheme()
+        try await setTheme(.dark)
         try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='dark'")
         try await pinAnimations()
-        try await darken(.aqua)
-        backend.updateTheme()
+        try await setTheme(.light)
         try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='light'")
         try await appearance("light", from: 0)
-        try await darken()
-        backend.updateTheme()
+        try await setTheme(.dark)
         try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='dark'")
         try await appearance("dark", from: 2)
         _ = try await webviewJS(web, "(()=>{" + Self.followHelpers + "push({type:'item',item:{kind:'assistant',seq:2,revision:0,at:1700000004000,final:false,blocks:[{type:'text',text:'The run is complete.'}],stop:'',error:''}});return true})()")
@@ -843,179 +748,81 @@ import SidebarFeed
         })()
         """#, within: 60)
         let value = try requireValue(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
-        backend.diagnostic(result)
+        print(result)
         try requireLess(try requireValue(value["atEnd"] as? Int), 60, result)
         try requireLess(try requireValue(value["rows"] as? Int), 60, result)
         try requireEqual(value["usable"] as? Bool, true, result)
         try requireLess(try requireValue(value["top"] as? Double), try requireValue(value["start"] as? Double) - 20 * (try requireValue(value["viewport"] as? Double)), result)
     }
-    func testKoaWebviewSelectAllCopiesTheWholeTranscript() async throws {
-        let web = try await scrollPage(module: "scroll-follow", key: "testKoaWebviewSelectAllCopiesTheWholeTranscript")
-        let window = try requireValue(web.window)
-        let board = NSPasteboard.general
-        board.clearContents()
-        let start = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
-          const sentence='The quick brown fox jumps over the lazy dog and keeps running across the field. ';
-          const history=Array.from({length:400},(_,i)=>({kind:'assistant',seq:i,revision:0,at:Date.now(),final:true,blocks:[{type:'text',text:(i===3?'earlyunmounted ':'filler ')+sentence.repeat(4)}],stop:'stop',error:''}));
-          push(view(root,[root]));push({type:'reset',epoch:'sa',more:false,items:history});
-          await until(()=>document.querySelector('#items [data-seq="399"]')&&gap()<=1);
-          await wait(300);
-          return {rows:document.querySelectorAll('#items > [data-seq]').length,absent:!document.querySelector('#items [data-seq="3"]')};
-        })()
-        """#, within: 60)
-        let before = try requireValue(JSONSerialization.jsonObject(with: Data(start.utf8)) as? [String: Any])
-        try requireEqual(before["absent"] as? Bool, true, "Row 3 is not mounted: \(start)")
-        try require(window.makeFirstResponder(web))
-        _ = try await webviewJS(web, "(()=>{window.__copies=[];window.addEventListener('copy',event=>window.__copies.push({prevented:event.defaultPrevented}));return true})()")
-        try require(try requireValue(window.firstResponder).tryToPerform(#selector(NSText.selectAll(_:)), with: nil), "Select All reached a responder: \(String(describing: window.firstResponder))")
-        let evidence = try await webviewJS(web, #"""
-          (async()=>{await new Promise(resolve=>setTimeout(resolve,300));
-          const s=getSelection(),name=node=>node&&node.nodeName,row=node=>node&&(node.nodeType===1?node:node.parentElement)?.closest('[data-seq]')?.dataset.seq;
-          let first=document.querySelector('#items'),last=first;while(first.firstChild)first=first.firstChild;while(last.lastChild)last=last.lastChild;
-          return {anchor:[name(s.anchorNode),s.anchorOffset,row(s.anchorNode)],focus:[name(s.focusNode),s.focusOffset,row(s.focusNode)],first:[name(first),(first.textContent||'').slice(0,20),s.containsNode(first,false),row(first)],last:[name(last),(last.textContent||'').slice(-20),s.containsNode(last,false),row(last)],rows:document.querySelectorAll('#items > [data-seq]').length,collapsed:s.isCollapsed}})()
-        """#)
-        try require(try requireValue(window.firstResponder).tryToPerform(#selector(NSText.copy(_:)), with: nil), "Copy reached a responder: \(String(describing: window.firstResponder))")
-        let copies = try await webviewJS(web, "(async()=>{await new Promise(resolve=>setTimeout(resolve,500));return window.__copies})()")
-        let text = board.string(forType: .string) ?? ""
-        let report = "selection \(evidence); copy events \(copies); pasteboard \(text.count) characters, \(text.components(separatedBy: "\n\n").count) chunks, early item \(text.contains("earlyunmounted"))"
-        try require(text.contains("earlyunmounted"), report)
-        try requireEqual(text.components(separatedBy: "\n\n").count, 400, report)
-        let after = try await webviewJS(web, "document.querySelectorAll('#items > [data-seq]').length")
-        try requireLess(try requireValue(Int(after)), 60, "Select All never mounted the history: \(after)")
-    }
-    func testKoaWebviewFindSkippedHistory() async throws {
-        let web = try await scrollPage(module: "scroll-follow", key: "testKoaWebviewFindSkippedHistory")
-        let pane = try requireValue(backend.pane())
-        let sentence = "The quick brown fox jumps over the lazy dog and keeps running across the field. "
-        let start = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
-          const sentence='\#(sentence)';
-          const history=Array.from({length:40},(_,i)=>({kind:'assistant',seq:i,revision:0,at:Date.now(),final:true,blocks:[{type:'text',text:(i===5?'alpha zyxwvq beta zyxwvq gamma half**word**x ':'filler ')+sentence.repeat(30)}],stop:'stop',error:''}));
-          push(view(root,[root]));push({type:'reset',epoch:'ef',more:false,items:history});
-          await until(()=>document.querySelector('#items [data-seq="39"]')&&gap()<=1);
-          await wait(300);
-          return {rows:document.querySelectorAll('#items > [data-seq]').length,absent:!document.querySelector('#items [data-seq="5"]'),top:s.scrollTop,viewport:s.clientHeight};
-        })()
-        """#, within: 60)
-        let before = try requireValue(JSONSerialization.jsonObject(with: Data(start.utf8)) as? [String: Any])
-        try requireEqual(before["absent"] as? Bool, true, "The row ten screens up is not mounted: \(start)")
-        pane.showFind()
-        let find = try requireValue(pane.find)
-        func label() -> String { find.subviews.compactMap { $0 as? NSTextField }.map(\.stringValue).first { $0.contains(" of ") || $0 == "Match" || $0 == "No matches" || $0 == "Searching…" } ?? "" }
-        var seen: [String] = []
-        func shown(_ expected: String) async throws {
-            try await wait("find status \(expected)", within: 20) { let text = label(); if seen.last != text { seen.append(text) }; return text == expected }
-        }
-        func selection(_ expectedOffset: Int?, _ description: String, word: String = "zyxwvq") async throws {
-            let result = try await webviewJS(web, #"""
-              (()=>{const s=getSelection(),range=s.rangeCount?s.getRangeAt(0):undefined,rects=range?[...range.getClientRects()].filter(r=>r.width>0&&r.height>0):[],box=document.querySelector('#scroll').getBoundingClientRect(),dock=document.querySelector('#dock').getBoundingClientRect().top;
-              return {word:s.toString(),offset:range?.startOffset,visible:rects.some(r=>r.top>=box.top&&r.bottom<=dock),row:range?.startContainer.parentElement?.closest('[data-seq]')?.dataset.seq,top:document.querySelector('#scroll').scrollTop}})()
-            """#)
-            let value = try requireValue(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
-            try requireEqual(value["word"] as? String, word, "\(description): \(result)")
-            if let expectedOffset { try requireEqual(value["offset"] as? Int, expectedOffset, "\(description): \(result)") }
-            try requireEqual(value["visible"] as? Bool, true, "\(description): \(result)")
-            try requireEqual(value["row"] as? String, "5", "\(description): \(result)")
-        }
-        find.field.stringValue = "zyxwvq"
-        find.search()
-        try await shown("1 of 2")
-        try await selection(6, "first")
-        let top = try requireValue(before["top"] as? Double), viewport = try requireValue(before["viewport"] as? Double)
-        let scrolled = try await webviewJS(web, "document.querySelector('#scroll').scrollTop")
-        try requireLess(try requireValue(Double(scrolled)), top - 5 * viewport, "The find scrolled ten screens up")
-        find.next()
-        try await shown("2 of 2")
-        try await selection(18, "second")
-        find.next()
-        try await shown("1 of 2")
-        try await selection(6, "wrapped forward")
-        find.previous()
-        try await shown("2 of 2")
-        try await selection(18, "wrapped backward")
-        find.previous()
-        try await shown("1 of 2")
-        try await selection(6, "backward")
-        try require(Set(seen).isSubset(of: ["", "1 of 2", "2 of 2"]), "The bar keeps its last status until the native find answers: \(seen)")
-        find.search()
-        try await shown("2 of 2")
-        try await selection(18, "the same query repeated steps on")
-        find.field.stringValue = "halfword"
-        find.search()
-        try await shown("1 of 1")
-        try await selection(nil, "a word half in bold text", word: "halfword")
-    }
+
+
     func testKoaWebviewBangCompletion() async throws {
-        try await koaWebview(key: "BangCompletion", width: 980, height: 360, scenario: .bang, pairedWidths: true, phases: ["bang-tab"])
+        try await koaWebview(key: "BangCompletion", width: 960, height: 357.5, scenario: .bang, pairedWidths: true, phases: ["bang-tab"])
     }
     func testKoaWebviewBang() async throws {
-        try await koaWebview(key: "Bang", width: 980, height: 220, scenario: .bang, pairedWidths: true, phases: ["bang"])
+        try await koaWebview(key: "Bang", width: 960, height: 217.5, scenario: .bang, pairedWidths: true, phases: ["bang"])
     }
     func testKoaWebviewComposerFootResponsive() async throws {
-        try await koaWebview(key: "testKoaWebviewComposerFootResponsive", width: 674, height: 300, scenario: .composer, phases: ["foot-responsive"])
+        try await koaWebview(key: "testKoaWebviewComposerFootResponsive", width: 656, height: 297.5, scenario: .composer, phases: ["foot-responsive"])
     }
     func testKoaWebviewComposerFootStates() async throws {
-        try await koaWebview(key: "ComposerFootStates", width: 980, height: 560, scenario: .composer, pairedWidths: true, phases: ["foot-idle", "foot-working", "foot-editing", "foot-picker", "foot-toast", "foot-toast-err", "foot-narrow", "foot-extras", "foot-waiting", "foot-exited"])
+        try await koaWebview(key: "ComposerFootStates", width: 960, height: 557.5, scenario: .composer, pairedWidths: true, phases: ["foot-idle", "foot-working", "foot-editing", "foot-picker", "foot-toast", "foot-toast-err", "foot-narrow", "foot-extras", "foot-waiting", "foot-exited"])
     }
 
     func testKoaWebviewComposerStateGeometryWide() async throws {
-        try await koaWebview(key: "testKoaWebviewComposerStateGeometryWide", width: 980, height: 560, phases: ["geometry"])
+        try await koaWebview(key: "testKoaWebviewComposerStateGeometryWide", width: 960, height: 557.5, phases: ["geometry"])
     }
     func testKoaWebviewComposerStateGeometryNarrow() async throws {
-        try await koaWebview(key: "testKoaWebviewComposerStateGeometryNarrow", width: 470, height: 560, phases: ["geometry"])
-    }
-    func testKoaWebviewFocusBorderTranscript() async throws {
-        try await koaWebview(key: "testKoaWebviewFocusBorderTranscript", width: 980, height: 560, phases: ["focus-border-transcript"])
+        try await koaWebview(key: "testKoaWebviewComposerStateGeometryNarrow", width: 448, height: 557.5, phases: ["geometry"])
     }
 
-    func testKoaWebviewComposerFocus() async throws {
-        try await koaWebview(key: "testKoaWebviewComposerFocus", width: 980, height: 560, phases: ["focus"])
-    }
+
     func testKoaWebviewCommandsNarrow() async throws {
-        try await koaWebview(key: "testKoaWebviewCommandsNarrow", width: 470, height: 560, scenario: .commands, phases: [])
+        try await koaWebview(key: "testKoaWebviewCommandsNarrow", width: 448, height: 557.5, scenario: .commands, phases: [])
     }
 
     func testKoaWebviewMockupStates() async throws {
-        try await koaWebview(key: "testKoaWebviewMockupStates", width: 980, height: 560, phases: ["user-well"])
+        try await koaWebview(key: "testKoaWebviewMockupStates", width: 960, height: 557.5, phases: ["user-well"])
     }
 
     func testKoaWebviewNotices() async throws {
-        try await koaWebview(key: "Notices", width: 980, height: 560, scenario: .notices, pairedWidths: true, phases: [])
+        try await koaWebview(key: "Notices", width: 960, height: 557.5, scenario: .notices, pairedWidths: true, phases: [])
     }
 
     func testKoaWebviewLatest() async throws {
-        try await koaWebview(key: "Latest", width: 980, height: 560, scenario: .latest, pairedWidths: true, phases: [])
+        try await koaWebview(key: "Latest", width: 960, height: 557.5, scenario: .latest, pairedWidths: true, phases: [])
     }
 
     func testKoaWebviewErrorState() async throws {
-        try await koaWebview(key: "testKoaWebviewErrorState", width: 980, height: 593, phases: ["error"])
+        try await koaWebview(key: "testKoaWebviewErrorState", width: 960, height: 590.5, phases: ["error"])
     }
 
     func testKoaWebviewShortStates() async throws {
-        try await koaWebview(key: "testKoaWebviewShortStates", width: 980, height: 300, phases: ["idle"])
+        try await koaWebview(key: "testKoaWebviewShortStates", width: 960, height: 297.5, phases: ["idle"])
     }
 
     func testKoaWebviewNarrowStates() async throws {
-        try await koaWebview(key: "testKoaWebviewNarrowStates", width: 470, height: 560, phases: ["narrow-stream"])
+        try await koaWebview(key: "testKoaWebviewNarrowStates", width: 448, height: 557.5, phases: ["narrow-stream"])
     }
 
     func testKoaWebviewDialogs() async throws {
-        try await koaWebview(key: "testKoaWebviewDialogs", width: 980, height: 560, scenario: .dialogs, phases: ["dialog-select"])
+        try await koaWebview(key: "testKoaWebviewDialogs", width: 960, height: 557.5, scenario: .dialogs, phases: ["dialog-select"])
     }
 
     func testKoaWebviewControls() async throws {
-        try await koaWebview(key: "testKoaWebviewControls", width: 980, height: 300, scenario: .controls, phases: ["queue"])
+        try await koaWebview(key: "testKoaWebviewControls", width: 960, height: 297.5, scenario: .controls, phases: ["queue"])
     }
 
     func testKoaWebviewNarrowControls() async throws {
-        try await koaWebview(key: "testKoaWebviewNarrowControls", width: 470, height: 300, scenario: .controls, phases: ["narrow-queue"])
+        try await koaWebview(key: "testKoaWebviewNarrowControls", width: 448, height: 297.5, scenario: .controls, phases: ["narrow-queue"])
     }
 
     func testKoaWebviewExit() async throws {
-        try await koaWebview(key: "testKoaWebviewExit", width: 980, height: 560, scenario: .exit, phases: ["times"])
+        try await koaWebview(key: "testKoaWebviewExit", width: 960, height: 557.5, scenario: .exit, phases: ["times"])
     }
 
     func testKoaWebviewFailed() async throws {
-        try await koaWebview(key: "Failed", width: 980, height: 560, scenario: .failed, pairedWidths: true, phases: ["exited"])
+        try await koaWebview(key: "Failed", width: 960, height: 557.5, scenario: .failed, pairedWidths: true, phases: ["exited"])
     }
 
     func testKoaWebviewRhythm() async throws {
@@ -1035,83 +842,77 @@ import SidebarFeed
         try requireEqual(try requireValue(Double(opened)), 14, accuracy: 0.5, "An open run separates the next line")
     }
 
-    func testKoaWebviewThreadsModes() async throws {
-        try await koaWebview(key: "testKoaWebviewThreadsModes", width: 1400, height: 560, scenario: .threads, phases: ["threads-block"])
-    }
 
     func testKoaWebviewThreads() async throws {
-        try await koaWebview(key: "Threads", width: 980, height: 560, scenario: .threads, phases: ["threads-two", "threads-many", "threads-marks", "threads-marks-narrow"])
+        try await koaWebview(key: "Threads", width: 960, height: 557.5, scenario: .threads, phases: ["threads-two", "threads-many", "threads-marks", "threads-marks-narrow"])
     }
 
     func testKoaWebviewThreadsFilter() async throws {
-        try await koaWebview(key: "ThreadsFilter", width: 980, height: 560, scenario: .threads, phases: ["threads-filter"])
+        try await koaWebview(key: "ThreadsFilter", width: 960, height: 557.5, scenario: .threads, phases: ["threads-filter"])
     }
     func testKoaWebviewThreadsFilterPanel() async throws {
-        try await koaWebview(key: "ThreadsFilterPanel", width: 980, height: 560, scenario: .threads, phases: ["threads-filter-panel"])
+        try await koaWebview(key: "ThreadsFilterPanel", width: 960, height: 557.5, scenario: .threads, phases: ["threads-filter-panel"])
     }
     func testKoaWebviewAgents() async throws {
-        try await koaWebview(key: "Agents", width: 980, height: 560, scenario: .agents, pairedWidths: true, phases: [])
+        try await koaWebview(key: "Agents", width: 960, height: 557.5, scenario: .agents, pairedWidths: true, phases: [])
     }
 
     func testKoaWebviewSubagentView() async throws {
-        try await koaWebview(key: "SubagentView", width: 980, height: 560, scenario: .views, pairedWidths: true, phases: [])
+        try await koaWebview(key: "SubagentView", width: 960, height: 557.5, scenario: .views, pairedWidths: true, phases: [])
     }
     func testKoaWebviewViewBar() async throws {
-        try await koaWebview(key: "ViewBar", width: 980, height: 560, scenario: .views, pairedWidths: true, phases: [])
+        try await koaWebview(key: "ViewBar", width: 960, height: 557.5, scenario: .views, pairedWidths: true, phases: [])
     }
     func testKoaWebviewJobs() async throws {
-        try await koaWebview(key: "Jobs", width: 980, height: 560, scenario: .jobs, pairedWidths: true, phases: ["job-running", "job-ended", "job-service"])
+        try await koaWebview(key: "Jobs", width: 960, height: 557.5, scenario: .jobs, pairedWidths: true, phases: ["job-running", "job-ended", "job-service"])
     }
 
     func testKoaWebviewLightbox() async throws {
-        try await koaWebview(key: "testKoaWebviewLightbox", width: 980, height: 560, scenario: .lightbox, phases: ["media-lightbox"])
+        try await koaWebview(key: "testKoaWebviewLightbox", width: 960, height: 557.5, scenario: .lightbox, phases: ["media-lightbox"])
     }
 
     func testKoaWebviewPaths() async throws {
-        try await koaWebview(key: "Paths", width: 980, height: 400, scenario: .paths, phases: ["path-links"])
+        try await koaWebview(key: "Paths", width: 960, height: 397.5, scenario: .paths, phases: ["path-links"])
     }
 
-    func testKoaWebviewPreviewHover() async throws {
-        try await koaWebview(key: "testKoaWebviewPreviewHover", width: 980, height: 400, scenario: .preview, phases: ["media-preview-hover"])
-    }
 
     func testKoaWebviewMedia() async throws {
-        try await koaWebview(key: "Media", width: 980, height: 560, scenario: .media, pairedWidths: true, phases: ["media-read-image"])
+        try await koaWebview(key: "Media", width: 960, height: 557.5, scenario: .media, pairedWidths: true, phases: ["media-read-image"])
     }
 
     func testKoaWebviewAttachments() async throws {
-        try await koaWebview(key: "Attachments", width: 980, height: 560, scenario: .attachments, pairedWidths: true, phases: [])
+        try await koaWebview(key: "Attachments", width: 960, height: 557.5, scenario: .attachments, pairedWidths: true, phases: [])
     }
 
     func testKoaWebviewUserMarkdown() async throws {
-        try await koaWebview(key: "UserMarkdown", width: 980, height: 560, scenario: .userMarkdown, pairedWidths: true, phases: ["user-markdown"])
+        try await koaWebview(key: "UserMarkdown", width: 960, height: 557.5, scenario: .userMarkdown, pairedWidths: true, phases: ["user-markdown"])
     }
 
     func testKoaWebviewReveal() async throws {
-        try await koaWebview(key: "testKoaWebviewReveal", width: 980, height: 560, scenario: .reveal, phases: ["reveal-fold"])
+        try await koaWebview(key: "testKoaWebviewReveal", width: 960, height: 557.5, scenario: .reveal, phases: ["reveal-fold"])
     }
 
     func testKoaWebviewThinkingMarkdown() async throws {
-        try await koaWebview(key: "ThinkingMarkdown", width: 980, height: 560, scenario: .thinkingMarkdown, pairedWidths: true, phases: ["thinking-markdown"])
+        try await koaWebview(key: "ThinkingMarkdown", width: 960, height: 557.5, scenario: .thinkingMarkdown, pairedWidths: true, phases: ["thinking-markdown"])
     }
 
     func testKoaWebviewComposerMarkdown() async throws {
-        try await koaWebview(key: "testKoaWebviewComposerMarkdown", width: 980, height: 560, scenario: .markdown, phases: ["composer-markdown"])
+        try await koaWebview(key: "testKoaWebviewComposerMarkdown", width: 960, height: 557.5, scenario: .markdown, phases: ["composer-markdown"])
     }
 
     func testKoaWebviewQuestions() async throws {
-        try await koaWebview(key: "Questions", width: 980, height: 560, scenario: .questions, pairedWidths: true, phases: ["questions-reply"])
+        try await koaWebview(key: "Questions", width: 960, height: 557.5, scenario: .questions, pairedWidths: true, phases: ["questions-reply"])
     }
 
     func testKoaWebviewCompletion() async throws {
-        try await koaWebview(key: "Completion", width: 980, height: 560, scenario: .completion, pairedWidths: true, phases: [])
+        try await koaWebview(key: "Completion", width: 960, height: 557.5, scenario: .completion, pairedWidths: true, phases: [])
     }
 
     func testKoaWebviewSessions() async throws {
-        try await koaWebview(key: "Sessions", width: 980, height: 560, scenario: .sessions, pairedWidths: true, phases: [])
+        try await koaWebview(key: "Sessions", width: 960, height: 557.5, scenario: .sessions, pairedWidths: true, phases: [])
     }
 
-    private func koaBangCompletion(web: WKWebView, window: NSWindow, width: CGFloat, pairedWidths: Bool, capture: (String) async throws -> Void) async throws {
+    private func koaBangCompletion(web: WKWebView, width: CGFloat, pairedWidths: Bool, capture: (String) async throws -> Void) async throws {
             let prefix = width < 750 ? "narrow-" : ""
             _ = try await webviewJS(web, #"(()=>{window.tabFetch=window.fetch;window.tabRequests=0;window.tabResolve=null;window.tabKind='list';window.fetch=(url,options)=>{if(url!='/complete')return tabFetch(url,options);tabRequests++;const q=JSON.parse(options.body),from=q.text.lastIndexOf(' ')+1;let result={type:'shell',from,to:q.text.length,common:'verify',more:0,options:['verify','verify-app','verify-linux','verify-rs','verify-ts'].map(label=>({label,insert:label+' ',cursor:label.length+1}))};if(tabKind==='none')result.options=[];if(tabKind==='cap'){result.common='/usr/bin/';result.more=184;result.options=['2to3-','AssetCacheLocatorUtil','AssetCacheManagerUtil','AssetCacheTetheratorUtil','DeRez','GetFileInfo','IOAccelMemory','IOMPSCompiler','ResMerger','Rez','SafeEjectGPU','SetFile','SplitForks'].map(label=>({label,insert:'/usr/bin/'+label+' ',cursor:10+label.length}))}return tabKind==='pending'?new Promise(resolve=>{window.tabResolve=()=>resolve({ok:true,json:async()=>result})}):Promise.resolve({ok:true,json:async()=>result})};window.tabKey=key=>document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key,code:key==='Tab'?'Tab':key,bubbles:true,cancelable:true}));window.composer.setText('!make ver');tabKey('Tab');return true})()"#)
             try await webviewUntil(web, "document.querySelector('.koa-complete.sh')!==null&&window.composer.text()==='!make verify'")
@@ -1136,13 +937,13 @@ import SidebarFeed
             let contained = try await webviewJS(web, "(()=>{const popup=document.querySelector('.koa-complete').getBoundingClientRect(),dock=document.querySelector('#dock').getBoundingClientRect(),user=document.querySelector('.user').getBoundingClientRect();return popup.top>=user.bottom&&popup.bottom<=dock.top})()")
             try requireEqual(contained, "true", "Shell completion stays in the transcript above the dock")
             try await capture(prefix + "bang-tab-cap")
-            for currentWidth in (pairedWidths ? [width, 470] : [width]) {
-                koaContentSize(window: window, width: currentWidth, height: 220)
+            for currentWidth in (pairedWidths ? [width, 448] : [width]) {
+                self.resize(NSSize(width: currentWidth, height: 217.5))
                 window.contentView?.layoutSubtreeIfNeeded()
                 web.superview?.layoutSubtreeIfNeeded()
                 try await webviewUntil(web, "(()=>{const popup=document.querySelector('.koa-complete')?.getBoundingClientRect(),dock=document.querySelector('#dock').getBoundingClientRect(),list=document.querySelector('.koa-complete ul');return innerHeight<250&&!!popup&&popup.top>=0&&popup.bottom<=dock.top&&list.scrollHeight>list.clientHeight})()")
             }
-            koaContentSize(window: window, width: width, height: 220)
+            self.resize(NSSize(width: width, height: 217.5))
             try await koaMeasured(web, "#composer")
             _ = try await webviewJS(web, "(()=>{tabKey('Escape');window.tabKind='none';window.composer.setText('!make checkz');window.tabTimeout=window.setTimeout;window.setTimeout=(fn,ms,...args)=>ms===1500?(window.tabNone=fn,0):tabTimeout(fn,ms,...args);tabKey('Tab');return true})()")
             try await webviewUntil(web, "document.querySelector('.koa-complete.empty')?.textContent==='no completions'")
@@ -1170,7 +971,7 @@ import SidebarFeed
         let completionCaptures = phases.first == "bang-tab"
         let mediaClock: Bool
         switch scenario {
-        case .commands, .sessions, .media, .attachments, .preview, .lightbox, .agents, .composer, .views, .threads: mediaClock = true
+        case .commands, .sessions, .media, .attachments, .lightbox, .agents, .composer, .views, .threads: mediaClock = true
         default: mediaClock = completionCaptures
         }
         var calendar = Calendar(identifier: .gregorian)
@@ -1179,28 +980,23 @@ import SidebarFeed
         let measured: Bool
         switch scenario {
         case .commands, .sessions, .questions, .completion, .attachments, .userMarkdown, .thinkingMarkdown, .exit, .lightbox, .paths, .threads: measured = true
-        default: measured = completionCaptures || phases.contains("focus-border-transcript")
+        default: measured = completionCaptures
         }
         let measurementClock = Self.localeScript + "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};"
-        WebviewPaneView.visualInitialScript = measurementClock
+        var initialScript = measurementClock
         // WebKit pauses animation frames in an off-screen window.
         if measured {
-            WebviewPaneView.visualInitialScript = measurementClock + "window.koaPendingFrames=new Set();window.requestAnimationFrame=callback=>{const id=setTimeout(()=>{koaPendingFrames.delete(id);callback(performance.now())},0);koaPendingFrames.add(id);return id};window.cancelAnimationFrame=id=>{koaPendingFrames.delete(id);clearTimeout(id)};"
+            initialScript = measurementClock + "window.koaPendingFrames=new Set();window.requestAnimationFrame=callback=>{const id=setTimeout(()=>{koaPendingFrames.delete(id);callback(performance.now())},0);koaPendingFrames.add(id);return id};window.cancelAnimationFrame=id=>{koaPendingFrames.delete(id);clearTimeout(id)};"
         }
         if scenario == .reveal {
-            WebviewPaneView.visualInitialScript = measurementClock + "Object.defineProperty(document,'hidden',{value:false});window.koaClock=0;window.koaFrames=new Map();window.koaFrame=0;performance.now=()=>koaClock;window.requestAnimationFrame=callback=>{koaFrames.set(++koaFrame,callback);return koaFrame};window.cancelAnimationFrame=id=>koaFrames.delete(id);const nativeTimeout=window.setTimeout,nativeClear=window.clearTimeout;window.koaTimers=new Map();window.setTimeout=(callback,ms,...args)=>{if(!(ms>=1000&&ms<=1500))return nativeTimeout(callback,ms,...args);const id=-(++koaFrame);koaTimers.set(id,{at:koaClock+ms,callback});return id};window.clearTimeout=id=>{koaTimers.delete(id);nativeClear(id)};window.koaStep=ms=>{koaClock+=ms;for(const [id,timer] of [...koaTimers])if(timer.at<=koaClock){koaTimers.delete(id);timer.callback()}for(const [id,callback] of [...koaFrames]){koaFrames.delete(id);callback(koaClock)}};"
-        }
-        if phases.contains("focus") || phases.contains("focus-border-transcript") {
-            // The off-screen WKWebView reports no document focus.
-            WebviewPaneView.visualInitialScript = "document.hasFocus=()=>true;" + (WebviewPaneView.visualInitialScript ?? "")
+            initialScript = measurementClock + "Object.defineProperty(document,'hidden',{value:false});window.koaClock=0;window.koaFrames=new Map();window.koaFrame=0;performance.now=()=>koaClock;window.requestAnimationFrame=callback=>{koaFrames.set(++koaFrame,callback);return koaFrame};window.cancelAnimationFrame=id=>koaFrames.delete(id);const nativeTimeout=window.setTimeout,nativeClear=window.clearTimeout;window.koaTimers=new Map();window.setTimeout=(callback,ms,...args)=>{if(!(ms>=1000&&ms<=1500))return nativeTimeout(callback,ms,...args);const id=-(++koaFrame);koaTimers.set(id,{at:koaClock+ms,callback});return id};window.clearTimeout=id=>{koaTimers.delete(id);nativeClear(id)};window.koaStep=ms=>{koaClock+=ms;for(const [id,timer] of [...koaTimers])if(timer.at<=koaClock){koaTimers.delete(id);timer.callback()}for(const [id,callback] of [...koaFrames]){koaFrames.delete(id);callback(koaClock)}};"
         }
         if phases.contains("foot-responsive") || phases.contains("foot-editing") || phases.contains("narrow-foot-editing") {
-            WebviewPaneView.visualInitialScript = (WebviewPaneView.visualInitialScript ?? "") + "const FootSource=EventSource;window.EventSource=class extends FootSource{constructor(...args){super(...args);window.footSource=this;this.addEventListener('message',event=>{const record=JSON.parse(event.data);if(record.type==='state')window.footState=record})}};"
+            initialScript = initialScript + "const FootSource=EventSource;window.EventSource=class extends FootSource{constructor(...args){super(...args);window.footSource=this;this.addEventListener('message',event=>{const record=JSON.parse(event.data);if(record.type==='state')window.footState=record})}};"
         }
-        var initial = WebviewPaneView.visualInitialScript ?? ""
+        var initial = initialScript
         initial.insert(contentsOf: "Element.prototype.animate=function(){return {}};" + Self.paneFocus + (scenario == .latest || scenario == .jobs ? "" : Self.hideLatest), at: initial.startIndex)
-        WebviewPaneView.visualInitialScript = initial
-        defer { WebviewPaneView.visualInitialScript = nil }
+
         for (name, text) in [("ko_server/src/sweep.rs", Array(repeating: "    row", count: 212).joined(separator: "\n")), ("scripts/release.sh", "#!/bin/sh\necho release\n"), ("Makefile", Array(repeating: "    target", count: 388).joined(separator: "\n")), ("notes.md", "notes\n")] {
             let file = assets.appendingPathComponent(name)
             try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -1241,12 +1037,12 @@ import SidebarFeed
             try "row\n".write(to: attachmentPaths.source, atomically: true, encoding: .utf8)
             try Data(contentsOf: attachmentPaths.shot).write(to: assets.appendingPathComponent("shot.png"))
         }
-        try await backend.start(scenario.rawValue, key, assets, width, height)
-        backend.prepare()
-        koaContentSize(window: window, width: width, height: height)
-        let pane = try requireValue(backend.pane())
-        try await wait("koa webview", within: 20) { self.backend.loaded() }
-        let web = try requireValue(backend.browser())
+        try await start(module: scenario.rawValue, key: key, assets: assets, viewport: NSSize(width: width, height: height), initialScripts: [initial])
+
+        self.resize(NSSize(width: width, height: height))
+
+        try await wait("koa webview", within: 20) { self.navigation.documents > 0 }
+        let web = try requireValue(browser)
         assertReplayRan(web)
         func release(_ name: String) async throws {
             let status = try await webviewJS(web, "fetch('/replay/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:\(String(reflecting: name))})}).then(r=>r.status)")
@@ -1261,7 +1057,7 @@ import SidebarFeed
             if captures[name] != nil { requested.append((name, drivingSize.width)) }
             let narrowName = "narrow-" + name
             let paired = pairedWidths && (scenario != .jobs || name == "job-running")
-            if paired && captures[narrowName] != nil { requested.append((narrowName, 470)) }
+            if paired && captures[narrowName] != nil { requested.append((narrowName, 448)) }
             for target in requested {
                 if window.contentLayoutRect.width != target.width {
                     try await resizeKoa(web, width: target.width, height: drivingSize.height)
@@ -1279,15 +1075,13 @@ import SidebarFeed
             try await afterLight?()
             try await KoaCapture.ready(web)
             guard let mode = captures[name], mode != .geometry else { return }
-            if mode != .dark { try await takeKoaSnapshot(pane, name: name, appearance: "-light", scenario: scenario) }
+            if mode != .dark { try await takeKoaSnapshot(name: name, appearance: "-light", scenario: scenario) }
             guard mode != .light else { return }
-            try await darken()
-            backend.updateTheme()
+            try await setTheme(.dark)
             try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='dark'")
             try await settleKoa(web, measured: measured)
-            try await takeKoaSnapshot(pane, name: name, appearance: "-dark", scenario: scenario)
-            try await darken(.aqua)
-            backend.updateTheme()
+            try await takeKoaSnapshot(name: name, appearance: "-dark", scenario: scenario)
+            try await setTheme(.light)
             try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='light'")
         }
         func advance() async throws {
@@ -1344,16 +1138,6 @@ import SidebarFeed
             try await capture(width < 750 ? "narrow-thinking-markdown" : "thinking-markdown")
             return
         }
-        if phases.contains("focus-border-transcript") {
-            try await advance(); try await advance()
-            try await webviewUntil(web, "document.querySelector('.assistant p')!==null")
-            _ = try await webviewJS(web, "(async()=>{document.getAnimations().filter(animation=>animation.animationName==='grow'&&animation.effect?.target?.closest('#items')).forEach(animation=>animation.finish());await new Promise(resolve=>setTimeout(resolve,50));return true})()")
-            _ = try await webviewJS(web, "(()=>{const transcript=document.querySelector('#transcript');transcript.tabIndex=-1;transcript.focus();const range=document.createRange();range.selectNodeContents(document.querySelector('.assistant p'));getSelection().removeAllRanges();getSelection().addRange(range);return true})()")
-            let focused = try await webviewJS(web, "document.activeElement===document.querySelector('#transcript')&&document.querySelector('#field').classList.contains('focus')")
-            try requireEqual(focused, "true")
-            try await capture("focus-border-transcript")
-            return
-        }
         if scenario == .failed {
             try await capture("exited")
             try await capture("narrow-exited")
@@ -1362,58 +1146,61 @@ import SidebarFeed
         let idleHint = try await webviewJS(web, "document.querySelector('#hint .dots')===null")
         try requireEqual(idleHint, "true")
         if scenario == .bang && completionCaptures {
-            try await koaBangCompletion(web: web, window: window, width: width, pairedWidths: pairedWidths, capture: capture)
+            try await koaBangCompletion(web: web, width: width, pairedWidths: pairedWidths, capture: capture)
             return
         }
         if scenario == .bang {
-            let prefix = width < 750 ? "narrow-" : ""
-            func resize(_ height: CGFloat) { koaContentSize(window: window, width: width, height: height) }
-            _ = try await webviewJS(web, "(()=>{window.composer.setText('!make checks DRY=1');return true})()")
-            try await capture(prefix + "bang")
-            _ = try await webviewJS(web, "(()=>{window.composer.setText('!!git status --short');return true})()")
-            try await capture(prefix + "bang2")
-            resize(300)
-            _ = try await webviewJS(web, "(()=>{window.composer.setText('');const transfer=new DataTransfer();transfer.items.add(new File([new Uint8Array(8192)],'notes.md'));document.querySelector('.cm-content').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:transfer}));return true})()")
-            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===1&&document.querySelectorAll('.attach-icon.pending').length===0")
-            _ = try await webviewJS(web, "(()=>{window.composer.setText('!make checks DRY=1');return true})()")
-            try await capture(prefix + "bang-attachments")
-            _ = try await webviewJS(web, "(()=>{const transfer=new DataTransfer();transfer.items.add(new File(['x'],'other.md'));document.querySelector('.cm-content').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));return true})()")
-            try await webviewUntil(web, "document.querySelector('.attach-notice').textContent==='a command takes no attachments'&&!document.querySelector('.attach-notice').hidden")
+            // Swift async code generation takes over 60 s for one coroutine; each fixture branch has its own closure.
+            try await { @MainActor () async throws in
+                let prefix = width < 750 ? "narrow-" : ""
+                @MainActor func resize(_ height: CGFloat) { self.resize(NSSize(width: width, height: height)) }
+                _ = try await webviewJS(web, "(()=>{window.composer.setText('!make checks DRY=1');return true})()")
+                try await capture(prefix + "bang")
+                _ = try await webviewJS(web, "(()=>{window.composer.setText('!!git status --short');return true})()")
+                try await capture(prefix + "bang2")
+                resize(297.5)
+                _ = try await webviewJS(web, "(()=>{window.composer.setText('');const transfer=new DataTransfer();transfer.items.add(new File([new Uint8Array(8192)],'notes.md'));document.querySelector('.cm-content').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:transfer}));return true})()")
+                try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===1&&document.querySelectorAll('.attach-icon.pending').length===0")
+                _ = try await webviewJS(web, "(()=>{window.composer.setText('!make checks DRY=1');return true})()")
+                try await capture(prefix + "bang-attachments")
+                _ = try await webviewJS(web, "(()=>{const transfer=new DataTransfer();transfer.items.add(new File(['x'],'other.md'));document.querySelector('.cm-content').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));return true})()")
+                try await webviewUntil(web, "document.querySelector('.attach-notice').textContent==='a command takes no attachments'&&!document.querySelector('.attach-notice').hidden")
 
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.attach-remove').click();window.composer.setText('');return true})()")
-            resize(560)
-            try await advance()
-            try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===5")
-            _ = try await webviewJS(web, "(()=>{const lines=document.querySelectorAll('.cmdrun>.line');lines[0].click();lines[2].click();lines[4].click();return true})()")
-            try await capture(prefix + "bang-runs")
-            resize(330)
-            for (name, command) in [("done", "make checks DRY=1"), ("error", "make verify STAGES=unit"), ("cancelled", "make e2e"), ("truncated", "find . -type f"), ("quiet", "git status --short")] {
+                _ = try await webviewJS(web, "(()=>{document.querySelector('.attach-remove').click();window.composer.setText('');return true})()")
+                resize(557.5)
                 try await advance()
-                try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===1&&document.querySelector('.cmdrun .cmd')?.textContent===\(String(reflecting: command))")
-                if name != "quiet" { _ = try await webviewJS(web, "(()=>{document.querySelector('.cmdrun>.line').click();return true})()") }
-                try await capture(prefix + "bang-" + name)
-            }
-            try await advance()
-            try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===0")
-            resize(220)
-            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'!make verify STAGES=unit',mode:'prompt',attachments:[]})}).then(r=>r.json())")
-            try await webviewUntil(web, "document.querySelector('.cmdrun .live')?.textContent.includes('running 212 tests')&&document.querySelector('.cmdrun .dots')!==null")
-            try await capture(prefix + "bang-running")
-            _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())")
-            try await webviewUntil(web, "!document.querySelector('.cmdrun .live')")
-            try await advance()
-            try await webviewUntil(web, "\(koaWorking)")
-            _ = try await webviewJS(web, "(()=>{window.composer.setText('!git status --short');return true})()")
-            try await capture(prefix + "bang-typing")
-            _ = try await webviewJS(web, "(()=>{Date.now=()=>\(stamp + 14000);return true})()")
-            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'!git status --short',mode:'prompt',attachments:[]})}).then(r=>{window.composer.setText('');return r.json()})")
-            try await webviewUntil(web, "document.querySelector('.cmdrun .live')?.textContent.includes('SidebarRow.swift')")
-            try await capture(prefix + "bang-busy")
-            _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())")
-            try await advance()
-            try await webviewUntil(web, "document.querySelector('.cmdrun .meta')?.textContent==='cancelled'")
-            resize(330)
-            try await capture(prefix + "bang-completed")
+                try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===5")
+                _ = try await webviewJS(web, "(()=>{const lines=document.querySelectorAll('.cmdrun>.line');lines[0].click();lines[2].click();lines[4].click();return true})()")
+                try await capture(prefix + "bang-runs")
+                resize(327.5)
+                for (name, command) in [("done", "make checks DRY=1"), ("error", "make verify STAGES=unit"), ("cancelled", "make e2e"), ("truncated", "find . -type f"), ("quiet", "git status --short")] {
+                    try await advance()
+                    try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===1&&document.querySelector('.cmdrun .cmd')?.textContent===\(String(reflecting: command))")
+                    if name != "quiet" { _ = try await webviewJS(web, "(()=>{document.querySelector('.cmdrun>.line').click();return true})()") }
+                    try await capture(prefix + "bang-" + name)
+                }
+                try await advance()
+                try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===0")
+                resize(217.5)
+                _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'!make verify STAGES=unit',mode:'prompt',attachments:[]})}).then(r=>r.json())")
+                try await webviewUntil(web, "document.querySelector('.cmdrun .live')?.textContent.includes('running 212 tests')&&document.querySelector('.cmdrun .dots')!==null")
+                try await capture(prefix + "bang-running")
+                _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())")
+                try await webviewUntil(web, "!document.querySelector('.cmdrun .live')")
+                try await advance()
+                try await webviewUntil(web, "\(koaWorking)")
+                _ = try await webviewJS(web, "(()=>{window.composer.setText('!git status --short');return true})()")
+                try await capture(prefix + "bang-typing")
+                _ = try await webviewJS(web, "(()=>{Date.now=()=>\(stamp + 14000);return true})()")
+                _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'!git status --short',mode:'prompt',attachments:[]})}).then(r=>{window.composer.setText('');return r.json()})")
+                try await webviewUntil(web, "document.querySelector('.cmdrun .live')?.textContent.includes('SidebarRow.swift')")
+                try await capture(prefix + "bang-busy")
+                _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())")
+                try await advance()
+                try await webviewUntil(web, "document.querySelector('.cmdrun .meta')?.textContent==='cancelled'")
+                resize(327.5)
+                try await capture(prefix + "bang-completed")
+            }()
             return
         }
         if scenario == .notices {
@@ -1443,96 +1230,100 @@ import SidebarFeed
             return
         }
         if scenario == .commands {
-            let prefix = width < 600 ? "narrow-commands-" : "commands-"
-            func submit(_ text: String) async throws {
-                let value = String(decoding: try JSONSerialization.data(withJSONObject: text, options: .fragmentsAllowed), as: UTF8.self)
-                _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:\(value),mode:'prompt',attachments:[]})}).then(async r=>{const body=await r.json();if(!r.ok)throw Error(body.error);return body})")
-            }
-            try await submit("/copy")
-            try await webviewUntil(web, "document.querySelector('.nrow')?.textContent.includes('copied the last reply')")
-            try await capture(prefix + "copy")
-            try await submit("/export " + home.appendingPathComponent("export.html").path)
-            try await webviewUntil(web, "document.querySelectorAll('.nrow').length===2")
-            try await capture(prefix + "export")
-            if width < 600 {
+            try await { @MainActor () async throws in
+                let prefix = width < 600 ? "narrow-commands-" : "commands-"
+                @MainActor func submit(_ text: String) async throws {
+                    let value = String(decoding: try JSONSerialization.data(withJSONObject: text, options: .fragmentsAllowed), as: UTF8.self)
+                    _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:\(value),mode:'prompt',attachments:[]})}).then(async r=>{const body=await r.json();if(!r.ok)throw Error(body.error);return body})")
+                }
+                try await submit("/copy")
+                try await webviewUntil(web, "document.querySelector('.nrow')?.textContent.includes('copied the last reply')")
+                try await capture(prefix + "copy")
+                try await submit("/export " + home.appendingPathComponent("export.html").path)
+                try await webviewUntil(web, "document.querySelectorAll('.nrow').length===2")
+                try await capture(prefix + "export")
+                if width < 600 {
+                    try await advance()
+                    try await webviewUntil(web, "document.querySelector('.nrow.more')!==null")
+                    _ = try await webviewJS(web, "(()=>{document.querySelector('.nrow.more>.hd').click();return true})()")
+                    try await capture(prefix + "export-open")
+                    _ = try await webviewJS(web, "(()=>{document.querySelector('.nrow.more>.hd').click();return true})()")
+                }
+                try await submit("/settings")
+                try await webviewUntil(web, "document.querySelector('.nrow.warning')!==null")
+                try await capture(prefix + "refused")
+                try await submit("/session")
+                try await webviewUntil(web, "document.querySelector('.nrow .kv')!==null")
+                try await capture(prefix + "session-closed")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('.nrow .kv').closest('.nrow').querySelector('.hd').click();return true})()")
+                try await capture(prefix + "session-open")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('.nrow .kv').closest('.nrow').querySelector('.hd').click();return true})()")
+                try await submit("/compact")
+                try await webviewUntil(web, "document.querySelector('#items').textContent.includes('compacting')&&document.querySelector('#items [aria-label=working]')!==null")
+                try await capture(prefix + "compacting")
                 try await advance()
-                try await webviewUntil(web, "document.querySelector('.nrow.more')!==null")
-                _ = try await webviewJS(web, "(()=>{document.querySelector('.nrow.more>.hd').click();return true})()")
-                try await capture(prefix + "export-open")
-                _ = try await webviewJS(web, "(()=>{document.querySelector('.nrow.more>.hd').click();return true})()")
-            }
-            try await submit("/settings")
-            try await webviewUntil(web, "document.querySelector('.nrow.warning')!==null")
-            try await capture(prefix + "refused")
-            try await submit("/session")
-            try await webviewUntil(web, "document.querySelector('.nrow .kv')!==null")
-            try await capture(prefix + "session-closed")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.nrow .kv').closest('.nrow').querySelector('.hd').click();return true})()")
-            try await capture(prefix + "session-open")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.nrow .kv').closest('.nrow').querySelector('.hd').click();return true})()")
-            try await submit("/compact")
-            try await webviewUntil(web, "document.querySelector('#items').textContent.includes('compacting')&&document.querySelector('#items [aria-label=working]')!==null")
-            try await capture(prefix + "compacting")
-            try await advance()
-            try await webviewUntil(web, "Array.from(document.querySelectorAll('.nrow')).some(node=>node.textContent.includes('compacted'))")
-            _ = try await webviewJS(web, "(()=>{Array.from(document.querySelectorAll('.nrow')).find(node=>node.textContent.includes('compacted')).querySelector('.hd').click();return true})()")
-            try await capture(prefix + "compacted-open")
-            try await advance()
-            try await submit("/compact")
-            try await webviewUntil(web, "document.querySelector('#items').textContent.includes('compacting')&&document.querySelector('#items [aria-label=working]')!==null")
-            _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())")
-            try await webviewUntil(web, "Array.from(document.querySelectorAll('.nrow')).some(node=>node.textContent.includes('compaction cancelled'))")
-            try await capture(prefix + "compact-cancelled")
-            try await advance()
-            try await submit("/compact")
-            try await webviewUntil(web, "document.querySelector('.nrow.error')!==null")
-            try await capture(prefix + "compact-failed")
-            _ = try await webviewJS(web, "(()=>{window.composer.setText('');window.composer.focus();document.execCommand('insertText',false,'/');return true})()")
-            try await webviewUntil(web, "document.querySelectorAll('.koa-complete li').length>0")
-            try await capture(prefix + "popup")
+                try await webviewUntil(web, "Array.from(document.querySelectorAll('.nrow')).some(node=>node.textContent.includes('compacted'))")
+                _ = try await webviewJS(web, "(()=>{Array.from(document.querySelectorAll('.nrow')).find(node=>node.textContent.includes('compacted')).querySelector('.hd').click();return true})()")
+                try await capture(prefix + "compacted-open")
+                try await advance()
+                try await submit("/compact")
+                try await webviewUntil(web, "document.querySelector('#items').textContent.includes('compacting')&&document.querySelector('#items [aria-label=working]')!==null")
+                _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())")
+                try await webviewUntil(web, "Array.from(document.querySelectorAll('.nrow')).some(node=>node.textContent.includes('compaction cancelled'))")
+                try await capture(prefix + "compact-cancelled")
+                try await advance()
+                try await submit("/compact")
+                try await webviewUntil(web, "document.querySelector('.nrow.error')!==null")
+                try await capture(prefix + "compact-failed")
+                _ = try await webviewJS(web, "(()=>{window.composer.setText('');window.composer.focus();document.execCommand('insertText',false,'/');return true})()")
+                try await webviewUntil(web, "document.querySelectorAll('.koa-complete li').length>0")
+                try await capture(prefix + "popup")
+            }()
             return
         }
         if scenario == .sessions {
-            let prefix = width < 600 ? "narrow-sessions-" : "sessions-"
-            _ = try await webviewJS(web, "(()=>{window.composer.setText('/resume');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
-            try await webviewUntil(web, "document.querySelector('#session-picker').dataset.state==='list'")
-            try await capture(prefix + "pick")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.sess .scope button:last-child').click();return true})()")
-            try await webviewUntil(web, "document.querySelectorAll('.sess .row').length===10")
-            try await capture(prefix + "all")
-            _ = try await webviewJS(web, "(()=>{const q=document.querySelector('.sess .q');q.value='side';q.dispatchEvent(new Event('input'));return true})()")
-            try await webviewUntil(web, "document.querySelector('#session-picker').dataset.state==='filtered'&&document.querySelectorAll('.sess .row').length>0&&document.querySelectorAll('.sess .row').length<10")
-            try await capture(prefix + "filtered")
-            _ = try await webviewJS(web, "(()=>{const q=document.querySelector('.sess .q');q.value='no-such-session';q.dispatchEvent(new Event('input'));return true})()")
-            try await webviewUntil(web, "document.querySelector('.sess .empty')?.textContent.includes('no match')")
-            try await capture(prefix + "no-match")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));window.composer.setText('/resume');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
-            try await webviewUntil(web, "document.querySelector('.sess .empty')?.textContent.includes('no sessions')")
-            try await capture(prefix + "empty")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return true})()")
-            _ = try await webviewJS(web, "(()=>{void fetch('/sessions/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,path:\(String(decoding: try JSONSerialization.data(withJSONObject: home.path + "/sessions/2026-11-10T09-00-00-000Z_00000000-0000-7000-8000-000000000002.jsonl", options: .fragmentsAllowed), as: UTF8.self))})});return true})()")
-            try await webviewUntil(web, "document.querySelector('#prompt .cm-placeholder')?.textContent==='Loading…'")
-            try await capture(prefix + "loading")
-            try await release("session-switch")
-            try await webviewUntil(web, "\(koaIdle)&&document.querySelector('#items').textContent.includes('session: koa-md · 96 messages')")
-            try await capture(prefix + "after")
-            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'!make verify STAGES=unit',mode:'prompt',attachments:[]})}).then(r=>r.json())")
-            try await webviewUntil(web, "document.querySelector('.cmdrun .dots')!==null&&document.querySelector('.cmdrun .live')?.textContent.trim()==='running 212 tests'")
-            _ = try await webviewJS(web, "(()=>{window.composer.setText('/resume');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
-            try await webviewUntil(web, "document.querySelector('#session-picker .msg2')?.textContent==='a command is running; it will be cancelled.'")
-            try await capture(prefix + "confirm-bash")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())})()")
-            try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===0&&\(koaIdle)")
-            try await advance()
-            try await webviewUntil(web, "\(koaWorking)")
-            _ = try await webviewJS(web, "(()=>{window.composer.setText('/resume');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
-            try await webviewUntil(web, "document.querySelector('#session-picker .title')?.textContent==='Switch session?'")
-            try await capture(prefix + "confirm")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())})()")
-            try await webviewUntil(web, "document.querySelector('#items').textContent.includes('aborted')")
-            _ = try await webviewJS(web, "(()=>{window.composer.setText('/new');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
-            try await webviewUntil(web, "document.querySelector('#items').textContent.includes('new session')&&!document.querySelector('#items').textContent.includes('Done:')")
-            try await capture(prefix + "new")
+            try await { @MainActor () async throws in
+                let prefix = width < 600 ? "narrow-sessions-" : "sessions-"
+                _ = try await webviewJS(web, "(()=>{window.composer.setText('/resume');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
+                try await webviewUntil(web, "document.querySelector('#session-picker').dataset.state==='list'")
+                try await capture(prefix + "pick")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('.sess .scope button:last-child').click();return true})()")
+                try await webviewUntil(web, "document.querySelectorAll('.sess .row').length===10")
+                try await capture(prefix + "all")
+                _ = try await webviewJS(web, "(()=>{const q=document.querySelector('.sess .q');q.value='side';q.dispatchEvent(new Event('input'));return true})()")
+                try await webviewUntil(web, "document.querySelector('#session-picker').dataset.state==='filtered'&&document.querySelectorAll('.sess .row').length>0&&document.querySelectorAll('.sess .row').length<10")
+                try await capture(prefix + "filtered")
+                _ = try await webviewJS(web, "(()=>{const q=document.querySelector('.sess .q');q.value='no-such-session';q.dispatchEvent(new Event('input'));return true})()")
+                try await webviewUntil(web, "document.querySelector('.sess .empty')?.textContent.includes('no match')")
+                try await capture(prefix + "no-match")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));window.composer.setText('/resume');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
+                try await webviewUntil(web, "document.querySelector('.sess .empty')?.textContent.includes('no sessions')")
+                try await capture(prefix + "empty")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return true})()")
+                _ = try await webviewJS(web, "(()=>{void fetch('/sessions/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,path:\(String(decoding: try JSONSerialization.data(withJSONObject: home.path + "/sessions/2026-11-10T09-00-00-000Z_00000000-0000-7000-8000-000000000002.jsonl", options: .fragmentsAllowed), as: UTF8.self))})});return true})()")
+                try await webviewUntil(web, "document.querySelector('#prompt .cm-placeholder')?.textContent==='Loading…'")
+                try await capture(prefix + "loading")
+                try await release("session-switch")
+                try await webviewUntil(web, "\(koaIdle)&&document.querySelector('#items').textContent.includes('session: koa-md · 96 messages')")
+                try await capture(prefix + "after")
+                _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'!make verify STAGES=unit',mode:'prompt',attachments:[]})}).then(r=>r.json())")
+                try await webviewUntil(web, "document.querySelector('.cmdrun .dots')!==null&&document.querySelector('.cmdrun .live')?.textContent.trim()==='running 212 tests'")
+                _ = try await webviewJS(web, "(()=>{window.composer.setText('/resume');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
+                try await webviewUntil(web, "document.querySelector('#session-picker .msg2')?.textContent==='a command is running; it will be cancelled.'")
+                try await capture(prefix + "confirm-bash")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())})()")
+                try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===0&&\(koaIdle)")
+                try await advance()
+                try await webviewUntil(web, "\(koaWorking)")
+                _ = try await webviewJS(web, "(()=>{window.composer.setText('/resume');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
+                try await webviewUntil(web, "document.querySelector('#session-picker .title')?.textContent==='Switch session?'")
+                try await capture(prefix + "confirm")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())})()")
+                try await webviewUntil(web, "document.querySelector('#items').textContent.includes('aborted')")
+                _ = try await webviewJS(web, "(()=>{window.composer.setText('/new');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
+                try await webviewUntil(web, "document.querySelector('#items').textContent.includes('new session')&&!document.querySelector('#items').textContent.includes('Done:')")
+                try await capture(prefix + "new")
+            }()
             return
         }
         if scenario == .questions {
@@ -1557,54 +1348,56 @@ import SidebarFeed
             return
         }
         if scenario == .composer && phases.contains("foot-responsive") {
-            func widths(_ state: String, sizes: [CGFloat] = [674, 554, 374, 250, 190]) async throws {
-                for size in sizes {
-                    koaContentSize(window: window, width: size, height: height)
-                    window.contentView?.layoutSubtreeIfNeeded(); pane.webviewView?.layoutSubtreeIfNeeded()
-                    let viewportWidth = Int(web.bounds.width)
-                    try await webviewUntil(web, "innerWidth===\(viewportWidth)")
-                    let fits = try await webviewJS(web, "(()=>{const foot=document.querySelector('.field .foot'),field=document.querySelector('#field');return foot.scrollWidth<=foot.clientWidth&&foot.getBoundingClientRect().right<=field.getBoundingClientRect().right})()")
-                    try requireEqual(fits, "true", "The foot stays inside the field at pane width \(viewportWidth)")
-                    let afterLight: (() async throws -> Void)?
-                    if state == "working" && size == 674 {
-                        afterLight = {
-                            try await advance()
-                            try await self.webviewUntil(web, "!!document.querySelector('.run:not(.working) .dots')&&!!document.querySelector('.run:not(.working) .time')")
-                        }
-                    } else { afterLight = nil }
-                    let captureName: String = "foot-responsive-\(Int(size))-" + state
-                    try await captureFrames(captureName, afterLight: afterLight)
+            try await { @MainActor () async throws in
+                @MainActor func widths(_ state: String, sizes: [(Int, CGFloat)] = [(674, 656), (554, 536), (374, 352), (250, 232), (190, 168)]) async throws {
+                    for (label, size) in sizes {
+                        self.resize(NSSize(width: size, height: height))
+                        window.contentView?.layoutSubtreeIfNeeded(); web.layoutSubtreeIfNeeded()
+                        let viewportWidth = Int(web.bounds.width)
+                        try await webviewUntil(web, "innerWidth===\(viewportWidth)")
+                        let fits = try await webviewJS(web, "(()=>{const foot=document.querySelector('.field .foot'),field=document.querySelector('#field');return foot.scrollWidth<=foot.clientWidth&&foot.getBoundingClientRect().right<=field.getBoundingClientRect().right})()")
+                        try requireEqual(fits, "true", "The foot stays inside the field at pane width \(viewportWidth)")
+                        let afterLight: (() async throws -> Void)?
+                        if state == "working" && label == 674 {
+                            afterLight = {
+                                try await advance()
+                                try await self.webviewUntil(web, "!!document.querySelector('.run:not(.working) .dots')&&!!document.querySelector('.run:not(.working) .time')")
+                            }
+                        } else { afterLight = nil }
+                        let captureName: String = "foot-responsive-\(label)-" + state
+                        try await captureFrames(captureName, afterLight: afterLight)
+                    }
                 }
-            }
-            try await widths("idle")
-            koaContentSize(window: window, width: 374, height: height)
-            window.contentView?.layoutSubtreeIfNeeded(); pane.webviewView?.layoutSubtreeIfNeeded()
-            let pickerViewportWidth = Int(web.bounds.width)
-            try await webviewUntil(web, "innerWidth===\(pickerViewportWidth)&&document.querySelector('#model-cell').offsetParent===null")
-            _ = try await webviewJS(web, "(()=>{window.composer.setText('/model');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true,cancelable:true}));return true})()")
-            try? await webviewUntil(web, "(()=>{const r=document.querySelector('#picker').getBoundingClientRect();return !document.querySelector('#picker').hidden&&Array.from(document.querySelectorAll('#picker .ph')).some(node=>node.textContent==='Thinking')&&r.height>0&&r.top>=0&&r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth})()")
-            let modelPickerFits = try await webviewJS(web, "(()=>{const r=document.querySelector('#picker').getBoundingClientRect();return r.height>0&&r.top>=0&&r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth?true:JSON.stringify({picker:r,width:innerWidth,height:innerHeight,field:document.querySelector('#field').getBoundingClientRect()})})()")
-            try requireEqual(modelPickerFits, "true", "The model picker stays inside the viewport when its foot cell is hidden")
-            try await capture("foot-responsive-374-picker")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));window.composer.setText('/thinking');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true,cancelable:true}));return true})()")
-            try? await webviewUntil(web, "(()=>{const r=document.querySelector('#picker').getBoundingClientRect();return !document.querySelector('#picker').hidden&&document.querySelector('#picker .ph')?.textContent==='Thinking'&&r.height>0&&r.top>=0&&r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth})()")
-            let thinkingPickerFits = try await webviewJS(web, "(()=>{const r=document.querySelector('#picker').getBoundingClientRect();return r.height>0&&r.top>=0&&r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth?true:JSON.stringify({picker:r,width:innerWidth,height:innerHeight,field:document.querySelector('#field').getBoundingClientRect()})})()")
-            try requireEqual(thinkingPickerFits, "true", "The thinking picker stays inside the viewport when its foot cell is hidden")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));return true})()")
-            _ = try await webviewJS(web, "(()=>{window.composer.setText('!make checks');return true})()")
-            try await webviewUntil(web, "document.querySelector('#field').classList.contains('bash-mode')")
-            try await widths("run")
-            _ = try await webviewJS(web, "(()=>{const nativeFetch=window.fetch;window.fetch=(url,options)=>url==='/complete'?new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new DOMException('Aborted','AbortError')),{once:true})):nativeFetch(url,options);window.composer.setText('!git checkout kido-');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',keyCode:9,bubbles:true,cancelable:true}));return true})()")
-            try await webviewUntil(web, "document.querySelector('#prompt .dots')!==null")
-            try await widths("completing")
-            _ = try await webviewJS(web, "(()=>{window.composer.setText('');Date.now=()=>\(stamp + 754000);return true})()")
-            try await advance()
-            try await webviewUntil(web, "\(koaWorking)")
-            try await widths("working")
-            _ = try await webviewJS(web, "(()=>{footSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({...footState,cwd:footState.home+'/Workspace/kido-sidebar-layout/app/App/SidebarFeed'})}));return true})()")
-            try await widths("cwd")
-            _ = try await webviewJS(web, "(()=>{footSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({...footState,model:{provider:'anthropic',id:'claude-opus-5-5-with-a-long-provider-specific-model-identifier-20261110'}})}));return true})()")
-            try await widths("long-model", sizes: [674, 420])
+                try await widths("idle")
+                self.resize(NSSize(width: 352, height: height))
+                window.contentView?.layoutSubtreeIfNeeded(); web.layoutSubtreeIfNeeded()
+                let pickerViewportWidth = Int(web.bounds.width)
+                try await webviewUntil(web, "innerWidth===\(pickerViewportWidth)&&document.querySelector('#model-cell').offsetParent===null")
+                _ = try await webviewJS(web, "(()=>{window.composer.setText('/model');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true,cancelable:true}));return true})()")
+                try? await webviewUntil(web, "(()=>{const r=document.querySelector('#picker').getBoundingClientRect();return !document.querySelector('#picker').hidden&&Array.from(document.querySelectorAll('#picker .ph')).some(node=>node.textContent==='Thinking')&&r.height>0&&r.top>=0&&r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth})()")
+                let modelPickerFits = try await webviewJS(web, "(()=>{const r=document.querySelector('#picker').getBoundingClientRect();return r.height>0&&r.top>=0&&r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth?true:JSON.stringify({picker:r,width:innerWidth,height:innerHeight,field:document.querySelector('#field').getBoundingClientRect()})})()")
+                try requireEqual(modelPickerFits, "true", "The model picker stays inside the viewport when its foot cell is hidden")
+                try await capture("foot-responsive-374-picker")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));window.composer.setText('/thinking');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true,cancelable:true}));return true})()")
+                try? await webviewUntil(web, "(()=>{const r=document.querySelector('#picker').getBoundingClientRect();return !document.querySelector('#picker').hidden&&document.querySelector('#picker .ph')?.textContent==='Thinking'&&r.height>0&&r.top>=0&&r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth})()")
+                let thinkingPickerFits = try await webviewJS(web, "(()=>{const r=document.querySelector('#picker').getBoundingClientRect();return r.height>0&&r.top>=0&&r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth?true:JSON.stringify({picker:r,width:innerWidth,height:innerHeight,field:document.querySelector('#field').getBoundingClientRect()})})()")
+                try requireEqual(thinkingPickerFits, "true", "The thinking picker stays inside the viewport when its foot cell is hidden")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));return true})()")
+                _ = try await webviewJS(web, "(()=>{window.composer.setText('!make checks');return true})()")
+                try await webviewUntil(web, "document.querySelector('#field').classList.contains('bash-mode')")
+                try await widths("run")
+                _ = try await webviewJS(web, "(()=>{const nativeFetch=window.fetch;window.fetch=(url,options)=>url==='/complete'?new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new DOMException('Aborted','AbortError')),{once:true})):nativeFetch(url,options);window.composer.setText('!git checkout kido-');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',keyCode:9,bubbles:true,cancelable:true}));return true})()")
+                try await webviewUntil(web, "document.querySelector('#prompt .dots')!==null")
+                try await widths("completing")
+                _ = try await webviewJS(web, "(()=>{window.composer.setText('');Date.now=()=>\(stamp + 754000);return true})()")
+                try await advance()
+                try await webviewUntil(web, "\(koaWorking)")
+                try await widths("working")
+                _ = try await webviewJS(web, "(()=>{footSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({...footState,cwd:footState.home+'/Workspace/kido-sidebar-layout/app/App/SidebarFeed'})}));return true})()")
+                try await widths("cwd")
+                _ = try await webviewJS(web, "(()=>{footSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({...footState,model:{provider:'anthropic',id:'claude-opus-5-5-with-a-long-provider-specific-model-identifier-20261110'}})}));return true})()")
+                try await widths("long-model", sizes: [(674, 656), (420, 400)])
+            }()
             return
         }
         if scenario == .composer {
@@ -1612,19 +1405,13 @@ import SidebarFeed
             return
         }
         if phases.contains("geometry") {
-            web.configuration.preferences.tabFocusesLinks = true
-            try require(window.makeFirstResponder(web))
-            func key(_ text: String, _ code: UInt16) throws {
-                let event = try requireValue(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code))
-                window.sendEvent(event)
-            }
             _ = try await webviewJS(web, "(()=>{document.querySelector('#model').focus();return true})()")
-            try key("\r", 36)
+            _ = try await webviewJS(web, "(()=>{document.activeElement.click();return true})()")
             try await webviewUntil(web, "!document.querySelector('#picker').hidden&&document.querySelector('#picker .ph').textContent==='Model'")
             if width > 750 {
                 _ = try await webviewJS(web, "(()=>{document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));document.querySelector('#model').focus();return true})()")
                 _ = try await webviewJS(web, "(()=>{document.querySelector('#thinking').focus();return true})()")
-                try key("\r", 36)
+                _ = try await webviewJS(web, "(()=>{document.activeElement.click();return true})()")
                 try await webviewUntil(web, "!document.querySelector('#picker').hidden&&document.querySelector('#picker .ph').textContent==='Thinking'")
             } else {
                 let levels = try await webviewJS(web, "Array.from(document.querySelectorAll('#picker .ph')).some(node=>node.textContent==='Thinking')")
@@ -1641,43 +1428,45 @@ import SidebarFeed
             return
         }
         if scenario == .agents {
-            let prefix = width < 750 ? "narrow-agents-" : "agents-"
-            func size(_ height: CGFloat) { koaContentSize(window: window, width: width, height: height) }
-            func openRuns(_ firstStep: Bool = false) async throws {
-                _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.run>.line').forEach(line=>{if(line.getAttribute('aria-expanded')!=='true')line.click()});if(\(firstStep)){const line=document.querySelector('.step>.line');if(line?.getAttribute('aria-expanded')!=='true')line?.click()}return true})()")
-            }
-            func aligned() async throws {
-                let result = try await webviewJS(web, "(()=>{const column=document.querySelector('#transcript'),edge=column.getBoundingClientRect().right-parseFloat(getComputedStyle(column).paddingRight),scroll=document.querySelector('#scroll').getBoundingClientRect();return Array.from(document.querySelectorAll('.user time,.run .time')).every(time=>Math.abs(time.getBoundingClientRect().right-edge)<.5)&&Array.from(document.querySelectorAll('.user')).every(card=>{const r=card.getBoundingClientRect();return r.left>=scroll.left+4&&r.right<=scroll.right-4})})()")
-                try requireEqual(result, "true", "All times end at the column edge and wells keep the narrow paper margin")
-            }
-            try await webviewUntil(web, "document.querySelectorAll('.agent-step').length===5")
-            try await openRuns(); try await aligned()
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.agent-step>.line').click();return true})()")
-            let taskMarkdown = try await webviewJS(web, "(()=>{const body=document.querySelector('.agent-body');return !!body.querySelector('ul li')&&!!body.querySelector('code')&&!!body.querySelector('strong')&&body.querySelector('a')?.getAttribute('href')==='https://example.com/sidebar'})()")
-            try requireEqual(taskMarkdown, "true", "Outbound task renders Markdown elements")
-            try await capture(prefix + "out")
-            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.agent-step').length===2&&document.querySelectorAll('.agent-step .agent-name.err').length===2")
-            size(330); try await openRuns(); try await aligned(); try await capture(prefix + "failed")
-            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.agent-step').length===5")
-            size(560); try await openRuns()
-            _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.agent-step>.line')[1].click();return true})()")
-            let rendered = try await webviewJS(web, "(()=>{const body=document.querySelectorAll('.agent-step')[1].querySelector('.agent-body');return !!body.querySelector('ul li')&&!!body.querySelector('code')&&!!body.querySelector('strong')&&body.querySelector('a')?.getAttribute('href')==='https://example.com/sidebar'&&!body.querySelector('.caret')})()")
-            try requireEqual(rendered, "true", "Expanded agent body renders final Markdown elements")
-            try await capture(prefix + "in")
-            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.job-step').length===7"); try await openRuns()
-            _ = try await webviewJS(web, "(()=>{Array.from(document.querySelectorAll('.job-step')).find(job=>job.querySelector('.job-name').textContent==='job lint').querySelector('.line').click();return true})()")
-            try await openRuns()
-            let gaps = try await webviewJS(web, "(()=>{const jobs=Array.from(document.querySelectorAll('.job-step')).filter(job=>job.getClientRects().length),owner=jobs[0]?.closest('.run');return !!owner&&jobs.every(job=>job.closest('.run')===owner)&&jobs.slice(1).every((job,index)=>job.previousElementSibling===jobs[index])})()")
-            try requireEqual(gaps, "true", "Job event steps are adjacent in one run")
-            try await aligned(); try await capture(prefix + "jobs")
-            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.job-step').length===1&&document.querySelectorAll('.agent-step').length===1")
-            let summary = try await webviewJS(web, "document.querySelector('.agent-preview').textContent==='Built the right-side indicators with SidebarRow.swift; see the reference. Pre-fix failures: 6 snapshot tests (SidebarTests.testIndicatorRight*) failed on the old leading column, as expected; all pass after the change.'")
-            try requireEqual(summary, "true", "Collapsed agent body has no Markdown syntax")
-            size(330); try await capture(prefix + "fold-a")
-            _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.run>.line').forEach(line=>{if(line.getAttribute('aria-expanded')!=='true')line.click()});document.querySelector('.agent-step>.line').click();document.querySelector('.job-step>.line').click();return true})()")
-            try await capture(prefix + "fold-b")
-            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.step').length===3&&document.querySelectorAll('.agent-step').length===0")
-            size(300); try await openRuns(true); try await capture(prefix + "tools")
+            try await { @MainActor () async throws in
+                let prefix = width < 750 ? "narrow-agents-" : "agents-"
+                @MainActor func size(_ height: CGFloat) { self.resize(NSSize(width: width, height: height)) }
+                @MainActor func openRuns(_ firstStep: Bool = false) async throws {
+                    _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.run>.line').forEach(line=>{if(line.getAttribute('aria-expanded')!=='true')line.click()});if(\(firstStep)){const line=document.querySelector('.step>.line');if(line?.getAttribute('aria-expanded')!=='true')line?.click()}return true})()")
+                }
+                @MainActor func aligned() async throws {
+                    let result = try await webviewJS(web, "(()=>{const column=document.querySelector('#transcript'),edge=column.getBoundingClientRect().right-parseFloat(getComputedStyle(column).paddingRight),scroll=document.querySelector('#scroll').getBoundingClientRect();return Array.from(document.querySelectorAll('.user time,.run .time')).every(time=>Math.abs(time.getBoundingClientRect().right-edge)<.5)&&Array.from(document.querySelectorAll('.user')).every(card=>{const r=card.getBoundingClientRect();return r.left>=scroll.left+4&&r.right<=scroll.right-4})})()")
+                    try requireEqual(result, "true", "All times end at the column edge and wells keep the narrow paper margin")
+                }
+                try await webviewUntil(web, "document.querySelectorAll('.agent-step').length===5")
+                try await openRuns(); try await aligned()
+                _ = try await webviewJS(web, "(()=>{document.querySelector('.agent-step>.line').click();return true})()")
+                let taskMarkdown = try await webviewJS(web, "(()=>{const body=document.querySelector('.agent-body');return !!body.querySelector('ul li')&&!!body.querySelector('code')&&!!body.querySelector('strong')&&body.querySelector('a')?.getAttribute('href')==='https://example.com/sidebar'})()")
+                try requireEqual(taskMarkdown, "true", "Outbound task renders Markdown elements")
+                try await capture(prefix + "out")
+                try await advance(); try await webviewUntil(web, "document.querySelectorAll('.agent-step').length===2&&document.querySelectorAll('.agent-step .agent-name.err').length===2")
+                size(327.5); try await openRuns(); try await aligned(); try await capture(prefix + "failed")
+                try await advance(); try await webviewUntil(web, "document.querySelectorAll('.agent-step').length===5")
+                size(557.5); try await openRuns()
+                _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.agent-step>.line')[1].click();return true})()")
+                let rendered = try await webviewJS(web, "(()=>{const body=document.querySelectorAll('.agent-step')[1].querySelector('.agent-body');return !!body.querySelector('ul li')&&!!body.querySelector('code')&&!!body.querySelector('strong')&&body.querySelector('a')?.getAttribute('href')==='https://example.com/sidebar'&&!body.querySelector('.caret')})()")
+                try requireEqual(rendered, "true", "Expanded agent body renders final Markdown elements")
+                try await capture(prefix + "in")
+                try await advance(); try await webviewUntil(web, "document.querySelectorAll('.job-step').length===7"); try await openRuns()
+                _ = try await webviewJS(web, "(()=>{Array.from(document.querySelectorAll('.job-step')).find(job=>job.querySelector('.job-name').textContent==='job lint').querySelector('.line').click();return true})()")
+                try await openRuns()
+                let gaps = try await webviewJS(web, "(()=>{const jobs=Array.from(document.querySelectorAll('.job-step')).filter(job=>job.getClientRects().length),owner=jobs[0]?.closest('.run');return !!owner&&jobs.every(job=>job.closest('.run')===owner)&&jobs.slice(1).every((job,index)=>job.previousElementSibling===jobs[index])})()")
+                try requireEqual(gaps, "true", "Job event steps are adjacent in one run")
+                try await aligned(); try await capture(prefix + "jobs")
+                try await advance(); try await webviewUntil(web, "document.querySelectorAll('.job-step').length===1&&document.querySelectorAll('.agent-step').length===1")
+                let summary = try await webviewJS(web, "document.querySelector('.agent-preview').textContent==='Built the right-side indicators with SidebarRow.swift; see the reference. Pre-fix failures: 6 snapshot tests (SidebarTests.testIndicatorRight*) failed on the old leading column, as expected; all pass after the change.'")
+                try requireEqual(summary, "true", "Collapsed agent body has no Markdown syntax")
+                size(327.5); try await capture(prefix + "fold-a")
+                _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.run>.line').forEach(line=>{if(line.getAttribute('aria-expanded')!=='true')line.click()});document.querySelector('.agent-step>.line').click();document.querySelector('.job-step>.line').click();return true})()")
+                try await capture(prefix + "fold-b")
+                try await advance(); try await webviewUntil(web, "document.querySelectorAll('.step').length===3&&document.querySelectorAll('.agent-step').length===0")
+                size(297.5); try await openRuns(true); try await capture(prefix + "tools")
+            }()
             return
         }
         if scenario == .paths {
@@ -1689,14 +1478,6 @@ import SidebarFeed
                 try await webviewUntil(web, "document.querySelector('.nrow.warning')?.textContent.includes('koa/koa.ts:120: no such file')")
                 try await capture("path-warning")
 
-            return
-        }
-        if scenario == .preview {
-            try await webviewUntil(web, "document.querySelectorAll('.step').length===3")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.run>.line').click();document.dispatchEvent(new KeyboardEvent('keydown',{key:'Meta',metaKey:true,shiftKey:true}));return true})()")
-            _ = try await webviewJS(web, "(()=>{const rule=Array.from(document.styleSheets).flatMap(sheet=>Array.from(sheet.cssRules)).find(rule=>rule.selectorText?.includes('.preview-file:hover'));if(!rule)throw Error('Missing hover rule');const style=document.createElement('style');style.textContent=rule.cssText.replace(':hover','.snapshot-hover');document.head.append(style);document.querySelectorAll('.step .preview-file')[1].classList.add('snapshot-hover');return true})()")
-            try await webviewUntil(web, "getComputedStyle(document.querySelectorAll('.step .preview-file')[1]).textDecorationLine.includes('underline')")
-            try await capture("media-preview-hover")
             return
         }
         if scenario == .userMarkdown {
@@ -1716,134 +1497,138 @@ import SidebarFeed
             return
         }
         if scenario == .attachments {
-            let prefix = width < 750 ? "narrow-media-" : "media-"
-            let shot = try Data(contentsOf: attachmentPaths.shot).base64EncodedString(), diagram = try Data(contentsOf: attachmentPaths.diagram).base64EncodedString()
-            let source = String(decoding: try JSONSerialization.data(withJSONObject: attachmentPaths.source.path, options: .fragmentsAllowed), as: UTF8.self)
-            let sourceBytes = try Data(contentsOf: attachmentPaths.source).base64EncodedString()
-            _ = try await webviewJS(web, #"""
-            (()=>{
-              const timeout=window.setTimeout.bind(window);window.setTimeout=(fn,delay,...args)=>timeout(fn,delay===4000?60000:delay,...args);
-              const bytes=text=>Uint8Array.from(atob(text),character=>character.charCodeAt(0));
-              window.attachFiles={shot:new File([bytes('\#(shot)')],'Screenshot 2026-11-10 at 09.11.42.png',{type:'image/png'}),diagram:new File([bytes('\#(diagram)')],'diagram.png',{type:'image/png'}),notes:new File([new Uint8Array(8192)],'notes.md',{type:'text/plain'}),readme:new File([new Uint8Array(3072)],'README.md',{type:'text/plain'}),source:new File([bytes('\#(sourceBytes)')],'SidebarRow.swift',{type:'text/plain'})};
-              window.dropAttachments=files=>{const transfer=new DataTransfer();files.forEach(file=>transfer.items.add(file));document.querySelector('.cm-content').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));return true};
-              window.clearAttachments=()=>{document.querySelectorAll('.attach-remove').forEach(button=>button.click());window.composer.setText('');return true};
-              const nativeFetch=window.fetch;window.fetch=async(url,options)=>{
-                if(window.progressId&&String(url).startsWith('/attachments/'+window.progressId+'/')&&Number(String(url).split('/').at(-1))>=18*1048576){await new Promise((resolve,reject)=>{window.releaseUpload=resolve;options.signal.addEventListener('abort',()=>reject(new DOMException('Removed','AbortError')),{once:true})})}
-                const response=await nativeFetch(url,options);
-                if(url==='/attachments'&&typeof options?.body==='string'){const name=JSON.parse(options.body).name;if(name==='kido-demo.mov'||name==='notes.md'||name==='SidebarRow.swift'){const result=await response.clone().json();if(name==='kido-demo.mov')window.progressId=result.id;else if(name==='notes.md')window.notesPath=result.path;else {window.sourcePath=result.path;window.sourceId=result.id}}}
-                return response;
-              };
-              window.composer.setText('Attach these to the review');
-              const clipboard=new DataTransfer();clipboard.items.add(attachFiles.shot);clipboard.items.add(attachFiles.notes);document.querySelector('.cm-content').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:clipboard}));
-              dropAttachments([attachFiles.source]);
-              return true;
-            })()
-            """#)
-            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===3&&document.querySelectorAll('.attach-icon.pending').length===0")
-            _ = try await webviewJS(web, "(()=>{const large=new File([],'archive.tar.gz');Object.defineProperty(large,'size',{value:65*1048576});dropAttachments([new File([new Uint8Array(41*1048576)],'kido-demo.mov'),large]);return true})()")
-            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===5&&Array.from(document.querySelectorAll('.attach-detail')).some(node=>node.textContent==='18 / 41 MB')&&document.querySelectorAll('.attach-icon img').length===1")
-            try await webviewUntil(web, "Array.from(document.querySelectorAll('.attach-icon img')).every(image=>image.complete&&image.naturalWidth>0)")
-            _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.attach-icon img'),image=>image.decode())).then(()=>true)")
-            let refusedStyle = try await webviewJS(web, "(()=>{const reason=document.querySelector('.attach-chip.refused .attach-detail'),reference=document.createElement('i');reference.style.color='var(--ko-color-1)';document.body.append(reference);const matches=getComputedStyle(reason).color===getComputedStyle(reference).color&&getComputedStyle(reason.closest('.attach-chip')).borderColor!==getComputedStyle(document.querySelector('.attach-chip')).borderColor;reference.remove();return matches})()")
-            try requireEqual(refusedStyle, "true", "The refused reason and border use the theme's error colour")
-            let pasted = try await webviewJS(web, "window.composer.text()")
-            try requireEqual(pasted, "\"Attach these to the review\"", "File paste does not insert text")
-            try await capture(prefix + "chips")
-            _ = try await webviewJS(web, "(()=>{clearAttachments();const transfer=new DataTransfer();transfer.items.add(attachFiles.shot);document.dispatchEvent(new DragEvent('dragenter',{bubbles:true,cancelable:true,dataTransfer:transfer}));document.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:transfer}));return true})()")
-            try await webviewUntil(web, "document.querySelector('#field').classList.contains('drop')&&document.querySelector('.cm-placeholder').textContent==='Drop to attach'")
-            try await capture(prefix + "drop")
-            _ = try await webviewJS(web, "(()=>{const transfer=new DataTransfer();const folder=transfer.items.add(new File([],'fixtures'));Object.defineProperty(folder,'webkitGetAsEntry',{value:()=>({isDirectory:true})});transfer.items.add(attachFiles.diagram);transfer.items.add(attachFiles.readme);document.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));return true})()")
-            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===2&&!document.querySelector('.attach-notice').hidden&&document.querySelectorAll('.attach-icon img').length===1&&document.querySelectorAll('.attach-icon.pending').length===0")
-            try await webviewUntil(web, "Array.from(document.querySelectorAll('.attach-icon img')).every(image=>image.complete&&image.naturalWidth>0)")
-            _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.attach-icon img'),image=>image.decode())).then(()=>true)")
-            try await capture(prefix + "folder")
-            _ = try await webviewJS(web, "(()=>{clearAttachments();window.Date.now=()=>\(stamp + 3000);return true})()")
-            try await advance()
-            try await webviewUntil(web, "\(koaWorking)&&document.querySelector('.run')!==null")
-            _ = try await webviewJS(web, "(()=>{const run=document.querySelector('.run');if(run.classList.contains('open'))run.querySelector('.line').click();window.composer.setText(\"skip the Linux check, I'll run it in CI\");document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
-            try await webviewUntil(web, "document.querySelectorAll('.queue .qmsg').length===1&&window.composer.text()===''")
-            _ = try await webviewJS(web, "(()=>{dropAttachments([attachFiles.shot,attachFiles.diagram]);window.composer.setText('then compare with these two renders');return true})()")
-            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===2&&document.querySelectorAll('.attach-icon img').length===2")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',altKey:true,bubbles:true}));return true})()")
-            try await webviewUntil(web, "document.querySelectorAll('.queue .qmsg').length===2&&document.querySelector('.queue .att')?.textContent==='2'&&document.querySelectorAll('.attach-chip').length===0")
-            try await capture(prefix + "queue")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowUp',code:'ArrowUp',altKey:true,bubbles:true}));return true})()")
-            try await advance()
-            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===2&&window.composer.text().includes('then compare')&&document.querySelectorAll('#items .msg').length===0")
-            let restored = try await webviewJS(web, "Array.from(document.querySelectorAll('.attach-detail')).every(node=>node.textContent.endsWith('KB')||node.textContent.endsWith('MB'))")
-            try requireEqual(restored, "true", "Take-back restores file sizes")
-            _ = try await webviewJS(web, #"""
-            (()=>{clearAttachments();dropAttachments([attachFiles.shot,attachFiles.notes,attachFiles.source]);window.composer.setText('Attach these to the review');return true})()
-            """#)
-            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===3&&document.querySelectorAll('.attach-icon.pending').length===0&&!document.querySelector('#field').inert")
-            let uploaded = try await webviewJS(web, #"(async()=>window.sourcePath!==\#(source)&&await (await fetch('/attachments/'+window.sourceId)).text()==='row\n')()"#)
-            try requireEqual(uploaded, "true", "A page drop stores a copy with the source bytes")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
-            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===0&&document.querySelector('.user .paths')?.textContent.includes('SidebarRow.swift')&&document.querySelector('.user .thumb img')!==null&&\(koaWorking)")
-            _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.user .thumb img'),image=>image.decode())).then(()=>true)")
-            let text = try await webviewJS(web, "document.querySelector('.user .t .prose').firstElementChild.textContent")
-            try requireEqual(text, "\"Attach these to the review\"", "The appended paths are separate data, not repeated prose")
-            let actualPaths = try await webviewJS(web, #"document.querySelector('.user .paths').textContent===window.notesPath+'\n'+window.sourcePath"#)
-            try requireEqual(actualPaths, "true", "Sent paths identify the stored copies")
-            let pathStyle = try await webviewJS(web, "(()=>{const p=getComputedStyle(document.querySelector('.user .paths')),u=getComputedStyle(document.querySelector('.user'));return p.fontFamily===getComputedStyle(document.querySelector('#cwd')).fontFamily&&Math.abs(parseFloat(p.fontSize)/parseFloat(u.fontSize)-.92)<.001})()")
-            try requireEqual(pathStyle, "true", "Attachment paths use the terminal font at .92em")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.user .paths').textContent='/Users/andrepopp/Desktop/notes.md\\n/Users/andrepopp/Workspace/kido/app/App/SidebarRow.swift';return true})()")
-            try await capture(prefix + "sent")
-            try requireEqual(try String(contentsOf: attachmentPaths.source, encoding: .utf8), "row\n", "Removing an upload chip never deletes the original")
+            try await { @MainActor () async throws in
+                let prefix = width < 750 ? "narrow-media-" : "media-"
+                let shot = try Data(contentsOf: attachmentPaths.shot).base64EncodedString(), diagram = try Data(contentsOf: attachmentPaths.diagram).base64EncodedString()
+                let source = String(decoding: try JSONSerialization.data(withJSONObject: attachmentPaths.source.path, options: .fragmentsAllowed), as: UTF8.self)
+                let sourceBytes = try Data(contentsOf: attachmentPaths.source).base64EncodedString()
+                _ = try await webviewJS(web, #"""
+                (()=>{
+                  const timeout=window.setTimeout.bind(window);window.setTimeout=(fn,delay,...args)=>timeout(fn,delay===4000?60000:delay,...args);
+                  const bytes=text=>Uint8Array.from(atob(text),character=>character.charCodeAt(0));
+                  window.attachFiles={shot:new File([bytes('\#(shot)')],'Screenshot 2026-11-10 at 09.11.42.png',{type:'image/png'}),diagram:new File([bytes('\#(diagram)')],'diagram.png',{type:'image/png'}),notes:new File([new Uint8Array(8192)],'notes.md',{type:'text/plain'}),readme:new File([new Uint8Array(3072)],'README.md',{type:'text/plain'}),source:new File([bytes('\#(sourceBytes)')],'SidebarRow.swift',{type:'text/plain'})};
+                  window.dropAttachments=files=>{const transfer=new DataTransfer();files.forEach(file=>transfer.items.add(file));document.querySelector('.cm-content').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));return true};
+                  window.clearAttachments=()=>{document.querySelectorAll('.attach-remove').forEach(button=>button.click());window.composer.setText('');return true};
+                  const nativeFetch=window.fetch;window.fetch=async(url,options)=>{
+                    if(window.progressId&&String(url).startsWith('/attachments/'+window.progressId+'/')&&Number(String(url).split('/').at(-1))>=18*1048576){await new Promise((resolve,reject)=>{window.releaseUpload=resolve;options.signal.addEventListener('abort',()=>reject(new DOMException('Removed','AbortError')),{once:true})})}
+                    const response=await nativeFetch(url,options);
+                    if(url==='/attachments'&&typeof options?.body==='string'){const name=JSON.parse(options.body).name;if(name==='kido-demo.mov'||name==='notes.md'||name==='SidebarRow.swift'){const result=await response.clone().json();if(name==='kido-demo.mov')window.progressId=result.id;else if(name==='notes.md')window.notesPath=result.path;else {window.sourcePath=result.path;window.sourceId=result.id}}}
+                    return response;
+                  };
+                  window.composer.setText('Attach these to the review');
+                  const clipboard=new DataTransfer();clipboard.items.add(attachFiles.shot);clipboard.items.add(attachFiles.notes);document.querySelector('.cm-content').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:clipboard}));
+                  dropAttachments([attachFiles.source]);
+                  return true;
+                })()
+                """#)
+                try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===3&&document.querySelectorAll('.attach-icon.pending').length===0")
+                _ = try await webviewJS(web, "(()=>{const large=new File([],'archive.tar.gz');Object.defineProperty(large,'size',{value:65*1048576});dropAttachments([new File([new Uint8Array(41*1048576)],'kido-demo.mov'),large]);return true})()")
+                try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===5&&Array.from(document.querySelectorAll('.attach-detail')).some(node=>node.textContent==='18 / 41 MB')&&document.querySelectorAll('.attach-icon img').length===1")
+                try await webviewUntil(web, "Array.from(document.querySelectorAll('.attach-icon img')).every(image=>image.complete&&image.naturalWidth>0)")
+                _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.attach-icon img'),image=>image.decode())).then(()=>true)")
+                let refusedStyle = try await webviewJS(web, "(()=>{const reason=document.querySelector('.attach-chip.refused .attach-detail'),reference=document.createElement('i');reference.style.color='var(--ko-color-1)';document.body.append(reference);const matches=getComputedStyle(reason).color===getComputedStyle(reference).color&&getComputedStyle(reason.closest('.attach-chip')).borderColor!==getComputedStyle(document.querySelector('.attach-chip')).borderColor;reference.remove();return matches})()")
+                try requireEqual(refusedStyle, "true", "The refused reason and border use the theme's error colour")
+                let pasted = try await webviewJS(web, "window.composer.text()")
+                try requireEqual(pasted, "\"Attach these to the review\"", "File paste does not insert text")
+                try await capture(prefix + "chips")
+                _ = try await webviewJS(web, "(()=>{clearAttachments();const transfer=new DataTransfer();transfer.items.add(attachFiles.shot);document.dispatchEvent(new DragEvent('dragenter',{bubbles:true,cancelable:true,dataTransfer:transfer}));document.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:transfer}));return true})()")
+                try await webviewUntil(web, "document.querySelector('#field').classList.contains('drop')&&document.querySelector('.cm-placeholder').textContent==='Drop to attach'")
+                try await capture(prefix + "drop")
+                _ = try await webviewJS(web, "(()=>{const transfer=new DataTransfer();const folder=transfer.items.add(new File([],'fixtures'));Object.defineProperty(folder,'webkitGetAsEntry',{value:()=>({isDirectory:true})});transfer.items.add(attachFiles.diagram);transfer.items.add(attachFiles.readme);document.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));return true})()")
+                try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===2&&!document.querySelector('.attach-notice').hidden&&document.querySelectorAll('.attach-icon img').length===1&&document.querySelectorAll('.attach-icon.pending').length===0")
+                try await webviewUntil(web, "Array.from(document.querySelectorAll('.attach-icon img')).every(image=>image.complete&&image.naturalWidth>0)")
+                _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.attach-icon img'),image=>image.decode())).then(()=>true)")
+                try await capture(prefix + "folder")
+                _ = try await webviewJS(web, "(()=>{clearAttachments();window.Date.now=()=>\(stamp + 3000);return true})()")
+                try await advance()
+                try await webviewUntil(web, "\(koaWorking)&&document.querySelector('.run')!==null")
+                _ = try await webviewJS(web, "(()=>{const run=document.querySelector('.run');if(run.classList.contains('open'))run.querySelector('.line').click();window.composer.setText(\"skip the Linux check, I'll run it in CI\");document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
+                try await webviewUntil(web, "document.querySelectorAll('.queue .qmsg').length===1&&window.composer.text()===''")
+                _ = try await webviewJS(web, "(()=>{dropAttachments([attachFiles.shot,attachFiles.diagram]);window.composer.setText('then compare with these two renders');return true})()")
+                try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===2&&document.querySelectorAll('.attach-icon img').length===2")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',altKey:true,bubbles:true}));return true})()")
+                try await webviewUntil(web, "document.querySelectorAll('.queue .qmsg').length===2&&document.querySelector('.queue .att')?.textContent==='2'&&document.querySelectorAll('.attach-chip').length===0")
+                try await capture(prefix + "queue")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowUp',code:'ArrowUp',altKey:true,bubbles:true}));return true})()")
+                try await advance()
+                try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===2&&window.composer.text().includes('then compare')&&document.querySelectorAll('#items .msg').length===0")
+                let restored = try await webviewJS(web, "Array.from(document.querySelectorAll('.attach-detail')).every(node=>node.textContent.endsWith('KB')||node.textContent.endsWith('MB'))")
+                try requireEqual(restored, "true", "Take-back restores file sizes")
+                _ = try await webviewJS(web, #"""
+                (()=>{clearAttachments();dropAttachments([attachFiles.shot,attachFiles.notes,attachFiles.source]);window.composer.setText('Attach these to the review');return true})()
+                """#)
+                try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===3&&document.querySelectorAll('.attach-icon.pending').length===0&&!document.querySelector('#field').inert")
+                let uploaded = try await webviewJS(web, #"(async()=>window.sourcePath!==\#(source)&&await (await fetch('/attachments/'+window.sourceId)).text()==='row\n')()"#)
+                try requireEqual(uploaded, "true", "A page drop stores a copy with the source bytes")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
+                try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===0&&document.querySelector('.user .paths')?.textContent.includes('SidebarRow.swift')&&document.querySelector('.user .thumb img')!==null&&\(koaWorking)")
+                _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.user .thumb img'),image=>image.decode())).then(()=>true)")
+                let text = try await webviewJS(web, "document.querySelector('.user .t .prose').firstElementChild.textContent")
+                try requireEqual(text, "\"Attach these to the review\"", "The appended paths are separate data, not repeated prose")
+                let actualPaths = try await webviewJS(web, #"document.querySelector('.user .paths').textContent===window.notesPath+'\n'+window.sourcePath"#)
+                try requireEqual(actualPaths, "true", "Sent paths identify the stored copies")
+                let pathStyle = try await webviewJS(web, "(()=>{const p=getComputedStyle(document.querySelector('.user .paths')),u=getComputedStyle(document.querySelector('.user'));return p.fontFamily===getComputedStyle(document.querySelector('#cwd')).fontFamily&&Math.abs(parseFloat(p.fontSize)/parseFloat(u.fontSize)-.92)<.001})()")
+                try requireEqual(pathStyle, "true", "Attachment paths use the terminal font at .92em")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('.user .paths').textContent='/Users/andrepopp/Desktop/notes.md\\n/Users/andrepopp/Workspace/kido/app/App/SidebarRow.swift';return true})()")
+                try await capture(prefix + "sent")
+                try requireEqual(try String(contentsOf: attachmentPaths.source, encoding: .utf8), "row\n", "Removing an upload chip never deletes the original")
+            }()
             return
         }
         if scenario == .media || scenario == .lightbox {
-            let prefix = width < 750 ? "narrow-media-" : "media-"
-            func loaded(_ count: Int) async throws {
-                try await webviewUntil(web, "document.querySelectorAll('.thumb:not(.gone) img').length===\(count)")
-                _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.thumb:not(.gone) img'),image=>image.decode())).then(()=>true)")
-                let dimensions = try await webviewJS(web, "Array.from(document.querySelectorAll('.thumb:not(.gone) img')).every(image=>image.naturalWidth>0&&image.naturalWidth===Number(image.getAttribute('width'))&&image.naturalHeight===Number(image.getAttribute('height')))")
-                try requireEqual(dimensions, "true", "The decoded pixels belong to this transcript epoch")
-            }
-            try await advance()
-            try await webviewUntil(web, "document.querySelectorAll('.step').length===3")
-            let lazy = try await webviewJS(web, "document.querySelectorAll('.thumb img').length")
-            try requireEqual(lazy, "0", "Collapsed steps do not create or request images")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.run>.line').click();document.querySelectorAll('.step>.line')[0].click();document.querySelectorAll('.step>.line')[2].click();return true})()")
-            try await loaded(3)
-            if scenario == .lightbox {
-                window.contentView?.layoutSubtreeIfNeeded(); pane.webviewView?.layoutSubtreeIfNeeded()
-                _ = try await webviewJS(web, "(()=>{delete window.ko.preview;document.querySelector('.step .thumb').click();return true})()")
-                try await webviewUntil(web, "document.querySelector('.lightbox img')?.naturalWidth===1440&&document.querySelector('.lightbox .cap').textContent.includes('1440×900')")
-                _ = try await webviewJS(web, "document.querySelector('.lightbox img').decode().then(()=>true)")
-                let shadow = try await webviewJS(web, "getComputedStyle(document.querySelector('.lightbox img')).boxShadow!=='none'")
-                try requireEqual(shadow, "true", "The lightbox image has a shadow")
-                _ = try await webviewJS(web, "(()=>{const style=document.createElement('style');style.id='capture-lightbox';style.textContent='.lightbox img{box-shadow:none!important}';document.head.append(style);return true})()")
-                try await settleKoa(web, measured: measured)
-                try await takeKoaSnapshot(pane, name: "media-lightbox", appearance: "-light", scenario: scenario)
-                _ = try await webviewJS(web, "(()=>{document.querySelector('#capture-lightbox').remove();return true})()")
-                try await darken(); backend.updateTheme()
-                try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='dark'")
-                let darkShadow = try await webviewJS(web, "getComputedStyle(document.querySelector('.lightbox img')).boxShadow!=='none'")
-                try requireEqual(darkShadow, "true", "The dark lightbox image has a shadow")
-                _ = try await webviewJS(web, "(()=>{document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));return true})()")
-                try await webviewUntil(web, "document.querySelector('.lightbox')===null")
-                return
-            }
-            try await capture(prefix + "read-image")
-            try await advance()
-            try await webviewUntil(web, "document.querySelector('.user .t p')?.textContent==='Make the sidebar look like this'")
-            try await loaded(2)
-            _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.user img').forEach(image=>image.style.opacity='0');return true})()")
-            var retries = 0
-            paintRetry = { _ in
-                retries += 1
-                if retries == 1 { _ = try await self.webviewJS(web, "(()=>{document.querySelectorAll('.user img').forEach(image=>image.style.opacity='');return true})()") }
-            }
-            try await capture(prefix + "user-images")
-            paintRetry = nil
-            try requireGreaterEqual(retries, 1, "The capture retried when the first snapshot showed an empty image card")
-            try await advance()
-            try await webviewUntil(web, "document.querySelector('.user .t')?.textContent.includes('Compare with the earlier screenshot')")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.thumb img').src='/images/gone';return true})()")
-            try await webviewUntil(web, "document.querySelector('.thumb.gone[role=img]')!==null")
-            try await loaded(1)
-            try await capture(prefix + "image-gone")
+            try await { @MainActor () async throws in
+                let prefix = width < 750 ? "narrow-media-" : "media-"
+                @MainActor func loaded(_ count: Int) async throws {
+                    try await webviewUntil(web, "document.querySelectorAll('.thumb:not(.gone) img').length===\(count)")
+                    _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.thumb:not(.gone) img'),image=>image.decode())).then(()=>true)")
+                    let dimensions = try await webviewJS(web, "Array.from(document.querySelectorAll('.thumb:not(.gone) img')).every(image=>image.naturalWidth>0&&image.naturalWidth===Number(image.getAttribute('width'))&&image.naturalHeight===Number(image.getAttribute('height')))")
+                    try requireEqual(dimensions, "true", "The decoded pixels belong to this transcript epoch")
+                }
+                try await advance()
+                try await webviewUntil(web, "document.querySelectorAll('.step').length===3")
+                let lazy = try await webviewJS(web, "document.querySelectorAll('.thumb img').length")
+                try requireEqual(lazy, "0", "Collapsed steps do not create or request images")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('.run>.line').click();document.querySelectorAll('.step>.line')[0].click();document.querySelectorAll('.step>.line')[2].click();return true})()")
+                try await loaded(3)
+                if scenario == .lightbox {
+                    window.contentView?.layoutSubtreeIfNeeded(); web.layoutSubtreeIfNeeded()
+                    _ = try await webviewJS(web, "(()=>{delete window.ko.preview;document.querySelector('.step .thumb').click();return true})()")
+                    try await webviewUntil(web, "document.querySelector('.lightbox img')?.naturalWidth===1440&&document.querySelector('.lightbox .cap').textContent.includes('1440×900')")
+                    _ = try await webviewJS(web, "document.querySelector('.lightbox img').decode().then(()=>true)")
+                    let shadow = try await webviewJS(web, "getComputedStyle(document.querySelector('.lightbox img')).boxShadow!=='none'")
+                    try requireEqual(shadow, "true", "The lightbox image has a shadow")
+                    _ = try await webviewJS(web, "(()=>{const style=document.createElement('style');style.id='capture-lightbox';style.textContent='.lightbox img{box-shadow:none!important}';document.head.append(style);return true})()")
+                    try await settleKoa(web, measured: measured)
+                    try await takeKoaSnapshot(name: "media-lightbox", appearance: "-light", scenario: scenario)
+                    _ = try await webviewJS(web, "(()=>{document.querySelector('#capture-lightbox').remove();return true})()")
+                    try await setTheme(.dark)
+                    try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='dark'")
+                    let darkShadow = try await webviewJS(web, "getComputedStyle(document.querySelector('.lightbox img')).boxShadow!=='none'")
+                    try requireEqual(darkShadow, "true", "The dark lightbox image has a shadow")
+                    _ = try await webviewJS(web, "(()=>{document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));return true})()")
+                    try await webviewUntil(web, "document.querySelector('.lightbox')===null")
+                    return
+                }
+                try await capture(prefix + "read-image")
+                try await advance()
+                try await webviewUntil(web, "document.querySelector('.user .t p')?.textContent==='Make the sidebar look like this'")
+                try await loaded(2)
+                _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.user img').forEach(image=>image.style.opacity='0');return true})()")
+                var retries = 0
+                paintRetry = { _ in
+                    retries += 1
+                    if retries == 1 { _ = try await self.webviewJS(web, "(()=>{document.querySelectorAll('.user img').forEach(image=>image.style.opacity='');return true})()") }
+                }
+                try await capture(prefix + "user-images")
+                paintRetry = nil
+                try requireGreaterEqual(retries, 1, "The capture retried when the first snapshot showed an empty image card")
+                try await advance()
+                try await webviewUntil(web, "document.querySelector('.user .t')?.textContent.includes('Compare with the earlier screenshot')")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('.thumb img').src='/images/gone';return true})()")
+                try await webviewUntil(web, "document.querySelector('.thumb.gone[role=img]')!==null")
+                try await loaded(1)
+                try await capture(prefix + "image-gone")
+            }()
             return
         }
         if scenario == .markdown {
@@ -1859,105 +1644,107 @@ import SidebarFeed
             return
         }
         if scenario == .completion {
-            _ = try await webviewJS(web, "(()=>{window.completePrompts=[];window.lastComplete=null;const nativeFetch=window.fetch;window.fetch=async(path,options)=>{if(path==='/prompt')completePrompts.push(JSON.parse(options.body));const response=await nativeFetch(path,options);if(path==='/complete'){lastComplete={query:JSON.parse(options.body),result:await response.clone().json()};document.body.dataset.complete=String(Number(document.body.dataset.complete||0)+1)}return response};return true})()")
-            let warmed = try await webviewJS(web, "(async()=>{const deadline=performance.now()+5000;while(performance.now()<deadline){const result=await(await fetch('/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'@si',pos:3})})).json();if(result.options.filter(o=>o.kind==='agent').length===3)return true}throw Error('agent completion deadline')})()")
-            try requireEqual(warmed, "true")
-            let prefix = width < 750 ? "narrow-complete-" : "complete-"
-            func show(_ before: String, _ token: String, _ after: String = "", empty: Bool = false) async throws {
-                let data = String(decoding: try JSONSerialization.data(withJSONObject: ["before": before, "token": token, "after": after]), as: UTF8.self)
-                _ = try await webviewJS(web, "(()=>{const {before,token,after}=\(data);lastComplete=null;window.composer.setText(before+token.slice(0,-1)+after);window.composer.focus();const input=document.querySelector('#prompt .cm-content');for(let i=0;i<after.length;i++)input.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',keyCode:37,bubbles:true,cancelable:true}));document.execCommand('insertText',false,token.slice(-1));return true})()")
-                try await webviewUntil(web, "lastComplete?.query.text===\(String(reflecting: before + token + after))&&lastComplete?.query.pos===\(before.utf16.count + token.utf16.count)")
-                if empty { try await webviewUntil(web, "!document.querySelector('.koa-complete')") }
-                else {
-                    try await webviewUntil(web, "(()=>{const popup=document.querySelector('.koa-complete'),field=document.querySelector('#field');return !!popup&&popup.getBoundingClientRect().top>=0&&popup.getBoundingClientRect().bottom<=field.getBoundingClientRect().top-5})()")
-                    let contained = try await webviewJS(web, "(()=>{const popup=document.querySelector('.koa-complete').getBoundingClientRect(),field=document.querySelector('#field').getBoundingClientRect();return popup.left>=field.left-.5&&popup.right<=field.right+.5})()")
-                    try requireEqual(contained, "true", "Completion stays inside the field width")
-                    let backdropRoot = try await webviewJS(web, "(()=>{for(let node=document.querySelector('.koa-complete').parentElement;node;node=node.parentElement){const s=getComputedStyle(node);if((s.backdropFilter&&s.backdropFilter!=='none')||(s.webkitBackdropFilter&&s.webkitBackdropFilter!=='none')||s.filter!=='none'||Number(s.opacity)<1||(s.maskImage&&s.maskImage!=='none')||(s.webkitMaskImage&&s.webkitMaskImage!=='none'))return node.id||node.className||node.tagName}return ''})()")
-                    try requireEqual(backdropRoot, "\"\"", "Completion has no ancestor that isolates its backdrop")
+            try await { @MainActor () async throws in
+                _ = try await webviewJS(web, "(()=>{window.completePrompts=[];window.lastComplete=null;const nativeFetch=window.fetch;window.fetch=async(path,options)=>{if(path==='/prompt')completePrompts.push(JSON.parse(options.body));const response=await nativeFetch(path,options);if(path==='/complete'){lastComplete={query:JSON.parse(options.body),result:await response.clone().json()};document.body.dataset.complete=String(Number(document.body.dataset.complete||0)+1)}return response};return true})()")
+                let warmed = try await webviewJS(web, "(async()=>{const deadline=performance.now()+5000;while(performance.now()<deadline){const result=await(await fetch('/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'@si',pos:3})})).json();if(result.options.filter(o=>o.kind==='agent').length===3)return true}throw Error('agent completion deadline')})()")
+                try requireEqual(warmed, "true")
+                let prefix = width < 750 ? "narrow-complete-" : "complete-"
+                @MainActor func show(_ before: String, _ token: String, _ after: String = "", empty: Bool = false) async throws {
+                    let data = String(decoding: try JSONSerialization.data(withJSONObject: ["before": before, "token": token, "after": after]), as: UTF8.self)
+                    _ = try await webviewJS(web, "(()=>{const {before,token,after}=\(data);lastComplete=null;window.composer.setText(before+token.slice(0,-1)+after);window.composer.focus();const input=document.querySelector('#prompt .cm-content');for(let i=0;i<after.length;i++)input.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',keyCode:37,bubbles:true,cancelable:true}));document.execCommand('insertText',false,token.slice(-1));return true})()")
+                    try await webviewUntil(web, "lastComplete?.query.text===\(String(reflecting: before + token + after))&&lastComplete?.query.pos===\(before.utf16.count + token.utf16.count)")
+                    if empty { try await webviewUntil(web, "!document.querySelector('.koa-complete')") }
+                    else {
+                        try await webviewUntil(web, "(()=>{const popup=document.querySelector('.koa-complete'),field=document.querySelector('#field');return !!popup&&popup.getBoundingClientRect().top>=0&&popup.getBoundingClientRect().bottom<=field.getBoundingClientRect().top-5})()")
+                        let contained = try await webviewJS(web, "(()=>{const popup=document.querySelector('.koa-complete').getBoundingClientRect(),field=document.querySelector('#field').getBoundingClientRect();return popup.left>=field.left-.5&&popup.right<=field.right+.5})()")
+                        try requireEqual(contained, "true", "Completion stays inside the field width")
+                        let backdropRoot = try await webviewJS(web, "(()=>{for(let node=document.querySelector('.koa-complete').parentElement;node;node=node.parentElement){const s=getComputedStyle(node);if((s.backdropFilter&&s.backdropFilter!=='none')||(s.webkitBackdropFilter&&s.webkitBackdropFilter!=='none')||s.filter!=='none'||Number(s.opacity)<1||(s.maskImage&&s.maskImage!=='none')||(s.webkitMaskImage&&s.webkitMaskImage!=='none'))return node.id||node.className||node.tagName}return ''})()")
+                        try requireEqual(backdropRoot, "\"\"", "Completion has no ancestor that isolates its backdrop")
+                    }
                 }
-            }
-            func resize(_ height: CGFloat) async throws {
-                koaContentSize(window: window, width: width, height: height)
-                window.contentView?.layoutSubtreeIfNeeded()
-                try await settleKoa(web, measured: measured)
-            }
-            func key(_ name: String) async throws {
-                _ = try await webviewJS(web, "document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'\(name)',bubbles:true,cancelable:true}))")
-            }
-            try await show("", "/")
-            try await capture(prefix + "slash-all")
-            try await key("ArrowDown"); try await key("Tab")
-            try await webviewUntil(web, "window.composer.text()==='/thinking '&&!document.querySelector('.koa-complete')&&completePrompts.length===0")
-            try await resize(300)
-            try await show("", "/re")
-            try await capture(prefix + "slash-filter")
-            _ = try await webviewJS(web, "(()=>{const index=lastComplete.result.options.findIndex(option=>option.label==='/release');if(index<0)throw Error('missing release command');for(let i=0;i<index;i++)document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}));return true})()")
-            try await key("Enter")
-            try await webviewUntil(web, "window.composer.text()===''&&completePrompts.length===1&&completePrompts[0].text==='/release '")
-            try await resize(height)
-            try await advance()
-            try await webviewUntil(web, "document.querySelector('.user')?.textContent.includes('Review the sidebar unit')")
-            try await show("Ask ", "@si")
-            try await capture(prefix + "at-agents")
-            try await key("Tab")
-            let accepted = try await webviewJS(web, "window.composer.text()==='Ask '+lastComplete.result.options[0].insert&&completePrompts.length===1")
-            try requireEqual(accepted, "true")
-            try await advance()
-            try await webviewUntil(web, "!document.querySelector('#items .user,#items .assistant')")
-            try await show("Read ", "@ko_s")
-            try await capture(prefix + "at-files")
-            try await key("Enter")
-            try await webviewUntil(web, "window.composer.text()==='Read @ko_sys/'&&completePrompts.length===1")
-            try await show("Hand the weight rule to ", "@si", " and tell me when it lands")
-            try await key("ArrowDown")
-            try await capture(prefix + "at-mid")
-            try await key("Enter")
-            try await webviewUntil(web, "window.composer.text()==='Hand the weight rule to '+lastComplete.result.options[1].insert+' and tell me when it lands'&&completePrompts.length===1")
-            try await resize(300)
-            try await show("Read ", "@zzz", empty: true)
-            try await capture(prefix + "none")
-            try await show("", "/re")
-            try await key("Escape")
-            try await webviewUntil(web, "!document.querySelector('.koa-complete')&&window.composer.text()==='/re'")
-            try await key("Escape")
-            let escapedOnce = try await webviewJS(web, "window.composer.text()")
-            try requireEqual(escapedOnce, "\"/re\"")
-            try await key("Escape")
-            let escapedTwice = try await webviewJS(web, "window.composer.text()")
-            try requireEqual(escapedTwice, "\"\"")
-            try await resize(height)
-            try await show("", "@si")
-            try await key("Escape")
-            try await show("", "/re")
-            try await key("Escape")
-            let excluded = try await webviewJS(web, #"""
-            (async()=>{
-              const fetchNow=window.fetch;let calls=0;
-              window.fetch=(...args)=>{if(args[0]==='/complete'){calls++;dispatchEvent(new Event('code-completion-request'))}return fetchNow(...args)};
-              const quietWindow=()=>new Promise(resolve=>{
-                const observer=new MutationObserver(check), timer=setTimeout(()=>finish(true),200);
-                function finish(ok){clearTimeout(timer);observer.disconnect();removeEventListener('code-completion-request',check);resolve(ok)}
-                function check(){if(calls||document.querySelector('.koa-complete'))finish(false)}
-                addEventListener('code-completion-request',check);observer.observe(document.documentElement,{childList:true,subtree:true});check();
-              });
-              try {
-                const input=document.querySelector('#prompt .cm-content');
-                for(const [before,token,after] of [['Read `','@si','`'],['```md\n','@si','\n```'],['    ','/re','']]) {
-                  window.composer.setText(before+token.slice(0,-1)+after);window.composer.focus();
-                  for(let i=0;i<after.length;i++)input.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true,cancelable:true}));
-                  document.execCommand('insertText',false,token.slice(-1));
-                  if(!await quietWindow())return 'completion inside code '+JSON.stringify({before,token,calls});
+                @MainActor func resize(_ height: CGFloat) async throws {
+                    self.resize(NSSize(width: width, height: height))
+                    window.contentView?.layoutSubtreeIfNeeded()
+                    try await settleKoa(web, measured: measured)
                 }
-                return 'ok';
-              } finally {window.fetch=fetchNow;}
-            })()
-            """#)
-            try requireEqual(excluded, "\"ok\"")
-            _ = try await webviewJS(web, "(()=>{const fetchNow=window.fetch;window.completionWaiting=false;window.fetch=async(...args)=>{const response=await fetchNow(...args);if(args[0]==='/complete'){completionWaiting=true;await new Promise(resolve=>window.releaseCompletion=resolve)}return response};window.composer.setText('/r');document.execCommand('insertText',false,'e');return true})()")
-            try await webviewUntil(web, "completionWaiting")
-            try await key("Escape")
-            let cancelled = try await webviewJS(web, "(async()=>{releaseCompletion();await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);return !document.querySelector('.koa-complete')&&window.composer.text()==='/re'})()")
-            try requireEqual(cancelled, "true", "Escape cancels a pending completion without changing the draft")
+                @MainActor func key(_ name: String) async throws {
+                    _ = try await webviewJS(web, "document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'\(name)',bubbles:true,cancelable:true}))")
+                }
+                try await show("", "/")
+                try await capture(prefix + "slash-all")
+                try await key("ArrowDown"); try await key("Tab")
+                try await webviewUntil(web, "window.composer.text()==='/thinking '&&!document.querySelector('.koa-complete')&&completePrompts.length===0")
+                try await resize(297.5)
+                try await show("", "/re")
+                try await capture(prefix + "slash-filter")
+                _ = try await webviewJS(web, "(()=>{const index=lastComplete.result.options.findIndex(option=>option.label==='/release');if(index<0)throw Error('missing release command');for(let i=0;i<index;i++)document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}));return true})()")
+                try await key("Enter")
+                try await webviewUntil(web, "window.composer.text()===''&&completePrompts.length===1&&completePrompts[0].text==='/release '")
+                try await resize(height)
+                try await advance()
+                try await webviewUntil(web, "document.querySelector('.user')?.textContent.includes('Review the sidebar unit')")
+                try await show("Ask ", "@si")
+                try await capture(prefix + "at-agents")
+                try await key("Tab")
+                let accepted = try await webviewJS(web, "window.composer.text()==='Ask '+lastComplete.result.options[0].insert&&completePrompts.length===1")
+                try requireEqual(accepted, "true")
+                try await advance()
+                try await webviewUntil(web, "!document.querySelector('#items .user,#items .assistant')")
+                try await show("Read ", "@ko_s")
+                try await capture(prefix + "at-files")
+                try await key("Enter")
+                try await webviewUntil(web, "window.composer.text()==='Read @ko_sys/'&&completePrompts.length===1")
+                try await show("Hand the weight rule to ", "@si", " and tell me when it lands")
+                try await key("ArrowDown")
+                try await capture(prefix + "at-mid")
+                try await key("Enter")
+                try await webviewUntil(web, "window.composer.text()==='Hand the weight rule to '+lastComplete.result.options[1].insert+' and tell me when it lands'&&completePrompts.length===1")
+                try await resize(297.5)
+                try await show("Read ", "@zzz", empty: true)
+                try await capture(prefix + "none")
+                try await show("", "/re")
+                try await key("Escape")
+                try await webviewUntil(web, "!document.querySelector('.koa-complete')&&window.composer.text()==='/re'")
+                try await key("Escape")
+                let escapedOnce = try await webviewJS(web, "window.composer.text()")
+                try requireEqual(escapedOnce, "\"/re\"")
+                try await key("Escape")
+                let escapedTwice = try await webviewJS(web, "window.composer.text()")
+                try requireEqual(escapedTwice, "\"\"")
+                try await resize(height)
+                try await show("", "@si")
+                try await key("Escape")
+                try await show("", "/re")
+                try await key("Escape")
+                let excluded = try await webviewJS(web, #"""
+                (async()=>{
+                  const fetchNow=window.fetch;let calls=0;
+                  window.fetch=(...args)=>{if(args[0]==='/complete'){calls++;dispatchEvent(new Event('code-completion-request'))}return fetchNow(...args)};
+                  const quietWindow=()=>new Promise(resolve=>{
+                    const observer=new MutationObserver(check), timer=setTimeout(()=>finish(true),200);
+                    function finish(ok){clearTimeout(timer);observer.disconnect();removeEventListener('code-completion-request',check);resolve(ok)}
+                    function check(){if(calls||document.querySelector('.koa-complete'))finish(false)}
+                    addEventListener('code-completion-request',check);observer.observe(document.documentElement,{childList:true,subtree:true});check();
+                  });
+                  try {
+                    const input=document.querySelector('#prompt .cm-content');
+                    for(const [before,token,after] of [['Read `','@si','`'],['```md\n','@si','\n```'],['    ','/re','']]) {
+                      window.composer.setText(before+token.slice(0,-1)+after);window.composer.focus();
+                      for(let i=0;i<after.length;i++)input.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true,cancelable:true}));
+                      document.execCommand('insertText',false,token.slice(-1));
+                      if(!await quietWindow())return 'completion inside code '+JSON.stringify({before,token,calls});
+                    }
+                    return 'ok';
+                  } finally {window.fetch=fetchNow;}
+                })()
+                """#)
+                try requireEqual(excluded, "\"ok\"")
+                _ = try await webviewJS(web, "(()=>{const fetchNow=window.fetch;window.completionWaiting=false;window.fetch=async(...args)=>{const response=await fetchNow(...args);if(args[0]==='/complete'){completionWaiting=true;await new Promise(resolve=>window.releaseCompletion=resolve)}return response};window.composer.setText('/r');document.execCommand('insertText',false,'e');return true})()")
+                try await webviewUntil(web, "completionWaiting")
+                try await key("Escape")
+                let cancelled = try await webviewJS(web, "(async()=>{releaseCompletion();await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);return !document.querySelector('.koa-complete')&&window.composer.text()==='/re'})()")
+                try requireEqual(cancelled, "true", "Escape cancels a pending completion without changing the draft")
+            }()
             return
         }
         try await capture("idle")
@@ -1971,24 +1758,6 @@ import SidebarFeed
         try await capture("user-well")
         try await advance()
         try await webviewUntil(web, "document.querySelector('.dots')&&document.querySelector('table')")
-        if phases.contains("focus") {
-            try await split(1, .h)
-            try await wait("koa focus split") { self.terminal?.displayedPanes.count == 2 }
-            let other = try requireValue(terminal?.displayedPanes.first { $0 !== pane })
-            window.makeFirstResponder(other)
-            _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt .cm-content').blur();return true})()")
-            window.makeFirstResponder(pane.inputResponder)
-            try require(window.firstResponder === web)
-            try await webviewUntil(web, "(()=>{const p=document.querySelector('.assistant p');if(!p)return false;document.querySelector('#prompt .cm-content').blur();const range=document.createRange();range.selectNodeContents(p);getSelection().removeAllRanges();getSelection().addRange(range);return getSelection().toString().length>0})()")
-            let key = try requireValue(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
-                windowNumber: window.windowNumber, context: nil, characters: "z", charactersIgnoringModifiers: "z", isARepeat: false, keyCode: 6))
-            window.sendEvent(key)
-            try await webviewUntil(web, "window.composer.text()==='z'&&document.activeElement===document.querySelector('#prompt .cm-content')")
-            try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=scroll.scrollHeight;return scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1})()")
-            try await settleKoa(web, measured: measured)
-            try await webviewPageSnapshot("composer-focus", crop: "#composer", padding: .init(), testName: "testKoaWebviewComposerFocus()")
-            return
-        }
         try await capture("stream")
         _ = try await webviewJS(web, "(()=>{window.composer.setText('Also keep the failure message.');return true})()")
         try await capture("composer-working")
@@ -2031,7 +1800,7 @@ import SidebarFeed
         _ = try await webviewJS(web, "(()=>{const runs=[...document.querySelectorAll('.run')];runs.forEach(run=>run.querySelector('.line').click());runs[0].querySelectorAll('.step>.line')[1].click();return true})()")
         try await webviewUntil(web, "document.querySelector('.run .names .err')?.textContent==='bash'&&document.querySelector('.run .step.open').textContent.includes('FAIL unit 40.2s')&&document.querySelectorAll('.run')[1].textContent.includes('aborted, you pressed Escape')")
         try await capture("error")
-        try requireEqual(backend.documents(), 1)
+        try requireEqual(navigation.documents, 1)
         func dialogScenario() async throws {
             _ = try await webviewJS(web, "(()=>{Date.now=()=>\(stamp + 8000);return true})()")
             func answer() async throws {
@@ -2099,7 +1868,7 @@ import SidebarFeed
             try await capture("times")
         }
         switch scenario {
-        case .transcript, .completion, .markdown, .media, .attachments, .userMarkdown, .thinkingMarkdown, .reveal, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands, .notices, .latest, .sessions, .views, .jobs, .paths, .threads: break
+        case .transcript, .completion, .markdown, .media, .attachments, .userMarkdown, .thinkingMarkdown, .reveal, .lightbox, .agents, .composer, .questions, .bang, .commands, .notices, .latest, .sessions, .views, .jobs, .paths, .threads: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

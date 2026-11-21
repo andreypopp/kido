@@ -1021,8 +1021,8 @@ Start at these owners rather than duplicating their contracts:
 - `webview/index.ts`: pane and browser transports.
 - `koa/testdata/`: fixtures, replay, scenarios, fake ko and prompt
   snapshot.
-- `app/KoaSnapshots/`: shared WebKit state driver and image comparison.
-  `app/KoaHost/` is its host command-line runner.
+- `koa/visual/`: the page's visual checks, a SwiftPM tool with its
+  references in `koa/visual/__Snapshots__/`.
 
 `koa/package.json` and its lockfile pin the build and test dependencies,
 including the real pi used by tests. TypeScript checks the Node side
@@ -1129,7 +1129,8 @@ children get private home and agent directories. A gate waits for a
 test action, not elapsed time. Follow the repository's bounded-wait
 and no-repeat rules in `AGENTS.md`. Final unit verification uses
 `make checks`; inspect its plan with `make checks DRY=1`. Run koa
-visual checks with `make -C app koa-host` on the host.
+visual checks with `make -C koa visual` on the host ("Host visual
+checks"); `make -C koa verify` runs `check` and `visual`.
 
 ### Fake ko and fake model
 
@@ -1179,8 +1180,8 @@ A new state does not require a model recording or a product test flag.
 Use one fixture with multiple phases for related states and resize it
 for width changes instead of restarting the whole chain.
 
-`app/KoaSnapshots/Cases.swift` assigns capture policy;
-`app/KoaSnapshots/Capture.swift` crops the union of matched selectors
+`koa/visual/Cases.swift` assigns capture policy;
+`koa/visual/Capture.swift` crops the union of matched selectors
 at the image's backing scale. Missing or out-of-page rectangles fail,
 not clamp. Insets include borders and shadows. Most images cover a
 component; composition anchors cover the whole page. Geometry-only states keep their
@@ -1192,28 +1193,58 @@ The test files, not a duplicated method list, define coverage.
 
 ### Host visual checks
 
-`make -C app koa-host` runs the shared state driver in an off-screen
-WKWebView without an XCTest host or an app window on the screen.
-`app/KoaHost/main.swift` uses prohibited activation and fails if the
-run changes the active application. It starts headless replay without
-opening a browser. koa visual checks run only on the host, not in the VM.
+`koa/visual/` is a SwiftPM executable that uses only AppKit and
+WebKit: no app sources, no GhosttyKit, no ko_client and no Xcode
+project. `make -C koa visual-build` builds it into
+`build/koa-visual/`; `make -C koa visual` builds the page and the tool
+and runs every fixture. It runs only on the host, never in the VM or
+in CI. The decision: the page renders in WebKit alone, so the app's
+pane, bridge and native chrome do not belong in its references, and a
+host run takes seconds instead of a VM run of the whole app.
 
-Its references are local to the host macOS build under
-`app/build/koa-host/`, not committed references. Record them with
-`RECORD=1`; select a fixture or capture with ONLY. All phases of a
-selected fixture still run. A geometry-only fixture must be named
-explicitly. COMPARE can additionally report differences from committed
-references, but those differences are informational. Native-only
-states are reported as skipped. Image comparison uses the color-space
-conversion in `app/KoaSnapshots/Pixels.swift`.
+The tool opens an off-screen window with prohibited activation and
+fails if it becomes the active or frontmost application or takes the
+key window. Other applications can change focus while it runs: the
+user works on the same Mac. Each fixture starts
+its own `koa/testdata/replay.ts --browser --headless` process, which
+the tool owns: it reads the page URL from the first line, fails on an
+early exit or a missed deadline, checks that the replay consumed every
+step, and terminates only that process. A page gets an explicit
+viewport size and its initial scripts through its own WebKit
+configuration. It prints one flushed line per fixture, so
+`scripts/quiet-limit 60` sees progress.
+
+The theme is data, not a terminal: `koa/testdata/theme-light.json`
+and `koa/testdata/theme-dark.json` hold what `WebviewTheme` in the app
+gives a pane (colours, palette, font, cell metrics, appearance and
+inset). The tool installs it as the pane's `window.ko` theme at
+document start and switches it for the dark phases. The app's
+`WebviewThemeTests` checks that `WebviewTheme`'s data for the bundled
+light and dark themes, with a fixed font configuration and accent
+colour, equals these
+files, so a change of the app's theme output fails there first.
+
+Native behaviour (the bridge, pane chrome, native find, focus, preview
+and the pasteboard) is the app's to test, not koa's.
+
+One set of references is committed in `koa/visual/__Snapshots__/`,
+recorded on the user's Mac with this tool. A missing or different
+reference fails the run; the actual image and the difference go to
+`build/koa-visual/`. Select a fixture or capture with ONLY; all phases
+of a selected fixture still run. A geometry-only fixture runs only
+when it is named. Record with `RECORD=1`. Image comparison uses the
+colour-space conversion in `koa/visual/Pixels.swift`.
 
 ```sh
-make -C app koa-host ONLY=Fixture
-make -C app koa-host ONLY=Fixture RECORD=1
+make -C koa visual ONLY=Fixture
+make -C koa visual ONLY=Fixture RECORD=1
 ```
 
-Use actual names from the driver. Record affected host images once
-after the last implementation and review change, then inspect them.
+Use actual names from `koa/visual/Cases.swift`. Record the affected
+images once after the last implementation and review change, then
+inspect them. `scripts/checks.sh` selects the local stage `koa-visual`
+for the page, the replay scenarios, the theme files and `koa/visual/`,
+and `ko-test`, which holds `WebviewThemeTests`, for the theme files.
 
 ### Measurement
 

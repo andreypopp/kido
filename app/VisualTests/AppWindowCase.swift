@@ -121,7 +121,7 @@ import XCTest
         }
         if Self.processRuntime == nil {
             let config = Self.processConfig
-            try KoaContext.visualConfig.write(to: config, atomically: true, encoding: .utf8)
+            try "app: {font: {size: 13}}\n".write(to: config, atomically: true, encoding: .utf8)
             atexit { try? FileManager.default.removeItem(at: AppWindowCase.processConfig) }
             Self.processRuntime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))))
             Self.processRuntime?.loadTestBindings("keybind = super+e=text:X\nkeybind = super+shift+c=text:Y\n")
@@ -289,7 +289,7 @@ import XCTest
         let webview = try XCTUnwrap(pane.webviewView)
         let host = webview.window, responder = host?.firstResponder
         defer { host?.makeFirstResponder(responder) }
-        let image = try await KoaCapture.page(webview.browser)
+        let image = try await WebviewCapture.page(webview.browser)
         afterCapture?()
         let overlay = NSImageView(frame: webview.browser.frame)
         overlay.image = image

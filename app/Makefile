@@ -178,14 +178,3 @@ vm-down: vm
 vm:
 	@set -eo pipefail; swift build --package-path vm -c release 2>&1 | $(SWIFT_PROGRESS)
 	codesign --force --sign - --entitlements vm/kido-vm.entitlements $(VM_BIN)
-
-
-HOST_DERIVED = build/xcode.noindex/derived-host
-.PHONY: koa-host koa-host-build
-koa-host-build: project
-	@set -eo pipefail; xcodebuild -project Kido.xcodeproj -scheme KoaHost -configuration $(CONFIG) -destination platform=macOS -derivedDataPath $(HOST_DERIVED) build 2>&1 | $(XCODE_PROGRESS)
-
-koa-host: koa-host-build
-	@build=$$(sw_vers -buildVersion); \
-	env KO_SNAPSHOT_RECORD=$(RECORD) KO_SNAPSHOT_ONLY="$(ONLY)" KO_SNAPSHOT_GUEST="$(if $(COMPARE),$(abspath $(COMPARE)))" \
-		$(HOST_DERIVED)/Build/Products/$(CONFIG)/KoaHost "$(KO_ABS)" "$(CURDIR)/build/koa-host/$$build/__Snapshots__/KoaWebviewTests"

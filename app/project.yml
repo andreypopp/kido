@@ -94,29 +94,6 @@ targets:
         basedOnDependencyAnalysis: false
         outputFiles:
           - "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ko/BUILD-ID"
-  KoaHost:
-    type: tool
-    platform: macOS
-    templates: [NativeRuntime]
-    sources:
-      - path: App
-        excludes: ["main.swift"]
-      - path: KoaSnapshots
-      - path: KoaHost
-    settings:
-      base:
-        PRODUCT_NAME: KoaHost
-        ENABLE_TESTING_SEARCH_PATHS: YES
-        SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/App/Shm.h"
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: ["$(inherited)", KOA_HOST, KIDO_VISUAL]
-        LD_RUNPATH_SEARCH_PATHS: ["$(inherited)", "$(PLATFORM_DIR)/Developer/Library/Frameworks", "$(PLATFORM_DIR)/Developer/usr/lib"]
-        ENABLE_USER_SCRIPT_SANDBOXING: NO
-    dependencies:
-      - package: SnapshotTesting
-    postBuildScripts:
-      - name: Copy Ghostty resources
-        script: cp -R "$SRCROOT/Resources/ghostty" "$TARGET_BUILD_DIR/"
-        basedOnDependencyAnalysis: false
   VisualTests:
     type: bundle.unit-test
     platform: macOS
@@ -124,8 +101,6 @@ targets:
       - path: VisualTests
         excludes: ["__Snapshots__"]
       - path: TestSupport
-      - path: KoaSnapshots
-        excludes: ["Driver.swift"]
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -152,6 +127,10 @@ targets:
     platform: macOS
     sources:
       - path: KoTests
+      - path: ../koa/testdata/theme-light.json
+        buildPhase: resources
+      - path: ../koa/testdata/theme-dark.json
+        buildPhase: resources
       - path: TestSupport
     settings:
       base:
@@ -171,10 +150,6 @@ targets:
         link: false
       - sdk: Carbon.framework
 schemes:
-  KoaHost:
-    build:
-      targets:
-        KoaHost: [all]
   Ko:
     build:
       targets:
@@ -182,6 +157,9 @@ schemes:
         KoTests: [test]
     test:
       targets: [KoTests]
+      commandLineArguments:
+        "-AppleAccentColor": true
+        "4": true
       environmentVariables:
         KIDO_APP_BACKGROUND: "1"
         HOME: "$(SRCROOT)/build/bundle/ko-tests/home"

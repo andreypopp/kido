@@ -19,8 +19,8 @@ cargo tests (unit), ko's e2e (e2e), the TypeScript suite (ts: `make
 e2e stage to the tests whose names contain the text (a cargo test
 filter). `scripts/lint.sh docs` runs only the doc reference and
 Markdown checks, with no build. The stages `lint-sh` (`scripts/lint.sh` only), `app` (the
-app's `make test`), `ko-test` and `visual` (the app's `make visual`,
-limited by `VISUAL_ONLY`) are not in the default list;
+app's `make test`), `ko-test`, `visual` (the app's `make visual`,
+limited by `VISUAL_ONLY`) and `koa-visual` (`make -C koa visual`) are not in the default list;
 `scripts/checks.sh` selects them. Every selected stage runs even after
 a failure and prints PASS/FAIL/SKIP with its time, unless
 `KO_FAIL_FAST=1`: then the first FAIL stops the loop and each
@@ -67,7 +67,8 @@ the host's macOS build is not the reference. `make visual` prints one
 tests, the quit check and the total; `test` and `ko-test` print the
 same lines without the quit check.
 
-koa visual checks run only on the host with `make -C app koa-host`.
+koa visual checks run only on the host with `make -C koa visual`, the
+local stage `koa-visual`.
 See [design-koa.md](design-koa.md#development) for snapshots and the
 replay driver.
 

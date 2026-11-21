@@ -1,7 +1,7 @@
 import AppKit
 import SnapshotTesting
 
-func imagePixels(_ image: CGImage) -> (width: Int, height: Int, channels: [UInt8])? {
+private func imagePixels(_ image: CGImage) -> (width: Int, height: Int, channels: [UInt8])? {
     let space = CGColorSpaceCreateDeviceRGB()
     guard let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
                                   bytesPerRow: image.width * 4, space: space,

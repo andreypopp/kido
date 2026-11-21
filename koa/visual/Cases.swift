@@ -4,21 +4,15 @@ enum KoaSelection {
 }
 
 enum KoaFixture: String, CaseIterable {
-    case placeInset = "PlaceInset"
-    case quoteSelection = "QuoteSelection"
     case dots = "Dots"
     case runStepsTransitions = "RunStepsTransitions"
     case scrollbarJumpMountsHistory = "ScrollbarJumpMountsHistory"
-    case selectAllCopiesTheWholeTranscript = "SelectAllCopiesTheWholeTranscript"
-    case findSkippedHistory = "FindSkippedHistory"
     case bangCompletion = "BangCompletion"
     case bang = "Bang"
     case composerFootResponsive = "ComposerFootResponsive"
     case composerFootStates = "ComposerFootStates"
     case composerStateGeometryWide = "ComposerStateGeometryWide"
     case composerStateGeometryNarrow = "ComposerStateGeometryNarrow"
-    case focusBorderTranscript = "FocusBorderTranscript"
-    case composerFocus = "ComposerFocus"
     case commandsNarrow = "CommandsNarrow"
     case mockupStates = "MockupStates"
     case notices = "Notices"
@@ -32,7 +26,6 @@ enum KoaFixture: String, CaseIterable {
     case exit = "Exit"
     case failed = "Failed"
     case rhythm = "Rhythm"
-    case threadsModes = "ThreadsModes"
     case threads = "Threads"
     case threadsFilter = "ThreadsFilter"
     case threadsFilterPanel = "ThreadsFilterPanel"
@@ -42,7 +35,6 @@ enum KoaFixture: String, CaseIterable {
     case jobs = "Jobs"
     case lightbox = "Lightbox"
     case paths = "Paths"
-    case previewHover = "PreviewHover"
     case media = "Media"
     case attachments = "Attachments"
     case userMarkdown = "UserMarkdown"
@@ -68,10 +60,6 @@ enum KoaFixture: String, CaseIterable {
             return ["geometry": .geometry]
         case .composerStateGeometryNarrow:
             return ["geometry": .geometry]
-        case .focusBorderTranscript:
-            return ["focus-border-transcript": .both]
-        case .composerFocus:
-            return ["focus": .geometry]
         case .commandsNarrow:
             return ["narrow-commands-session-closed": .light, "narrow-commands-session-open": .dark, "narrow-commands-compacting": .light, "narrow-commands-compact-failed": .light, "narrow-commands-export-open": .light, "narrow-commands-copy": .geometry, "narrow-commands-export": .geometry, "narrow-commands-refused": .geometry, "narrow-commands-compacted-open": .geometry, "narrow-commands-compact-cancelled": .geometry, "narrow-commands-popup": .geometry]
         case .mockupStates:
@@ -96,8 +84,6 @@ enum KoaFixture: String, CaseIterable {
             return ["times": .light]
         case .failed:
             return ["exited": .light, "narrow-exited": .geometry]
-        case .threadsModes:
-            return ["threads-block": .both, "threads-block-filter": .both, "threads-line-resize": .geometry, "threads-block-resize": .geometry]
         case .threads:
             return ["threads-many": .both, "threads-many-narrow": .both, "threads-marks": .both, "threads-marks-narrow": .geometry, "threads-two": .geometry]
         case .threadsFilter:
@@ -116,8 +102,6 @@ enum KoaFixture: String, CaseIterable {
             return ["media-lightbox": .light]
         case .paths:
             return ["path-links": .light, "path-warning": .geometry]
-        case .previewHover:
-            return ["media-preview-hover": .light]
         case .media:
             return ["media-read-image": .light, "media-user-images": .both, "media-image-gone": .both, "narrow-media-user-images": .light, "narrow-media-read-image": .geometry, "narrow-media-image-gone": .geometry]
         case .attachments:
@@ -140,20 +124,6 @@ enum KoaFixture: String, CaseIterable {
         }
     }
 
-    enum Capability { case page, native(String), logic }
     var method: String { "testKoaWebview" + rawValue }
-    var capability: Capability {
-        switch self {
-        case .placeInset: return .native("native pane chrome")
-        case .quoteSelection: return .native("native selection bridge")
-        case .selectAllCopiesTheWholeTranscript: return .native("native selection and pasteboard")
-        case .findSkippedHistory: return .native("native find")
-        case .focusBorderTranscript: return .native("app chrome")
-        case .composerFocus: return .native("native focus and keyboard routing")
-        case .threadsModes: return .native("native keyboard routing")
-        case .previewHover: return .native("native preview integration")
-        case .scrollbarJumpMountsHistory: return .logic
-        default: return .page
-        }
-    }
+
 }

@@ -483,7 +483,7 @@ docs/verification.md describes every check. The targets agents run:
 
 `make verify STAGES=e2e` selects stages, and `E2E=client_` limits the
 e2e stage to a cargo test filter. The stages `lint-sh`, `app`,
-`ko-test` and `visual` are not in the default list; `scripts/checks.sh`
+`ko-test`, `visual` and `koa-visual` are not in the default list; `scripts/checks.sh`
 selects them. `scripts/verify.sh` scrubs `KO_STATE_DIR`, `KO_PANE`,
 `KO_SOCKET`, `KO_PANE_TOKEN`, every `KO_AGENT_*` and the installed
 `share/ko/bin` on PATH, so the developer's own pane does not enter
@@ -498,7 +498,7 @@ tests in the visual-test VM through `app/scripts/guest-test.sh`
 (docs/build.md, "The visual-test VM"). Only CI passes `GUEST=0`; an
 agent never does. A new target that launches the app uses the same
 runner. koa visual checks run only on the host with
-`make -C app koa-host`; see
+`make -C koa visual`; see
 [docs/design-koa.md](docs/design-koa.md#host-visual-checks).
 
 **Visual snapshots belong to the guest.** `make -C app visual` builds

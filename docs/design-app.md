@@ -3670,7 +3670,6 @@ Each visual target runs one `xcodebuild test`, which builds the app, and then
   about 17 s of test time.
 - `make visual-slow` runs only those tests.
 - `ONLY='Class/testName ...'` limits any of the three to the named tests.
-- For `make koa-host`, see [design-koa.md](design-koa.md#host-visual-checks).
 
 `slow.txt` names one `Class/testName` per line, followed by
 `# inherent: <reason>` or `# fix: <cause>`. An `inherent` test needs its cost
