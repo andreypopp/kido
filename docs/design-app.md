@@ -1573,11 +1573,31 @@ the active pane. The last tiled pane shows no ghost. A float has no grip.
 A drag by its move band or padding moves it, with no targets, so a float
 moved over the main window does not dock by accident. Only Option docks
 by drag: while Option is held (read on each move, on a change of the
-modifiers and on the drop) and the pointer is over a tiled pane of the
-float's own ko window shown in the main window, the drag shows the
-bar of that pane's outer quarter and the drop sends `dock` with the
-float as the source, holding the release frame until the layout shows
-the dock. A float has no window-edge zone and no centre target: the
+modifiers and on the drop) and the pointer is over a tiled pane that a
+Kido main window of the float's connection shows, in a ko window of
+the float's session, the drag shows the bar of that pane's outer
+quarter and the drop sends `dock` with the float as the source,
+holding the release frame until the layout shows the dock
+(design: `app/design/floats/NOTES.md`, section F, "Dock into another
+window"). `WindowOwner.floatDropView` finds that main window by the
+screen point, front to back in `NSApp.orderedWindows`, among the
+visible main windows of the same server instance and session whose
+shown ko window is not zoomed (a dock beside a pane hidden by the zoom
+would hide the docked pane too); float windows are never targets, and the floats of the destination do not
+block its tiled panes. That WindowView computes the target in its own
+coordinates and draws the one bar; the dragged float's WindowView
+clears the bar of the previous destination when the pointer leaves
+it. No window changes order, and no main window switches what it
+shows: a ko window that no main window shows offers no target. The
+drop goes through `SessionView.dockFloat`: a refused edit shows its
+notice and the float settles back; when the edit succeeds,
+the receiving owner selects the docked pane on its own client and
+its main window becomes key. When another Kido window received the
+drop, the source owner selects the server's repaired focus of the ko
+window it showed (`settle` in `ko_server/src/layout.rs`: the parent,
+else the nearest pane, possibly another float) and keeps showing it,
+because its client's selection would otherwise follow the moved pane
+to the receiver's ko window. A float has no window-edge zone and no centre target: the
 window-edge test runs only for a tiled source, so a float's outer pane
 edges stay targets; a float never shows the pop-out
 ghost. `PaneDrag` names the float's gesture (move or resize). A move
@@ -1646,7 +1666,9 @@ The pane commands map to `split`, `resize_by`, `toggle_zoom`, `float`,
 focused pane. On a tiled pane its title is "Float Pane", and it sends
 `float` without geometry, so the server places the float. On a float its
 title is "Dock Pane", and it sends `unfloat` to the right of the tiled
-pane that was active before a float took the focus. ko keeps no such
+pane that was active before a float took the focus; a child float
+docks to the right of its parent when the parent is tiled in the same
+ko window. ko keeps no such
 record, so the app remembers that pane for each window and forgets it when
 the pane goes; without it, the target is the first tiled pane. The item is
 disabled while zoomed and for the last tiled pane. The core evaluates `resize_by {pane, edge, delta}` and
@@ -1767,8 +1789,14 @@ sends the remembered cols and rows, and x and y as a move of that
 origin at the current cell size would send them, and the state waits as
 `refloating`. The float that the layout then shows takes the remembered
 screen origin as a local frame at the layout's size, moved by the
-screen rule (`reachable`) the least distance, never resized. The
-memory is used once: any layout that shows the pane as a float ends it,
+screen rule (`reachable`) the least distance, never resized. When a
+dock moves the pane into another ko window, `SessionView.apply` moves
+its host state to that window's WindowView (`takeFloatHosts(for:)`,
+then `adoptFloatHosts`) as `docked`, with the float window's frame
+without its margin, and closes the float window; Float Pane then
+floats the pane in the ko window it is tiled in now, at the
+remembered place, a child too: a child pane may float in any window
+(protocol.md, section 7). The memory is used once: any layout that shows the pane as a float ends it,
 also a float from another client, which shows at its cells. A failed
 edit returns the state to `docked`. A pop out by drag replaces it with
 the ghost's frame. The state is a float state: it keeps a hidden
@@ -1797,8 +1825,9 @@ its pane the active pane; the main window keeps the ko window it shows
 from the shown window, and the sidebar from the server's selection. A
 focus route that lands on a tiled pane switches the main window to it;
 one that lands on a float never does. Dock Pane from a float whose ko
-window is not shown shows it first, and an Option drag of a float offers drop
-targets only while its ko window is shown. `WindowOwner.owns` maps a window to its owner
+window is not shown shows it first, and an Option drag of a float offers the
+drop targets of the ko windows that the main windows of its connection
+show (the Option drag above). `WindowOwner.owns` maps a window to its owner
 (the main window or one of its float windows); `inputWindow` and
 `inputResponder` give the key one of them and its first responder. The
 menu commands, the palette, the attendance and the focus report use

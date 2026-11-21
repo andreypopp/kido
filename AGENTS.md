@@ -436,9 +436,9 @@ breaks most easily:
   change; the server owns that cascade. A helper pane that a program
   creates over itself gets the program's pane as `parent`, and
   `close: on_exit` only when the program reads its dead screen, such
-  as koa's Control-G editor float. A floating child pane
-  lives only in its parent's window; a tiled child may be in any
-  window, which is then an ordinary window of its session.
+  as koa's Control-G editor float. A child pane, floating or
+  tiled, may be in any window of its session; its parent edge
+  decides only its lifetime.
 - A message (`/panes/{id}/messages`) is enqueued once for each
   `(pane, id)`; a repeat answers from the original. The queue drops
   with its pane, and nothing tells its senders. The server never

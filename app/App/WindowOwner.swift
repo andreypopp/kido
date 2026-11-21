@@ -211,6 +211,21 @@ private class AlertEscape: NSView {
         }
         for owner in changed where owner.alive { owner.session?.refreshFloats() }
     }
+    func floatDropView(at point: CGPoint, pane: PaneID, windows: [NSWindow] = NSApp.orderedWindows) -> WindowView? {
+        guard let instance = snapshot?.serverInstance,
+              let source = koModel?.layout.layout.locate(pane)?.session.id else { return nil }
+        for native in windows {
+            guard let owner = native.delegate as? WindowOwner, owner.window === native,
+                  owner.alive, native.isVisible, !native.isMiniaturized,
+                  owner.snapshot?.serverInstance == instance, owner.model.session == source,
+                  owner.banner.isHidden, native.frame.contains(point),
+                  let shown = owner.model.window, owner.koModel?.layout.layout.window(shown)?.zoom == nil,
+                  let view = owner.session?.windows[shown], !view.isHidden else { continue }
+            return view
+        }
+        return nil
+    }
+
     private var koModel: KoModel? { received.ko }
     // Per window, the tiled pane that was active last: where Dock Pane docks a float.
     private var lastTiled: [WindowID: PaneID] = [:]
@@ -1189,6 +1204,30 @@ private class AlertEscape: NSView {
             return floatOwner === self
         }
         view.floatsAllowed = { [weak self] in self?.banner.isHidden != false }
+        view.floatDropView = { [weak self] point, pane in self?.floatDropView(at: point, pane: pane) }
+        view.dockFloat = { [weak self] edit, destination in
+            guard let self else { return }
+            let shown = shownWindow
+            editor?.submit(edit) { [weak self, weak destination] result in
+                guard case .success(let edited) = result else {
+                    if case .failure(let error) = result { self?.notice(edit.failureTitle, failureText(error)) }
+                    return
+                }
+                guard case .dock(let dock) = edit else { return }
+                if let self, let shown, edited.snapshot.layout.locate(dock.pane)?.window.id != shown,
+                   let source = edited.snapshot.layout.window(shown), case .connected(let client) = link {
+                    do { _ = try client.select(KO_SELECT_PANE, source.focus) }
+                    catch { notice("Could not select the pane", failureText(error)) }
+                    showWindow(shown)
+                }
+                guard let receiver = destination?.window?.delegate as? WindowOwner else { return }
+                if case .connected(let client) = receiver.link {
+                    do { _ = try client.select(KO_SELECT_PANE, dock.pane) }
+                    catch { receiver.notice("Could not select the pane", failureText(error)) }
+                }
+                receiver.window.makeKeyAndOrderFront(nil)
+            }
+        }
         view.floatTitle = { [weak self] pane, window in
             guard let self,
                   let location = koModel?.layout.layout.sessions.first(where: { $0.windows.contains { $0.id == window } }),
@@ -1723,7 +1762,7 @@ private class AlertEscape: NSView {
         default: break
         }
         guard let koModel, let window = koModel.layout.layout.locate(pane)?.window,
-              let action = command.action(pane, in: window, new: koModel.newPane(from: pane, runtime), cell: session?.cell ?? .zero, lastTiled: lastTiled[window.id]) else { return }
+              let action = command.action(pane, in: window, new: koModel.newPane(from: pane, runtime), cell: session?.cell ?? .zero, lastTiled: lastTiled[window.id], parent: koModel.pane(pane)?.parent) else { return }
         switch action {
         case .edit(let edit):
             if case .unfloat = edit { showWindow(window.id) }

@@ -36,6 +36,8 @@ final class SessionView: NSView {
     var floatsAllowed: () -> Bool = { true }
     var ownsFloats: () -> Bool = { true }
     var floatTitle: (PaneID, WindowID) -> String = { _, _ in "" }
+    var floatDropView: (CGPoint, PaneID) -> WindowView? = { _, _ in nil }
+    var dockFloat: (KoSchema.Edit, WindowView) -> Void = { _, _ in }
     var hostFocusChanged: (NSResponder?, NSResponder?) -> Void = { _, _ in }
     func contains(_ pane: PaneView) -> Bool { windows.values.contains { $0.contains(pane) } }
     var hostWindows: [FloatWindow] { windows.values.flatMap(\.hostWindows) }
@@ -129,10 +131,19 @@ final class SessionView: NSView {
         self.marks = marks
         let changed = Set(marked.keys).union(marks.keys).filter { marked[$0] != marks[$0] }
         let old = windows
+        var movedHosts: [WindowID: [PaneID: WindowView.PaneHost]] = [:]
+        for target in listing {
+            for (sourceID, source) in old where sourceID != target.id {
+                let moved = source.takeFloatHosts(for: Set(target.panes))
+                guard !moved.isEmpty else { continue }
+                movedHosts[target.id, default: [:]].merge(moved) { _, next in next }
+            }
+        }
         windows = [:]
-        for w in listing where w.id == window || recent.contains(w.id) || old[w.id]?.hasFloatState == true || ownsFloats() && !w.floats.isEmpty {
+        for w in listing where w.id == window || recent.contains(w.id) || old[w.id]?.hasFloatState == true || movedHosts[w.id] != nil || ownsFloats() && !w.floats.isEmpty {
             retain(w, reusing: old[w.id], active: selected.flatMap { w.panes.contains($0) ? $0 : nil })
         }
+        for (id, hosts) in movedHosts { windows[id]?.adoptFloatHosts(hosts) }
         for (id, gone) in old where windows[id] == nil { gone.close() }
         recent.removeAll { windows[$0] == nil }
         if !changed.isEmpty { windows.values.forEach { $0.marksChanged(changed, banded: Set(marked.keys) != Set(marks.keys)) } }

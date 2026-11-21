@@ -743,15 +743,13 @@ invariants.
   dead one `gone`; a caller that acts as a pane may name only itself.
   No cycle can form, because the parent exists before the child.
   A pane with a `parent` is a child pane, in every session. A child
-  pane may float or be tiled in the window of its parent, whether the
-  parent floats or is tiled there: a pane that opens a helper over
-  itself, such as koa's editor (design-koa.md), makes it a floating
-  child, and a client can dock it beside its parent and float it
-  again. A tiled child in any other window is an ordinary pane of
-  that window, which can hold other panes and floats. A floating
-  child is valid only in the window of its parent; any other
-  document is `invalid`, with the document unchanged and no pane
-  started, for every client.
+  pane may float or be tiled in any window, whether its parent floats
+  or is tiled, in that window or another: a pane that opens a helper
+  over itself, such as koa's editor (design-koa.md), makes it a
+  floating child, and a client can dock it beside its parent or into
+  another window and float it again there. The parent edge decides
+  only the child's lifetime, never its place. A tiled child is an
+  ordinary pane of its window, which can hold other panes and floats.
   `runtime` names the runtime that the pane is born in, for its
   life; absent is the host. The row's `runtime` is the runtime that
   runs the pane's program now, which a visit changes without a

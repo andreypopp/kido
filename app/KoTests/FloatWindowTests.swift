@@ -11,7 +11,7 @@ import XCTest
     private let sleep = #"{"pane":{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}}}"#
     private let child = #"{"pane":{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}},"x":2,"y":2,"cols":20,"rows":6}"#
 
-    private func shown(_ windows: String) throws -> (WindowOwner, KoClient) {
+    private func owner(_ windows: String) throws -> WindowOwner {
         let dir = try server()
         try put(#"{"revision":0,"layout":{"sessions":[{"name":"s","windows":\#(windows)}]}}"#, dir: dir)
         let board = NSPasteboard(name: .init("ko-float-" + UUID().uuidString))
@@ -22,10 +22,38 @@ import XCTest
             board.releaseGlobally()
         }
         owner.start()
+        return owner
+    }
+
+    private func shown(_ windows: String) throws -> (WindowOwner, KoClient) {
+        let owner = try owner(windows)
         wait("the owner shows the layout at its own size") {
             owner.testBanner.isHidden && owner.testSession?.windows.values.contains { !$0.isHidden && $0.visualGeometryReady } == true
         }
         return (owner, try XCTUnwrap(owner.testClient))
+    }
+
+    private func shownAsync(_ windows: String) async throws -> (WindowOwner, KoClient) {
+        let owner = try owner(windows)
+        await waitAsync("the owner shows the layout at its own size") {
+            owner.testBanner.isHidden && owner.testSession?.windows.values.contains { !$0.isHidden && $0.visualGeometryReady } == true
+        }
+        return (owner, try XCTUnwrap(owner.testClient))
+    }
+
+    private func waitAsync(_ description: String, _ predicate: @escaping @MainActor () -> Bool) async {
+        let done = expectation(description: description)
+        var finished = false
+        func finish() { if !finished { finished = true; done.fulfill() } }
+        @MainActor func poll() {
+            if finished { return }
+            if predicate() { finish() } else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.002) { poll() } }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+            if !finished { if !predicate() { XCTFail("Timed out: \(description)") }; finish() }
+        }
+        poll()
+        await fulfillment(of: [done], timeout: 6)
     }
 
     private func floats(_ client: KoClient) -> [KoSchema.Float] {
@@ -924,8 +952,162 @@ import XCTest
 
     private func local(_ host: FloatWindow, _ point: CGPoint) -> CGPoint { host.convertPoint(toScreen: host.content.convert(point, to: nil)) }
 
+    func testDockPanePrefersOnlyATiledParentInItsOwnWindow() throws {
+        let data = Data(#"{"id":"window_1","name":"w","cols":80,"rows":24,"focus":"pane_4","vars":{},"tree":{"split":"h","children":[{"pane":"pane_1","cols":40,"rows":24},{"pane":"pane_2","cols":40,"rows":24}]},"floats":[{"pane":"pane_3","x":1,"y":1,"cols":20,"rows":6,"z":0,"border":false,"title":""},{"pane":"pane_4","x":2,"y":2,"cols":20,"rows":6,"z":1,"border":false,"title":""}]}"#.utf8)
+        let window = try JSONDecoder().decode(KoSchema.Window.self, from: data)
+        let child = PaneID(number: 4), last = PaneID(number: 2)
+        XCTAssertEqual(window.floatEdit(child, last: last, parent: PaneID(number: 1)), .unfloat(.init(edge: .right, pane: child, target: PaneID(number: 1))))
+        for parent in [PaneID(number: 3), PaneID(number: 9)] {
+            XCTAssertEqual(window.floatEdit(child, last: last, parent: parent), .unfloat(.init(edge: .right, pane: child, target: last)))
+        }
+    }
+
+    func testAChildDockedOutsideItsParentsWindowFloatsAgainAndDocksLocally() throws {
+        let (owner, client) = try shown(String(twoFloats.dropLast()) + #",{"name":"other","tree":\#(sleep)}]"#)
+        let session = try XCTUnwrap(owner.testSession)
+        _ = try client.edit(.split(.init(axis: .h, new: .init(parent: PaneID(number: 1)), pane: PaneID(number: 1))))
+        wait("the child is projected") { owner.projection.items.values.contains { $0.item.pane.parent == PaneID(number: 1) } }
+        let child = try XCTUnwrap(owner.projection.items.values.first { $0.item.pane.parent == PaneID(number: 1) }?.item.id)
+        owner.paneCommand(.float, child)
+        wait("the child floats") { session.pane(child)?.window is FloatWindow && !session.editing() }
+        session.edit(.dock(.init(edge: .left, pane: child, target: PaneID(number: 4))), nil)
+        wait("the child docks in another window") { owner.testModel?.layout.layout.locate(child)?.window.id == WindowID(number: 2) && !session.editing() }
+        owner.showWindow(WindowID(number: 2))
+        XCTAssertEqual(owner.floatState(child), .float)
+        owner.paneCommand(.float, child)
+        wait("the child floats in its new window") { owner.testModel?.layout.layout.window(WindowID(number: 2))?.floats.contains { $0.pane == child } == true && !session.editing() }
+        var edits: [KoSchema.Edit] = []
+        owner.testEditor { edit in
+            DispatchQueue.main.sync { edits.append(edit) }
+            return try client.edit(edit)
+        }
+        owner.paneCommand(.float, child)
+        wait("the child docks in its own window") { owner.testModel?.layout.layout.locate(child)?.window.id == WindowID(number: 2) && owner.projection.items[child]?.item.placement == .tiled && !session.editing() }
+        XCTAssertEqual(edits, [.unfloat(.init(edge: .right, pane: child, target: PaneID(number: 4)))])
+    }
+
+    func testDockIntoAnExistingVisibleWindowKeepsTheFloatMemory() async throws {
+        let pane = String(sleep.dropFirst(8).dropLast())
+        let (owner, client) = try await shownAsync(#"[{"name":"source","tree":\#(sleep),"floats":[{"pane":\#(pane),"x":2,"y":2,"cols":20,"rows":6}]},{"name":"destination","tree":{"split":"h","children":[\#(sleep),\#(sleep)]}}]"#)
+        let session = try XCTUnwrap(owner.testSession), id = PaneID(number: 2)
+        owner.perform(.jump(.init(session: SessionID(number: 1), window: WindowID(number: 2), pane: PaneID(number: 3))))
+        await waitAsync("the existing destination is visible") { session.windows[WindowID(number: 2)]?.isHidden == false && owner.testModel?.selection.pane == PaneID(number: 3) }
+        let frame = try XCTUnwrap(session.pane(id)?.window).frame
+        session.edit(.dock(.init(edge: .left, pane: id, target: PaneID(number: 3))), nil)
+        await waitAsync("the pane docks into the visible destination") { owner.testModel?.layout.layout.locate(id)?.window.id == WindowID(number: 2) && !session.editing() }
+        owner.paneCommand(.float, id)
+        await waitAsync("the pane floats again in the destination") { owner.testModel?.layout.layout.window(WindowID(number: 2))?.floats.contains { $0.pane == id } == true && !session.editing() }
+        XCTAssertEqual(try XCTUnwrap(session.pane(id)?.window).frame.origin, frame.origin)
+        XCTAssertEqual(try client.model().layout.layout.locate(id)?.window.id, WindowID(number: 2))
+    }
+
+    func testOptionBandDragDocksIntoAnotherWindowAndFloatsAgainThere() async throws {
+        let pane = String(sleep.dropFirst(8).dropLast())
+        let (owner, client) = try await shownAsync(#"[{"name":"source","tree":\#(sleep),"floats":[{"pane":\#(pane),"x":2,"y":2,"cols":20,"rows":6}]},{"name":"other","tree":{"split":"h","children":[\#(sleep),\#(sleep)]}}]"#)
+        let board = NSPasteboard(name: .init("cross-window-" + UUID().uuidString))
+        let receiver = WindowOwner(host: .local, runtime: try XCTUnwrap(GhosttyRuntime(pasteboard: board)), start: false)
+        receiver.testServerDir = owner.testServerDir
+        addTeardownBlock { @MainActor in receiver.close(); board.releaseGlobally() }
+        receiver.start()
+        await waitAsync("the second window connects") { receiver.testBanner.isHidden && receiver.testSession != nil }
+        WindowOwner.reconcileFloats([owner, receiver])
+        receiver.perform(.jump(.init(session: SessionID(number: 1), window: WindowID(number: 2), pane: PaneID(number: 3))))
+        await waitAsync("the receiving window is selected") { receiver.testModel?.selection.pane == PaneID(number: 3) }
+        owner.window.orderFront(nil)
+        receiver.window.orderFront(nil)
+        owner.window.setFrameOrigin(CGPoint(x: 40, y: 100))
+        receiver.window.setFrameOrigin(CGPoint(x: 650, y: 100))
+        let session = try XCTUnwrap(owner.testSession)
+        let terminal = try XCTUnwrap(session.windows[WindowID(number: 1)])
+        let destination = try XCTUnwrap(receiver.testSession?.windows[WindowID(number: 2)])
+        await waitAsync("the target is placed") { destination.visualGeometryReady }
+        let id = PaneID(number: 2), targetID = PaneID(number: 3)
+        session.edit(.float(.init(cols: 60, pane: id, rows: 20)), nil)
+        await waitAsync("the remembered float is large") { self.floats(client).first { $0.pane == id }?.cols == 60 && !session.editing() }
+        let remembered = try XCTUnwrap(floats(client).first { $0.pane == id })
+        let host = try XCTUnwrap(session.pane(id)?.window as? FloatWindow)
+        let target = try XCTUnwrap(destination.visualChromes.first { $0.pane == targetID })
+        let end = receiver.window.convertPoint(toScreen: target.convert(CGPoint(x: 8, y: target.bounds.midY), to: nil))
+        let start = local(host, CGPoint(x: host.content.chrome.midX, y: host.content.chrome.minY + 12))
+        let ownerOrigin = owner.window.frame.origin
+        owner.window.setFrameOrigin(receiver.window.frame.origin)
+        let floatFrame = host.frame
+        host.setFrameOrigin(CGPoint(x: end.x - 20, y: end.y - 20))
+        XCTAssertTrue(host.frame.contains(end))
+        XCTAssertTrue(owner.floatDropView(at: end, pane: id, windows: [host, receiver.window, owner.window]) === destination)
+        XCTAssertTrue(owner.floatDropView(at: end, pane: id, windows: [owner.window, receiver.window]) === terminal)
+        host.setFrame(floatFrame, display: false)
+        owner.window.setFrameOrigin(ownerOrigin)
+        _ = try client.edit(.addSession(.init(name: "elsewhere", new: .init(command: .argv(.init(argv: ["/bin/sleep", "60"]))))))
+        await waitAsync("the other session arrives") { receiver.testModel?.layout.layout.windows.count == 3 }
+        receiver.perform(.jump(.init(session: SessionID(number: 2), window: WindowID(number: 3), pane: PaneID(number: 5))))
+        await waitAsync("the other session is selected") { receiver.testModel?.selection.pane == PaneID(number: 5) }
+        XCTAssertNil(owner.floatDropView(at: end, pane: id, windows: [receiver.window]))
+        receiver.perform(.jump(.init(session: SessionID(number: 1), window: WindowID(number: 2), pane: PaneID(number: 3))))
+        await waitAsync("the receiving window is selected again") { receiver.testModel?.selection.pane == PaneID(number: 3) }
+        let (foreign, _) = try await shownAsync(twoFloats)
+        foreign.window.setFrameOrigin(receiver.window.frame.origin)
+        foreign.window.orderFront(nil)
+        XCTAssertTrue(owner.floatDropView(at: end, pane: id, windows: [foreign.window, receiver.window]) === destination)
+        foreign.close()
+        receiver.window.orderFront(nil)
+        let policy = NSApp.activationPolicy()
+        NSApp.setActivationPolicy(.regular)
+        defer { NSApp.setActivationPolicy(policy) }
+        if !NSApp.isActive {
+            let activated = expectation(forNotification: NSApplication.didBecomeActiveNotification, object: NSApp)
+            NSApp.activate(ignoringOtherApps: true)
+            await fulfillment(of: [activated], timeout: 5)
+        }
+        if !host.isKeyWindow {
+            let keyed = expectation(forNotification: NSWindow.didBecomeKeyNotification, object: host)
+            host.makeKeyAndOrderFront(nil)
+            await fulfillment(of: [keyed], timeout: 5)
+        }
+        await waitAsync("the float owns the keyboard and its ko window focus") {
+            host.isKeyWindow && NSApp.isActive && (try? client.model().layout.layout.window(WindowID(number: 1))?.focus) == id
+        }
+        _ = try client.edit(.zoom(.init(pane: targetID, window: WindowID(number: 2))))
+        await waitAsync("the destination is zoomed") { receiver.testModel?.layout.layout.window(WindowID(number: 2))?.zoom == targetID }
+        XCTAssertNil(owner.floatDropView(at: end, pane: id, windows: [receiver.window]))
+        _ = try client.edit(.zoom(.init(pane: nil, window: WindowID(number: 2))))
+        await waitAsync("the destination is unzoomed") { receiver.testModel?.layout.layout.window(WindowID(number: 2))?.zoom == nil }
+        let submit = session.edit
+        var edits: [KoSchema.Edit] = []
+        session.edit = { edit, key in edits.append(edit); submit(edit, key) }
+        let dock = session.dockFloat
+        session.dockFloat = { edit, destination in edits.append(edit); dock(edit, destination) }
+        terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host))
+        terminal.continueDrag(try mouse(.leftMouseDragged, end, in: host, flags: .option))
+        XCTAssertNotNil(destination.visualPreview.rect, "the other window draws the bar")
+        XCTAssertNil(terminal.visualPreview.rect)
+        let released = host.frame
+        terminal.continueDrag(try mouse(.leftMouseUp, end, in: host, flags: .option))
+        XCTAssertEqual(edits, [.dock(.init(edge: .left, pane: id, target: targetID))])
+        await waitAsync("the float docks in the receiving window") { (try? client.model().layout.layout.locate(id)?.window.id) == WindowID(number: 2) && !session.editing() }
+        await waitAsync("the receiving pane has focus and its window is key") {
+            receiver.testModel?.selection.pane == id && receiver.window.isKeyWindow && (try? client.model().layout.layout.window(WindowID(number: 2))?.focus) == id
+        }
+        XCTAssertEqual(try client.model().layout.layout.window(WindowID(number: 1))?.focus, PaneID(number: 1))
+        await waitAsync("the source still shows its own window") { session.windows[WindowID(number: 1)]?.isHidden == false }
+        XCTAssertFalse(host.isVisible)
+        let size = try XCTUnwrap(receiver.window.contentView).bounds.size
+        receiver.window.setContentSize(CGSize(width: size.width - 300, height: size.height))
+        await waitAsync("the receiving room is smaller than the remembered float") { owner.testModel?.layout.layout.window(WindowID(number: 2)).map { $0.cols < remembered.cols } == true }
+        owner.paneCommand(.float, id)
+        await waitAsync("Float Pane uses the current ko window") { (try? client.model().layout.layout.window(WindowID(number: 2))?.floats.contains { $0.pane == id }) == true && !session.editing() }
+        let room = try XCTUnwrap(client.model().layout.layout.window(WindowID(number: 2)))
+        let geometry = try XCTUnwrap(room.floats.first { $0.pane == id })
+        XCTAssertEqual(geometry.cols, min(remembered.cols, room.cols))
+        XCTAssertEqual(geometry.rows, min(remembered.rows, room.rows))
+        let restored = try XCTUnwrap(session.pane(id)?.window as? FloatWindow)
+        XCTAssertEqual(restored.frame.origin.x, released.origin.x, accuracy: 1)
+        XCTAssertEqual(restored.frame.origin.y, released.origin.y, accuracy: 1)
+    }
+
     func testBandMovesCancelAndOnlyOptionOffersPaneEdgeDocking() throws {
         let (owner, client) = try shown(floatLayout(border: false, tree: split))
+        owner.window.orderFront(nil)
         let session = try XCTUnwrap(owner.testSession)
         let terminal = try XCTUnwrap(session.windows.values.first { !$0.isHidden })
         let id = PaneID(number: 3)
@@ -936,6 +1118,8 @@ import XCTest
         let submit = session.edit
         var edits: [KoSchema.Edit] = []
         session.edit = { edit, key in edits.append(edit); submit(edit, key) }
+        let dock = session.dockFloat
+        session.dockFloat = { edit, destination in edits.append(edit); dock(edit, destination) }
         let start = local(host, CGPoint(x: host.content.chrome.midX, y: host.content.chrome.minY + 12))
         terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host))
         terminal.continueDrag(try mouse(.leftMouseDragged, targetPoint, in: host))

@@ -812,7 +812,7 @@ fn a_title_change_moves_no_revision_and_a_pop_restores_the_pushed_title() {
 }
 
 #[test]
-fn a_child_float_sits_over_its_parent_and_goes_with_it() {
+fn a_child_float_can_live_in_another_window_and_goes_with_its_parent() {
     let s = start(&[]);
     let cat = json!({"command": {"type": "shell", "command": "exec cat"}});
     let parent = crate::panes::new_pane(&s, &cat);
@@ -857,19 +857,17 @@ fn a_child_float_sits_over_its_parent_and_goes_with_it() {
         draft
     };
 
-    crate::panes::refused(
-        crate::panes::api(
-            &s,
-            None,
-            "PUT",
-            "/layout",
-            &with_float(&window_of(&elsewhere)),
-        ),
-        400,
-        "invalid",
-        "must be in its parent's window",
-    );
-    assert_eq!(s.doc()["layout"], before["layout"]);
+    let other_window = window_of(&elsewhere);
+    let accepted = s.put(&with_float(&other_window));
+    let child_elsewhere = windows(&accepted)
+        .into_iter()
+        .find(|window| window["id"] == other_window)
+        .unwrap()["floats"][0]["pane"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(s.row(&child_elsewhere)["parent"], json!(parent));
+    s.delete(&format!("/panes/{child_elsewhere}"));
 
     let parent_window = window_of(&parent);
     let snapshot = s.put(&with_float(&parent_window));

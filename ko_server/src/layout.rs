@@ -135,7 +135,6 @@ impl Document {
             &self.layout,
             self.ids,
             shell,
-            parent_of,
             new_window.unwrap_or(UNSIZED_WINDOW),
         )
         .map_err(PutError::Invalid)?;
@@ -662,9 +661,7 @@ fn remove_pane(layout: &mut Layout, pane: PaneId) {
 struct Claims<'a> {
     current: &'a Layout,
     shell: &'a dyn Fn() -> Option<Name>,
-    parent_of: &'a dyn Fn(PaneId) -> Option<PaneId>,
     shell_name: OnceCell<Option<Name>>,
-    tiled: Vec<PaneId>,
     live: &'a BTreeSet<PaneId>,
     seen: BTreeSet<PaneId>,
     ids: Ids,
@@ -691,32 +688,27 @@ impl Claims<'_> {
         word.and_then(base_name).or_else(shell)
     }
 
-    fn pane(&mut self, reference: PaneRef) -> Result<(PaneId, Option<PaneId>), String> {
-        let (pane, parent) = match reference {
-            PaneRef::Existing(pane) if self.live.contains(&pane) => (pane, (self.parent_of)(pane)),
+    fn pane(&mut self, reference: PaneRef) -> Result<PaneId, String> {
+        let pane = match reference {
+            PaneRef::Existing(pane) if self.live.contains(&pane) => pane,
             PaneRef::Existing(pane) => return Err(format!("{pane} is not a live pane")),
             PaneRef::New { mut new } => {
                 let vars = Vars::checked(std::mem::take(&mut new.vars))?;
                 let pane = self.ids.pane();
-                let parent = new.parent;
                 self.created.push((pane, *new, vars));
-                (pane, parent)
+                pane
             }
         };
         if !self.seen.insert(pane) {
             return Err(format!("{pane} is in the layout twice"));
         }
-        Ok((pane, parent))
+        Ok(pane)
     }
 
     fn node(&mut self, node: Node<DraftLeaf>) -> Result<Node<Raw>, String> {
         match node {
             Node::Leaf(leaf) => Ok(Node::Leaf(Raw {
-                pane: {
-                    let placed = self.pane(leaf.pane)?;
-                    self.tiled.push(placed.0);
-                    placed.0
-                },
+                pane: self.pane(leaf.pane)?,
                 cols: leaf.cols.map(|cells| usize::from(cells.get())),
                 rows: leaf.rows.map(|cells| usize::from(cells.get())),
             })),
@@ -749,11 +741,9 @@ fn window(
             .and_then(|leaf| claims.default_name(&leaf.pane))
             .ok_or("the window needs a name")?,
     };
-    claims.tiled.clear();
     let tree = claims.node(draft.tree)?;
     let focus = first_leaf(&tree).ok_or("a window needs a pane")?.pane;
     let mut floats = vec![];
-    let mut floated = vec![];
     for float in draft.floats {
         let DraftFloat {
             pane,
@@ -766,11 +756,7 @@ fn window(
             title,
         } = float;
         floats.push(FloatIn {
-            pane: {
-                let placed = claims.pane(pane)?;
-                floated.push(placed);
-                placed.0
-            },
+            pane: claims.pane(pane)?,
             x: x.map(usize::from),
             y: y.map(usize::from),
             cols: cols.map(|cells| usize::from(cells.get())),
@@ -779,18 +765,6 @@ fn window(
             border,
             title,
         });
-    }
-    let here: BTreeSet<PaneId> = claims
-        .tiled
-        .iter()
-        .copied()
-        .chain(floated.iter().map(|(pane, _)| *pane))
-        .collect();
-    if let Some((pane, _)) = floated
-        .iter()
-        .find(|(_, parent)| parent.is_some_and(|parent| !here.contains(&parent)))
-    {
-        return Err(format!("child float {pane} must be in its parent's window"));
     }
     let wanted = |given: Option<Cells>, old: Option<Cells>, default: Dim| {
         usize::from(given.or(old).map_or(default.get(), Cells::get))
@@ -834,16 +808,13 @@ fn normalize(
     current: &Layout,
     ids: Ids,
     shell: &dyn Fn() -> Option<Name>,
-    parent_of: &dyn Fn(PaneId) -> Option<PaneId>,
     new_window: Size,
 ) -> Result<Normalized, String> {
     let live = current.panes();
     let mut claims = Claims {
         current,
         shell,
-        parent_of,
         shell_name: OnceCell::new(),
-        tiled: vec![],
         live: &live,
         seen: BTreeSet::new(),
         ids,

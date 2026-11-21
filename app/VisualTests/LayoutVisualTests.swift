@@ -476,6 +476,88 @@ import XCTest
         XCTAssertNotEqual(try rect(float), dragged, "the docked pane takes its tile")
     }
 
+    func testAFloatOffersTheOtherWindowsPaneEdgeLight() async throws { try await crossWindowBar(dark: false) }
+    func testAFloatOffersTheOtherWindowsPaneEdgeDark() async throws { try await crossWindowBar(dark: true) }
+
+    private func crossWindowBar(dark: Bool, testName: String = #function) async throws {
+        func tiled(_ text: String) -> String { #"{"pane":{"new":{"command":{"type":"shell","command":"printf '\#(text)\\n'; exec sleep 600"}}}}"# }
+        let pane = String(tiled("nvim Draft for @ko").dropFirst(8).dropLast())
+        try await put(#"[{"name":"source","tree":{"split":"h","children":[\#(tiled("make checks")),\#(tiled("koa @ko"))]},"floats":[{"pane":\#(pane),"x":20,"y":8,"cols":30,"rows":8}]},{"name":"receiver","tree":{"split":"h","children":[\#(tiled("git log --oneline")),\#(tiled("@review reading the diff"))]}}]"#)
+        try await placed("the source float") { $0.floats.count == 1 }
+        let receiver = WindowOwner(host: .local, runtime: owner.runtime, start: false)
+        receiver.testServerDir = dir
+        addTeardownBlock { @MainActor in receiver.close() }
+        receiver.start()
+        try await wait("the receiver connects", within: 5) { receiver.testSession != nil && receiver.testBanner.isHidden }
+        WindowOwner.reconcileFloats([owner, receiver])
+        receiver.perform(.jump(.init(session: SessionID(number: 1), window: WindowID(number: 2), pane: PaneID(number: 4))))
+        try await wait("the receiving window is selected", within: 5) { receiver.testModel?.selection.pane == PaneID(number: 4) }
+        owner.window.orderFront(nil)
+        receiver.window.orderFront(nil)
+        receiver.window.setContentSize(try XCTUnwrap(owner.window.contentView).bounds.size)
+        receiver.window.setFrameOrigin(CGPoint(x: owner.window.frame.minX + 730, y: owner.window.frame.minY))
+        if dark {
+            let changed = expectation(description: "dark appearance config changed")
+            changed.assertForOverFulfill = false
+            owner.runtime.onConfigChange = { [weak owner, weak receiver] in
+                owner?.updateColorScheme()
+                owner?.testSession?.updateBackground()
+                receiver?.updateColorScheme()
+                receiver?.testSession?.updateBackground()
+                changed.fulfill()
+            }
+            owner.window.appearance = NSAppearance(named: .darkAqua)
+            receiver.window.appearance = NSAppearance(named: .darkAqua)
+            NSApp.appearance = NSAppearance(named: .darkAqua)
+            await fulfillment(of: [changed], timeout: 20)
+            addTeardownBlock { @MainActor [runtime = owner.runtime] in runtime.onConfigChange = {} }
+        }
+        let source = try XCTUnwrap(terminal)
+        let destination = try XCTUnwrap(receiver.testSession?.windows[WindowID(number: 2)])
+        try await wait("the destination is placed", within: 5) { destination.visualGeometryReady }
+        let host = try XCTUnwrap(owner.testSession?.pane(PaneID(number: 3))?.window as? FloatWindow)
+        activate()
+        host.makeKeyAndOrderFront(nil)
+        try await wait("the dragged float is key", within: 5) { NSApp.keyWindow === host }
+        for (session, number, text) in [(try XCTUnwrap(owner.testSession), 1, "make checks"),
+                                        (try XCTUnwrap(owner.testSession), 2, "koa @ko"),
+                                        (try XCTUnwrap(owner.testSession), 3, "nvim Draft for @ko"),
+                                        (try XCTUnwrap(receiver.testSession), 4, "git log --oneline"),
+                                        (try XCTUnwrap(receiver.testSession), 5, "@review reading the diff")] {
+            try await wait("the pane text is ready", within: 5) {
+                session.pane(PaneID(number: UInt32(number))).map { self.surfaceText($0).contains(text) } == true
+            }
+        }
+        let target = try XCTUnwrap(destination.visualChromes.first { $0.pane == PaneID(number: 4) })
+        let end = receiver.window.convertPoint(toScreen: target.convert(CGPoint(x: 8, y: target.bounds.midY), to: nil))
+        let start = host.convertPoint(toScreen: host.content.convert(CGPoint(x: host.content.chrome.midX, y: host.content.chrome.minY + 12), to: nil))
+        func event(_ type: NSEvent.EventType, _ point: CGPoint) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: host.convertPoint(fromScreen: point), modifierFlags: .option,
+                                             timestamp: 0, windowNumber: host.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        source.visualBeginDrag(PaneID(number: 3), try event(.leftMouseDown, start))
+        source.continueDrag(try event(.leftMouseDragged, end))
+        defer { source.cancelDrag() }
+        XCTAssertNil(source.visualPreview.rect)
+        XCTAssertNotNil(destination.visualPreview.rect)
+        XCTAssertNil(source.visualGhost)
+        let parts: [(NSView, CGRect)] = [source, destination, host.content].map { view in
+            (view, view.window!.convertToScreen(view.convert(view.bounds, to: nil)))
+        }
+        let area = parts.reduce(CGRect.null) { $0.union($1.1) }
+        let image = NSImage(size: area.size)
+        image.lockFocus()
+        (dark ? NSColor(white: 0.17, alpha: 1) : NSColor(white: 0.78, alpha: 1)).setFill()
+        CGRect(origin: .zero, size: area.size).fill()
+        for (view, frame) in parts {
+            familyImage(of: view, hosts: []).draw(in: frame.offsetBy(dx: -area.minX, dy: -area.minY))
+        }
+        image.unlockFocus()
+        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+        if let failure = verifySnapshot(of: image, as: .pixels, named: "other-window-bar", record: record, testName: testName),
+           !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+    }
+
     func testAFloatDraggedByItsFrameOnlyMoves() async throws {
         try await put(floatWindow())
         try await placed("the float") { $0.floats.count == 1 }

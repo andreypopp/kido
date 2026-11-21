@@ -699,10 +699,16 @@ final class WindowView: NSView {
         DragInput(point: screenPoint(event), up: event.type == .leftMouseUp, flags: event.modifierFlags)
     }
 
-    func takeFloatHosts() -> [PaneID: PaneHost] {
-        let hosts = retainedPaneViews.compactMapValues { record -> PaneHost? in
-            if case .tiled = record.host { return nil }
-            return record.host
+    func takeFloatHosts(for panes: Set<PaneID>? = nil) -> [PaneID: PaneHost] {
+        let hosts = retainedPaneViews.reduce(into: [PaneID: PaneHost]()) { hosts, entry in
+            let (id, record) = entry
+            guard panes?.contains(id) != false else { return }
+            if case .tiled = record.host { return }
+            if panes != nil, let host = record.host.window, let pane = layoutPane(id) {
+                let frame = host.frame.insetBy(dx: FloatWindow.margin, dy: FloatWindow.margin)
+                host.detach()
+                hosts[id] = .docked(frame: frame, cols: pane.geometry.width, rows: pane.geometry.height)
+            } else { hosts[id] = record.host }
         }
         guard !hosts.isEmpty else { return [:] }
         cancelDrag()
@@ -1002,7 +1008,11 @@ final class WindowView: NSView {
         }
     }
 
+    private weak var floatDropView: WindowView?
+
     private func endDrag() {
+        floatDropView?.preview.rect = nil
+        floatDropView = nil
         claimed?.release(.pane)
         claimed = nil
         guard paneDrag != nil || drag != nil else { return }
@@ -1072,15 +1082,20 @@ final class WindowView: NSView {
             let geometry = wire(frame, pane.id, placement)
             host.position = .dragging(frame: screenRect(frame), sent: sent, room: room)
             placeFloat(pane.id, placement)
-            let target: (zone: DropZone, rect: CGRect)? = if case .move = gesture, input.flags.contains(.option), !isHidden, windowID != nil, session?.floatState(pane.id)?.isEnabled == true { dropTarget(at: viewPoint(input.point), source: pane.id) } else { nil }
-            preview.rect = target?.rect
-            if let target, let windowID, input.up {
+            let destination: WindowView? = if case .move = gesture, input.flags.contains(.option), session?.floatState(pane.id)?.isEnabled == true {
+                session?.floatDropView(input.point, pane.id)
+            } else { nil }
+            if floatDropView !== destination { floatDropView?.preview.rect = nil }
+            floatDropView = destination
+            let target = destination?.dropTarget(at: destination?.viewPoint(input.point) ?? .zero, source: pane.id)
+            destination?.preview.rect = target?.rect
+            if let target, let destination, let windowID = destination.windowID, input.up {
                 host.position = .awaitingDock(frame: screenRect(frame))
                 let edit = dropEdit(target.zone, pane.id, windowID)
                 #if KIDO_STRESS
                 stressEvent("drag-completed", "\(edit)")
                 #endif
-                session?.edit(edit, nil)
+                session?.dockFloat(edit, destination)
                 endDrag()
                 return
             }
@@ -1158,7 +1173,8 @@ final class WindowView: NSView {
             if pane.layer == .tiled { return displayed(pane.id).flatMap { $0.chrome.isHidden ? nil : $0.chrome.frame } }
             return floatWindows[pane.id].flatMap { $0.content.isHidden ? nil : $0.rect }
         }
-        let hit = (shown?.visible.root.panes ?? []).filter { $0.id != source }.sorted {
+        let floating = shown?.layout.root.panes.first(where: { $0.id == source })?.layer != .tiled
+        let hit = (shown?.visible.root.panes ?? []).filter { $0.id != source && (!floating || $0.layer == .tiled) }.sorted {
             switch ($0.layer, $1.layer) { case (.floating(let a), .floating(let b)): a > b; case (.floating, .tiled): true; default: false }
         }.lazy.compactMap { pane in blocker(pane).map { (pane, $0) } }.first { $0.1.contains(point) }
         guard tiled.contains(where: { $0.id != source }), let placement,
@@ -1169,7 +1185,6 @@ final class WindowView: NSView {
             : point.x < area.minX + 22 ? .left : point.x > area.maxX - 22 ? .right
             : point.y < area.minY + 22 ? .top : point.y > area.maxY - 22 ? .bottom : nil
         var drop: (zone: DropZone, rect: CGRect)?
-        let floating = shown?.layout.root.panes.first(where: { $0.id == source })?.layer != .tiled
         if let edge, !floating, let target = tiled.first(where: { $0.id != source }) {
             drop = (.window(target.id, edge), area)
         } else if let (pane, frame) = hit {
