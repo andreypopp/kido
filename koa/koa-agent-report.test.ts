@@ -35,6 +35,7 @@ test("a child reports its last message to its parent once the turn settles, and 
   try {
     await child(fx, async (s, ledger) => {
       await s.emit("agent_start");
+      await s.emit("turn_end", { message: assistant("stop", "the merge is done; two conflicts"), toolResults: [] });
       await s.emit("agent_end", {
         messages: [
           { role: "assistant", stopReason: "toolUse", content: [{ type: "text", text: "looking" }, { type: "toolCall", name: "read" }] },
@@ -49,6 +50,25 @@ test("a child reports its last message to its parent once the turn settles, and 
       await s.emit("message_start", { message: { role: "custom", customType: "ko-message", details: { work: true } } });
       await idleTurn(s, "the merge is done; two conflicts");
       assert.equal(ledger.reports.length, 2, "new work makes identical text a new report");
+    });
+  } finally { await fx.restore(); }
+});
+
+test("queued parent work preserves each completed turn report", async () => {
+  const fx = makeFixture();
+  try {
+    await child(fx, async (s, ledger, channel) => {
+      await s.emit("agent_start");
+      await channel.host.extension!.receive({ kind: "user", text: "follow up" });
+      await s.emit("turn_end", { message: assistant("stop", "first result"), toolResults: [] });
+      assert.deepEqual(ledger.reports, ["first result"]);
+      await s.emit("turn_start");
+      await s.emit("message_start", { message: { role: "user", content: "follow up" } });
+      assert.equal(ledger.extension.childState().reported, false);
+      await s.emit("turn_end", { message: assistant("stop", "second result"), toolResults: [] });
+      await s.emit("agent_end", { messages: [assistant("stop", "first result"), assistant("stop", "second result")] });
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      assert.deepEqual(ledger.reports, ["first result", "second result"]);
     });
   } finally { await fx.restore(); }
 });
@@ -78,7 +98,13 @@ test("a service does not hold the report; a non-service job does until it ends",
       assert.ok(at(notices(s), 0).includes(jobId(job)));
       await s.emit("message_start", { message: { role: "user", content: "more" } });
       const build = await s.tool("async_bash").execute("c", { command: gatedCommand(`${fx.dir}/build-gate`), name: "build" });
-      await idleTurn(s, "Building.");
+      await s.emit("agent_start");
+      await s.emit("turn_end", { message: assistant("stop", "earlier text"), toolResults: [] });
+      await s.emit("turn_start");
+      await s.emit("message_start", { message: { role: "user", content: "follow up" } });
+      await s.emit("turn_end", { message: assistant("stop", "Building."), toolResults: [] });
+      await s.emit("agent_end", { messages: [assistant("stop", "Building.")] });
+      await s.emit("agent_settled", {}, { isIdle: () => true });
       assert.deepEqual(ledger.reports, ["server ready"], "a live run holds the report");
       await s.tool("stop_async_bash").execute("c", { job: jobId(build) });
       await pollUntil(async () => !jsonRows(await s.tool("list_async_bash").execute("l", {})).some((row) => row.job === jobId(build) && row.state !== "ended"));

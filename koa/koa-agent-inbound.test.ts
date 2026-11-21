@@ -87,6 +87,7 @@ test("an interrupt aborts at once and delivers its text when the turn settles; i
     const s = await startSession(fx);
     const receive = extensionOf(s).receive;
     await s.emit("agent_start");
+    await s.emit("turn_end", { message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }] }, toolResults: [] });
     await receive({ kind: "interrupt", text: "new work", relation: "parent", agent: parent });
     assert.equal(s.aborts(), 1);
     assert.equal(customMessages(s, "ko-message").length, 0, "held while the turn still runs");

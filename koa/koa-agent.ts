@@ -2761,8 +2761,11 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   pi.on("turn_start", running);
   pi.on("tool_execution_start", running);
   pi.on("tool_call", running);
-  pi.on("turn_end", (event: { toolResults?: unknown[] }) => {
-    if (event?.toolResults?.length) host.jobs.flushStreams();
+  pi.on("turn_end", async (event) => {
+    if (event?.toolResults?.length) { host.jobs.flushStreams(); return; }
+    if (event.message.role !== "assistant" || event.message.stopReason !== "stop" || event.message.content.some(part => part.type === "toolCall")) return;
+    ending = { kind: "ended", text: contentText(event.message.content, "") };
+    await reportIfPending();
   });
 
   pi.on("agent_end", (event) => {
@@ -2783,7 +2786,6 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   });
 
   const reportIfPending = async (): Promise<void> => {
-    if (!settled) return;
     const parent = host.self.parent?.extension;
     if (!parent || !ownSessionId || host.self.stopping) return;
     if (turnEndedByControl) return;
@@ -2845,7 +2847,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   });
 
   host.extension = {
-    jobEnded: () => { void reportIfPending().catch((error: unknown) => session?.ui?.notify(errorText(error), "error")); },
+    jobEnded: () => { if (settled) void reportIfPending().catch((error: unknown) => session?.ui?.notify(errorText(error), "error")); },
     completionContext, restartState, receive, childState, scope: async (maxAgeMs, ended = false) => (await discovery(maxAgeMs, !ended)).rows, jobNotice: deliverNotice, jobStream,
     markWork: (child) => { const known = children().find((c) => c.session === child); if (known) markChildWork(known); },
     receiveReport: (child, text) => {

@@ -758,13 +758,17 @@ follow its last work, or it must have no work. The child reads this
 fact through its parent; there is no duplicate child-side store.
 Work includes text sent by the user in the child's page view.
 
-A settled child reports its last assistant message when it has work
-to report, no non-service job running and no live own child that owes
-a report. Aborted or interrupted turns do not report. Provider errors
-send an error notice instead. A later turn on the same work can send
-a further distinct result; empty or repeated text does not duplicate
-that result. A stopped job sends no notice, so job ending also checks
-whether a settled child can now report.
+A child reports the final text of each turn that ends without a tool
+call, when it has work to report, no non-service job running and no
+live own child that owes a report. The report goes at the turn's end,
+not when the run settles: a message queued while the turn runs starts
+the next turn in the same run, and pi settles only after that turn.
+That turn's own final text is a further report. Aborted or
+interrupted turns do not report. Provider errors send an error notice
+instead. Empty or repeated text does not duplicate a result. While
+live work holds the report, a later final text replaces the held
+one. A stopped job sends no notice, so job ending also checks whether
+a settled child can now report the held text.
 
 The parent records the report before delivering its capped notice.
 `read_report` reads the stored text. Reporting does not end a child;
