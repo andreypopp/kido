@@ -125,6 +125,7 @@ targets:
         excludes: ["__Snapshots__"]
       - path: TestSupport
       - path: KoaSnapshots
+        excludes: ["Driver.swift"]
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -210,7 +211,3 @@ schemes:
         KO_RUNTIME_COMMAND_KIND: "1"
         KIDO_VISUAL_RECORD: "$(KIDO_VISUAL_RECORD)"
         KIDO_VSYNC_MEASURE: "$(KIDO_VSYNC_MEASURE)"
-        KOA_STRESS: "$(KOA_STRESS)"
-        KOA_STRESS_VISIBLE: "$(KOA_STRESS_VISIBLE)"
-        KOA_STRESS_TESTS: "$(KOA_STRESS_TESTS)"
-        KOA_STRESS_OUTPUT: "$(KOA_STRESS_OUTPUT)"

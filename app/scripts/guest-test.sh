@@ -10,12 +10,12 @@ fmt() { echo "$target: $1 $(($2 / 60))m$(($2 % 60))s" >&2; }
 status=0
 case "$target" in
 visual|ko-test)
-	scheme=$1 derived=$2 server=$3 settings=$4 stress_tests=$5
-	shift 5
+	scheme=$1 derived=$2 server=$3 settings=$4
+	shift 4
 	rm -rf "$server"
 	mkdir -p "$server"
 	trap '"$KO_CHECKOUT/build/ko/bin/ko" kill-server --server "$server" 2>/dev/null || true; rm -rf "$server"' EXIT
-	xcodebuild -project Kido.xcodeproj -scheme "$scheme" -configuration Debug -destination platform=macOS -derivedDataPath "$derived" -clonedSourcePackagesDirPath "$PWD/$derived/SourcePackages" -disableAutomaticPackageResolution $settings KOA_STRESS_TESTS="$stress_tests" "$@" test-without-building 2>&1 || status=$?
+	xcodebuild -project Kido.xcodeproj -scheme "$scheme" -configuration Debug -destination platform=macOS -derivedDataPath "$derived" -clonedSourcePackagesDirPath "$PWD/$derived/SourcePackages" -disableAutomaticPackageResolution $settings "$@" test-without-building 2>&1 || status=$?
 	fmt tests $(($(date +%s) - t0))
 	case "$target" in
 	visual)

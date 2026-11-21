@@ -57,9 +57,7 @@ while IFS= read -r path; do
           *) adds='build lint-sh lint-rs e2e';
              if [[ $e2e != *" $module:: "* ]]; then e2e+="$module:: "; fi ;;
         esac ;;
-      page|replay) adds='build lint ts visual'; visual_file app/VisualTests/KoaWebviewTests.swift ;;
-      host) adds='build lint ts visual'; visual_file app/VisualTests/KoaHostTests.swift; visual_file app/VisualTests/KoaStressTests.swift ;;
-      stress) adds='build lint ts visual'; visual_file app/VisualTests/KoaStressTests.swift ;;
+      page|replay) adds='build lint ts' ;;
       snapshot)
         adds=visual; name=${path#app/VisualTests/__Snapshots__/}; name=${name%%/*}
         visual_file "app/VisualTests/$name.swift" ;;
@@ -82,8 +80,6 @@ ko_sys/* ko_vt_sys/*|build build-linux lint unit e2e
 ko/* ko_*/* fuzz/* share/ko/*|build lint unit e2e
 koa/page/*|page
 koa/testdata/replay.ts koa/testdata/scenario.ts koa/testdata/scenario-parts.ts koa/testdata/scenarios/*|replay
-koa/testdata/visual-ext.ts|host
-koa/testdata/stress-ext.ts|stress
 koa/* webview/* .pi/* scripts/test-ts.sh|build lint ts
 app/VisualTests/__Snapshots__/*/*|snapshot
 app/VisualTests/*.swift|swift

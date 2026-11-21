@@ -99,7 +99,7 @@ def lexical(text):
         return re.sub(r'[^\n]', ' ', token)
     return re.sub(pattern, mask, text), comments
 
-ts_sources = glob.glob('webview/*.ts') + glob.glob('koa/*.ts') + glob.glob('koa/stress/*.ts') + glob.glob('koa/page/*.ts')
+ts_sources = glob.glob('webview/*.ts') + glob.glob('koa/*.ts') + glob.glob('koa/page/*.ts')
 signal_sites = {'koa/koa-agent.ts': {'function': 'signalJob', 'count': 0}, 'koa/koa-child.ts': {'function': 'signalChild', 'count': 0}}
 for path in ts_sources:
     text = pathlib.Path(path).read_text()

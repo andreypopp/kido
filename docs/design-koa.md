@@ -1012,10 +1012,9 @@ Start at these owners rather than duplicating their contracts:
   models. `koa/page/page.html` is the real DOM structure used by tests.
 - `webview/index.ts`: pane and browser transports.
 - `koa/testdata/`: fixtures, replay, scenarios, fake ko and prompt
-  snapshot. `koa/stress/` contains manual measurement workloads.
+  snapshot.
 - `app/KoaSnapshots/`: shared WebKit state driver and image comparison.
-  `app/KoaHost/` is its host command-line runner;
-  `app/VisualTests/` supplies native integration tests.
+  `app/KoaHost/` is its host command-line runner.
 
 `koa/package.json` and its lockfile pin the build and test dependencies,
 including the real pi used by tests. TypeScript checks the Node side
@@ -1113,8 +1112,8 @@ The script scrubs pane identity from the test environment. Fixture
 children get private home and agent directories. A gate waits for a
 test action, not elapsed time. Follow the repository's bounded-wait
 and no-repeat rules in `AGENTS.md`. Final unit verification uses
-`make checks`; inspect its plan with `make checks DRY=1` and narrow
-the visual selection to the affected tests.
+`make checks`; inspect its plan with `make checks DRY=1`. Run koa
+visual checks with `make -C app koa-host` on the host.
 
 ### Fake ko and fake model
 
@@ -1136,8 +1135,7 @@ credentials or model service is needed.
 
 Use real session files for saved history and small test extensions
 for dialogs, startup UI and extension errors. Do not enlarge a fake
-model to invent host facts. `koa/testdata/visual-ext.ts` and
-`koa/testdata/stress-ext.ts` supply the app fixtures' model setup.
+model to invent host facts.
 `koa/testdata/ko-prompts.txt` snapshots extension prompt text;
 `make prompts` regenerates it when that text intentionally changes.
 
@@ -1168,59 +1166,39 @@ for width changes instead of restarting the whole chain.
 `app/KoaSnapshots/Capture.swift` crops the union of matched selectors
 at the image's backing scale. Missing or out-of-page rectangles fail,
 not clamp. Insets include borders and shadows. Most images cover a
-component; composition anchors cover the whole page, and native
-focus-border cases cover the pane. Geometry-only states keep their
+component; composition anchors cover the whole page. Geometry-only states keep their
 assertions without a redundant image. Capture stable states, not an
 uncontrolled animation frame.
 
-`KoaWebviewTests` runs these states through a real pane bridge in the
-VM. Native-only behavior stays there. `KoaHostTests` uses real koa,
-pinned pi and the fake provider for interrupt/input recovery, the
-external editor, held feed output and prompt-to-quit lifecycle.
-`KoaFocusTests` covers native window and composer focus routing.
 `WebviewPaneTests` checks the generic sandbox and WebKit constraints.
 The test files, not a duplicated method list, define coverage.
 
-### Host iteration versus the VM
+### Host visual checks
 
 `make -C app koa-host` runs the shared state driver in an off-screen
 WKWebView without an XCTest host or an app window on the screen.
 `app/KoaHost/main.swift` uses prohibited activation and fails if the
 run changes the active application. It starts headless replay without
-opening a browser. It is permitted on the developer's Mac for iteration.
+opening a browser. koa visual checks run only on the host, not in the VM.
 
 Its references are local to the host macOS build under
 `app/build/koa-host/`, not committed references. Record them with
 `RECORD=1`; select a fixture or capture with ONLY. All phases of a
 selected fixture still run. A geometry-only fixture must be named
-explicitly. COMPARE can additionally report differences from guest
+explicitly. COMPARE can additionally report differences from committed
 references, but those differences are informational. Native-only
-states are reported as skipped. Host and guest share the color-space
+states are reported as skipped. Image comparison uses the color-space
 conversion in `app/KoaSnapshots/Pixels.swift`.
-
-The final visual check and committed snapshots belong to the pinned
-VM. A passing host run does not replace it. Focused commands are:
 
 ```sh
 make -C app koa-host ONLY=Fixture
-make -C app visual ONLY="KoaWebviewTests/testName"
-make -C app visual ONLY="KoaWebviewTests/testName" RECORD=1
+make -C app koa-host ONLY=Fixture RECORD=1
 ```
 
-Use actual names from the driver and test file. Record affected images
-once after the last implementation and review change, inspect them,
-then run final checks. Never record guest references on the host or
-set GUEST=0 locally. The VM serializes native test runs across units;
-avoid whole-class runs during iteration. `AGENTS.md` owns the complete
-verification and snapshot-review policy.
+Use actual names from the driver. Record affected host images once
+after the last implementation and review change, then inspect them.
 
 ### Measurement
-
-Manual workloads live in `koa/stress/`. The Chrome runner is
-`koa/stress/run.sh`; `make -C app koa-stress` runs the native cases
-through the app's guest runner. `KoaStressTests` skips without its
-manual opt-in. Visible streaming and compositor measurements require
-the visible mode in the guest. They are not ordinary verification.
 
 `koa/page/metrics.ts` instruments only metrics mode. The report
 separates receipt, frame scheduling and frame work; a frame timestamp
@@ -1230,12 +1208,8 @@ reads after writes and working-mark detachments. Chrome heap and
 WebContent physical footprint are different measures and must not be
 compared as the same quantity.
 
-`koa/stress/statistics.ts`, `koa/stress/workloads.ts` and
-`koa/stress/report.ts` define budgets and reported-only cases. The
-streaming-history comparison has a relative native memory budget;
-there is no general visible-page physical-footprint budget. Loaded
-history remains in the model while DOM windowing limits mounted rows.
-Measurement must distinguish those two costs.
+Loaded history remains in the model while DOM windowing limits
+mounted rows. Measurement must distinguish those two costs.
 
 ## Release
 

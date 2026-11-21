@@ -496,8 +496,9 @@ windows and take focus. The app's test targets (`test`, `ko-test`,
 tests in the visual-test VM through `app/scripts/guest-test.sh`
 (docs/build.md, "The visual-test VM"). Only CI passes `GUEST=0`; an
 agent never does. A new target that launches the app uses the same
-runner. For koa's off-screen host iteration exception, see
-[docs/design-koa.md](docs/design-koa.md#host-iteration-versus-the-vm).
+runner. koa visual checks run only on the host with
+`make -C app koa-host`; see
+[docs/design-koa.md](docs/design-koa.md#host-visual-checks).
 
 **Visual snapshots belong to the guest.** `make -C app visual` builds
 on the host and runs in the visual-test VM on one pinned macOS build

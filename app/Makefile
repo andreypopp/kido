@@ -5,7 +5,7 @@ KO_CHECKOUT ?= ..
 KO_ABS = $(abspath $(KO_CHECKOUT))
 VM_BIN = vm/.build/out/Products/Release/kido-vm
 GUEST ?= 1
-GUEST_EXEC = $(if $(filter 1,$(GUEST)),$(VM_BIN) exec --dir $(CURDIR) $(GUEST_LINK) --) env KO_CHECKOUT=$(KO_ABS) $(foreach v,$(filter TEST_RUNNER_%,$(.VARIABLES)),'$(v)=$(subst ','"'"',$($(v)))') scripts/guest-test.sh
+GUEST_EXEC = $(if $(filter 1,$(GUEST)),$(VM_BIN) exec --dir $(CURDIR) --) env KO_CHECKOUT=$(KO_ABS) $(foreach v,$(filter TEST_RUNNER_%,$(.VARIABLES)),'$(v)=$(subst ','"'"',$($(v)))') scripts/guest-test.sh
 GUEST_VM = $(if $(filter 1,$(GUEST)),vm)
 PACKAGES = KoModel KoClientKit KidoPairing PaneGeometry SidebarFeed PromptMarkdown
 TIME_BUILD = t1=$$(date +%s); fmt build $$((t1 - t0))
@@ -76,15 +76,12 @@ stress tsan-stress asan-stress: $(GUEST_VM)
 		--seed $(SEED) --duration $(DURATION) --find $(FIND) --out build/bundle/stress/$@-$(SEED) | $(TIME_END)
 
 RECORD ?= 0
-KOA_STRESS_OUTPUT ?= /tmp/koa-stress
 
 visual: VISUAL_FLAG =
 visual-fast: VISUAL_FLAG = skip
 visual-slow: VISUAL_FLAG = only
 visual visual-fast visual-slow: DERIVED = build/xcode.noindex/derived-visual
-visual visual-fast visual-slow: GUEST_LINK = $(if $(filter 1,$(KOA_STRESS)),--link $(KOA_STRESS_OUTPUT))
 visual visual-fast visual-slow: project $(GUEST_VM)
-	$(MAKE) -C ../koa build
 	mkdir -p build/bundle/visual/{home,state}
 	clang -dynamiclib -Werror -Wno-deprecated-declarations scripts/renderer-probes.c -framework CoreVideo -o build/bundle/visual/renderer-probes.dylib
 	@set -eo pipefail; select=''; \
@@ -99,24 +96,13 @@ visual visual-fast visual-slow: project $(GUEST_VM)
 		done < VisualTests/slow.txt; \
 		test '$(VISUAL_FLAG)' != only || test -n "$$select" || { echo "slow.txt: selects no tests" >&2; exit 1; }; \
 	fi; \
-	settings="KIDO_VISUAL_SERVER=/tmp/ka-visual-vm KO_CHECKOUT=$(KO_ABS) KIDO_VISUAL_CONDITION=KIDO_VISUAL KIDO_VISUAL_RECORD=$(RECORD) KOA_STRESS=$(KOA_STRESS) KOA_STRESS_VISIBLE=$(KOA_STRESS_VISIBLE) KOA_STRESS_OUTPUT=$(KOA_STRESS_OUTPUT)"; \
+	settings="KIDO_VISUAL_SERVER=/tmp/ka-visual-vm KO_CHECKOUT=$(KO_ABS) KIDO_VISUAL_CONDITION=KIDO_VISUAL KIDO_VISUAL_RECORD=$(RECORD)"; \
 	only='$(foreach test,$(ONLY),-only-testing:VisualTests/$(test)) '"$$select"; \
 	$(TIME_START); \
 	xcodebuild -project Kido.xcodeproj -scheme Visual -configuration Debug -destination platform=macOS -derivedDataPath $(DERIVED) \
-		$$settings KOA_STRESS_TESTS="$(ONLY)" $$only build-for-testing 2>&1 | $(XCODE_PROGRESS); \
+		$$settings $$only build-for-testing 2>&1 | $(XCODE_PROGRESS); \
 	$(TIME_BUILD); \
-	$(GUEST_EXEC) visual Visual $(DERIVED) /tmp/ka-visual-vm "$$settings" "$(ONLY)" $$only | $(XCODE_PROGRESS) | $(TIME_END)
-
-.PHONY: koa-stress koa-stress-root
-koa-stress-root:
-	@printf '%s\n' '$(KOA_STRESS_OUTPUT)'
-
-koa-stress: ONLY = KoaStressTests WebviewPaneTests/testWebviewFetchSlots
-koa-stress:
-	@mkdir -p '$(KOA_STRESS_OUTPUT)'; \
-	run=$${KOA_STRESS_RUN:-$$(mktemp -d '$(KOA_STRESS_OUTPUT)/run-XXXXXX')} || exit 1; \
-	echo "koa stress run: $$run"; \
-	$(MAKE) visual ONLY="$(ONLY)" KOA_STRESS=1 KOA_STRESS_OUTPUT="$$run"
+	$(GUEST_EXEC) visual Visual $(DERIVED) /tmp/ka-visual-vm "$$settings" $$only | $(XCODE_PROGRESS) | $(TIME_END)
 
 ko-test: DERIVED = build/xcode.noindex/derived-$@
 ko-test: project $(GUEST_VM)
@@ -129,7 +115,7 @@ ko-test: project $(GUEST_VM)
 	xcodebuild -project Kido.xcodeproj -scheme Ko -configuration Debug -destination platform=macOS \
 		-derivedDataPath $(DERIVED) $$settings $$only build-for-testing 2>&1 | $(XCODE_PROGRESS); \
 	$(TIME_BUILD); \
-	$(GUEST_EXEC) ko-test Ko $(DERIVED) "$$server" "$$settings" '' $$only | $(XCODE_PROGRESS) | $(TIME_END)
+	$(GUEST_EXEC) ko-test Ko $(DERIVED) "$$server" "$$settings" $$only | $(XCODE_PROGRESS) | $(TIME_END)
 
 ko-model:
 	python3 scripts/gen-ko-model.py $(KO_ABS)/share/ko/openapi.json $(KO_ABS)/share/ko/client-model.json $(KO_ABS)/share/ko/config-schema.json Packages/KoModel/Sources/KoModel/KoSchema.swift

@@ -48,8 +48,6 @@ name selects every check. It sets `KO_FAIL_FAST=1`, so it stops at
 the first failing stage. `KO_CHECKS_VISUAL` (test names as
 `VISUAL_ONLY` takes them) replaces the computed visual selection.
 
-See [design-koa.md](design-koa.md#measurement) for koa's manual measurements.
-
 ## CI
 
 CI (`.github/workflows/ci.yml`) runs on Ubuntu and macOS on every
@@ -67,7 +65,9 @@ the host's macOS build is not the reference. `make visual` prints one
 tests, the quit check and the total; `test` and `ko-test` print the
 same lines without the quit check.
 
-See [design-koa.md](design-koa.md#development) for koa's snapshots, replay driver and host iteration.
+koa visual checks run only on the host with `make -C app koa-host`.
+See [design-koa.md](design-koa.md#development) for snapshots and the
+replay driver.
 
 `scripts/main-watch.sh` watches main and reports each observed head's
 CI. `/gh-watch` starts it through streamed `async_bash`.
