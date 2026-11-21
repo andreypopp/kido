@@ -2172,7 +2172,15 @@ light and dark in the gallery.
   message's chip, the naming chip), a filter on it (a
   click on its dimmed row filters as on a live row), a turn moved
   or a thread merged into it all leave it archived. Rename works as
-  on a live thread. The state is koa's, per session, in the session's thread
+  on a live thread and keeps the archived state; a merge takes the
+  target's state. The quote match (a quoted line of an archived
+  thread's reply) ignores archived threads, as the classifier does,
+  and the message goes to the classifier. The line-mode capsule
+  under a filter on an archived thread shows "# name ×" as for any
+  filter, the name dimmed to 45% and the × at full strength; with
+  every thread archived the capsule stays with the "…" alone, no
+  names and no "+N", so the panel stays reachable (unit B,
+  2026-11-21). The state is koa's, per session, in the session's thread
   list (`archived: true`), so it survives a reload and a resume.
 - **The classifier MVP, reviewed** (2026-11-21; the user promoted
   the MVP of plans/koa-thread-classifier.md; the page's panel
