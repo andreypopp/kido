@@ -456,7 +456,11 @@ the Option drag, and the sidebar without the float's row.
   move band in its 4pt). A runtime float's 3pt stripe sits at the
   bottom of the padding, y 19–22, directly above the first row. The
   COPY and history pills, the find capsule and the runtime pill keep
-  their places in the content, below the padding. A koa page's
+  their places in the content, below the padding: find at content y
+  8 (frame y 30–62), and while it is open the hover toolbar sits
+  below it at content y 48 (frame y 70), as the tiled rule has it
+  (design/pane/NOTES.md); the toolbar is never hidden and find is
+  never narrowed for it. A koa page's
   `--ko-inset-top` is 0 in a float (nothing sits over the page).
   The float's size in cells does not change; the window is 12pt
   taller for the same grid.
