@@ -437,10 +437,12 @@ the Option drag, and the sidebar without the float's row.
   and nothing is drawn over a float's content for it. `PanePlaceCapsule`
   is deleted.
 - **No grip; a taller top padding.** A float's hover toolbar has no
-  Drag pane button: Split right, Split down, Zoom, Dock Pane,
-  separator, Close pane, at the tiled toolbar's spacing (x 3, 29,
-  55, 81, separator, 116), 145×32pt at (paneWidth − 8 − 145, 8); the
-  tiled toolbar keeps its grip and its 171pt. Instead the top
+  Drag pane button, and no Split right, Split down or Zoom either
+  (2026-11-21, the floatf unit's question: ko refuses a split of a
+  float and zoom hides it, so they would be buttons that never
+  enable): Dock Pane, separator, Close pane, at the tiled toolbar's
+  spacing (x 3, separator, 38), 67×32pt at (paneWidth − 8 − 67, 8);
+  the tiled toolbar keeps its six buttons and its 171pt. Instead the top
   padding, the chrome above the grid with no cells under it, grows
   from 10pt to 22pt (`PaneLayout.floatTop`): padding, not border,
   because a thicker border would read as a frame of another colour,
@@ -465,11 +467,16 @@ the Option drag, and the sidebar without the float's row.
   during a band drag and the pointer is over a tiled pane of the
   float's own ko window shown in the main window, the drop targets
   and the accent insertion bar show as for a tiled source, and the
-  drop sends `dock {pane, target, edge}`; releasing Option hides
+  drop sends `dock {pane, target, edge}`: pane-edge targets only,
+  no window-edge zone and no swap (a float has no place to swap
+  with); releasing Option hides
   the bar and the drop is a move; over any other content the drag is
   a move with or without Option. Option is read on each move and on
-  the drop, as the pop out's is (section A). Escape or a click
-  cancels, and the float returns. A float's drag never shows the
+  the drop, as the pop out's is (section A). A band move commits
+  once, on the drop: the window follows the pointer locally and
+  nothing streams to the server during the drag, so Escape or a
+  click cancels and the float returns to where it started (the
+  floatf unit, 2026-11-21). A float's drag never shows the
   pop-out ghost. The other docking routes are unchanged: Dock Pane
   in the Shell menu (⌥⌘F), the toolbar button, the palette.
 - **The menu while a float is key.** The key window's first
@@ -529,7 +536,7 @@ the Option drag, and the sidebar without the float's row.
   is a depth-0 row, the cluster count omits a floating child, the
   tab's aggregate includes the float, no row is focused while the
   float is the active pane. Chrome: a float's toolbar has five
-  buttons at 145pt, the pill is at y 9–13, the stripe at 19–22, the
+  buttons at 67pt, the pill is at y 9–13, the stripe at 19–22, the
   grid starts at 22pt. Menu: with a float key, validate returns false
   for every item of the disabled list and true for the others, and
   ⌘} with a float key leaves the shown window unchanged; an Option
