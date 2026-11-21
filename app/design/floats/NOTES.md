@@ -431,13 +431,11 @@ the Option drag, and the sidebar without the float's row.
   list that finds a float besides ⌘\` and the Dock menu, and
   Back/Forward keeps float targets. A float's pane closing, docking
   or floating changes the rows in the same snapshot as the layout.
-- **No chip.** The place capsule of section E ("<session> ›
+- **No chip** (user, 2026-11-21: confirmed). The place capsule of section E ("<session> ›
   <window>") goes, with the `--ko-inset-top` it set: the float's
   identity is its window title (Dock menu, Mission Control, ⌘\`),
   and nothing is drawn over a float's content for it. `PanePlaceCapsule`
-  is deleted. (Assumed: the "chip for child panes inside floats" is
-  this capsule, the only chip the app draws over a float; if another
-  is meant, it goes the same way and this bullet names it.)
+  is deleted.
 - **No grip; a taller top padding.** A float's hover toolbar has no
   Drag pane button: Split right, Split down, Zoom, Dock Pane,
   separator, Close pane, at the tiled toolbar's spacing (x 3, 29,
@@ -503,9 +501,8 @@ the Option drag, and the sidebar without the float's row.
     as today (⌘O's palette opens over the main window and returns
     key to the float). Reset Clipboard and Upload Permissions:
     app-wide.
-  - View: Hide Sidebar (⇧⌘S): disabled. Focus Sidebar (⌘S):
-    app-wide: it is a route out of the float, making the main window
-    key with the sidebar focused, as today. Command Palette… (⌘P,
+  - View: Hide Sidebar (⇧⌘S), Focus Sidebar (⌘S): disabled (user,
+    2026-11-21: ⌘S is not the way out of a float). Command Palette… (⌘P,
     ⇧⌘P): app-wide, over the main window, key back to the float on
     close unless the palette navigated. Theme…: app-wide.
   - Window: Next Window (⌘}), Previous Window (⌘{), the window list
@@ -515,11 +512,17 @@ the Option drag, and the sidebar without the float's row.
   - Full Screen (⌃⌘F) is the main window's native item; a float has
     no title bar and no full screen, so the key does nothing in a
     float. ⌘\` cycles the windows, floats included, as AppKit does.
-  The main window's own shortcuts work again the moment it is key.
+  The keyboard's way back to the main window is ⌘\` (and ⇧⌘\`),
+  the system's own cycle, which a borderless float takes part in
+  (section E); no command of ours is needed, and none is added:
+  the palette (⌘P) also returns to the main window when a row
+  navigates to a tiled pane, and a click does the rest. The main
+  window's own shortcuts work again the moment it is key.
   The palette's rows follow the same table: while a float is key the
   palette's root hides the Window and Session rows that are disabled
   (Next/Previous Window, Next/Previous Session, Close Window, Rename
-  Session, Close Session, Hide Sidebar, Zoom Pane, Split Right/Down),
+  Session, Close Session, Hide Sidebar, Focus Sidebar, Zoom Pane,
+  Split Right/Down),
   and keeps the sessions, panes, recent hosts and app-wide commands.
 - **Tests.** Rows: a window with a float lists its tiled panes only,
   a float's records and cluster are absent, a tiled child of a float
