@@ -89,6 +89,14 @@ stop or change the live server that runs the developer's pane.
 
 ## Checks
 
+A koa unit (a change only under `koa/`) runs only koa's checks,
+through `koa/Makefile`. It never runs a check outside `koa/`: no
+`make lint`, `make test`, `scripts/checks.sh`, `scripts/verify.sh`,
+cargo or Swift. Its fast gate is `make -C koa check`; its final
+verification is `make -C koa verify` when it changes the page or its
+visual checks, else `make -C koa check`. The one Rust build is the
+fake ko that `make -C koa test` builds. CI runs the rest.
+
 `koa/Makefile` is the one entry point of koa's checks, and
 `koa/scripts/test.sh` runs them:
 
@@ -101,8 +109,7 @@ stop or change the live server that runs the developer's pane.
 - `make -C koa test` builds fake ko (`make build-fake-ko`) and koa
   and runs the Node suite; `koa/testdata/run-tests.mjs` schedules it
   with the long files first. `FILE=` runs only the named files.
-- `make -C koa check` runs these three. It is the fast gate of a
-  TypeScript change.
+- `make -C koa check` runs these three.
 - `make -C koa prompts` (or the root `make prompts`) regenerates
   `koa/testdata/ko-prompts.txt` when the extension's prompt text
   changes on purpose.
@@ -120,18 +127,10 @@ Under `KO_TS_TEST_REQUIRED=1`, which CI sets, a missing Node is a
 failure. Fixture children get private home and agent directories. A
 gate waits for a test action, not elapsed time.
 
-The repository's checks call these targets. `scripts/lint.sh` calls
-`make -C koa lint`. The `ts` stage of `scripts/verify.sh` runs `make
--C koa typecheck test` and `scripts/test-pi.sh`; the local stage
-`koa-visual` runs `make -C koa visual`. `scripts/checks.sh` selects
-them from the changed paths: a change in `koa/`, `webview/` or
-`.pi/` selects `build`, `lint` and `ts`; a change of the page or the
-replay scenarios adds `koa-visual`; a change in `koa/visual/` selects
-`lint`, `ts` and `koa-visual`; a change of the theme files selects `koa-visual`
-and the app's `ko-test`. Final unit verification uses `make checks`;
-`make checks DRY=1` prints its plan. CI runs the `ts` stage and
-installs koa with `make -C koa install`, then runs the installed
-`koa --help`. CI does not run `koa-visual`.
+CI runs koa's checks through the repository's verification, which
+calls these targets, and installs koa with `make -C koa install`,
+then runs the installed `koa --help`. CI does not run `make -C koa
+visual`.
 
 ## Choose the test boundary
 

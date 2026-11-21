@@ -677,6 +677,11 @@ delegates as its brief says and does not write code.
   `ko-test` or the full visual stage; CI runs the rest. A finding
   outside the request (a defect seen on the way, a reviewer's idea)
   goes to the user as a follow-up item, not into the same unit.
+- **A koa unit** changes only `koa/`. Its manager and implementers
+  follow `docs/dev-koa.md` for building, testing and
+  verification, and run only the checks that it names. The rules
+  below that name `make lint`, `scripts/checks.sh` or the app's
+  visual tests do not apply to a koa unit.
 - **Approval for new unsafe code and new routes.** Before an
   implementer writes a new `unsafe` block, `unsafe fn`, `unsafe impl`
   or `unsafe extern`, or adds a route to the `routes!` block, the
@@ -805,7 +810,7 @@ delegates as its brief says and does not write code.
   the kill paths.
 - **Fast gates first.** After every edit, before it reports or runs
   `scripts/checks.sh`, an implementer runs the fast gates of what it
-  changed: `make lint`, and `make -C koa check` for TypeScript. A
+  changed: `make lint` (a koa unit: `docs/dev-koa.md`). A
   slow stage never runs on a tree that fails a fast gate.
 - **Verify what you touched; CI runs the whole.** If a bug's cause is
   not clear from the code, write the test first. This includes a
