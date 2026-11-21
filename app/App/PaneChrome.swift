@@ -346,7 +346,7 @@ final class PaneToolbar: PaneCapsule {
     #if KIDO_VISUAL
     var visualAnimationsEnded = 0
     #endif
-    private static let floatImages = ["pip.enter", "pip.exit"].map {
+    private static let floatImages = ["pip.exit", "pip.enter"].map {
         NSImage(systemSymbolName: $0, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 15, weight: .regular))
     }
     private static let zoomImages = ["arrow.up.left.and.arrow.down.right", "arrow.down.right.and.arrow.up.left"].map {

@@ -206,8 +206,8 @@ so a float docks and a tiled pane pops out without the menu.
   separator at 137, Close at 142, all at y 3; the frame still ends
   8pt from the pane's right edge, the hot zone follows. The find
   rule (the toolbar at y 48 while find is open) is unchanged.
-- **The glyphs.** `pip.enter` for Float Pane on a tiled pane and
-  `pip.exit` for Dock Pane on a float: the picture-in-picture pair
+- **The glyphs.** `pip.exit` for Float Pane on a tiled pane and
+  `pip.enter` for Dock Pane on a float: the picture-in-picture pair
   is the pop-out and the return. The same size and colours as the
   other toolbar symbols. Accessibility labels "Float pane" and "Dock
   pane"; no tooltips, as the other toolbar buttons have none.
