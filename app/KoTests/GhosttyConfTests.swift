@@ -15,7 +15,7 @@ import XCTest
     }
 
     func testEverySettingMapsToGhosttyWithoutDiagnostics() throws {
-        XCTAssertEqual(ghostty_init(0, nil), GHOSTTY_SUCCESS)
+        XCTAssertEqual(ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv), GHOSTTY_SUCCESS)
         let file = try fixture("""
         app:
           font: {family: Menlo, size: 15, features: [ss13, -ss17, +liga], thicken: true, line_height: 12}
@@ -73,7 +73,7 @@ import XCTest
     }
 
     func testDefaultsAndAllEnumAlternativesHaveNoDiagnostics() throws {
-        XCTAssertEqual(ghostty_init(0, nil), GHOSTTY_SUCCESS)
+        XCTAssertEqual(ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv), GHOSTTY_SUCCESS)
         for option in ["off", "on", "left", "right"] {
             for copy in ["false", "true"] {
                 let file = try fixture("app: {keyboard: {option_as_alt: \(option)}, clipboard: {copy_on_select: \(copy)}}\n")
@@ -94,7 +94,7 @@ import XCTest
     }
 
     func testEveryKeyActionIsAcceptedByGhostty() throws {
-        XCTAssertEqual(ghostty_init(0, nil), GHOSTTY_SUCCESS)
+        XCTAssertEqual(ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv), GHOSTTY_SUCCESS)
         for action in ["text:X", "csi:1;5A", "esc:b", "unbind", "paste_from_clipboard", "copy_to_clipboard", "increase_font_size:1.5", "decrease_font_size:0.5", "reset_font_size"] {
             let data = try JSONSerialization.data(withJSONObject: ["app": ["keys": ["ctrl+e": action]]])
             let file = try fixture(String(decoding: data, as: UTF8.self))
@@ -121,7 +121,7 @@ import XCTest
     }
 
     func testThemeChecksAndResolution() throws {
-        XCTAssertEqual(ghostty_init(0, nil), GHOSTTY_SUCCESS)
+        XCTAssertEqual(ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv), GHOSTTY_SUCCESS)
         let file = try fixture()
         let directory = URL(fileURLWithPath: file).deletingLastPathComponent().appendingPathComponent("themes")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -148,7 +148,7 @@ import XCTest
     }
 
     func testThemesCannotLoadOtherFiles() throws {
-        XCTAssertEqual(ghostty_init(0, nil), GHOSTTY_SUCCESS)
+        XCTAssertEqual(ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv), GHOSTTY_SUCCESS)
         let file = try fixture("app: {theme: custom}\n")
         let directory = ThemePaths.directory(configFile: file)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -177,7 +177,7 @@ import XCTest
     }
 
     func testThemePathsQuoteDelimitersAndKeepTrailingWhitespace() throws {
-        XCTAssertEqual(ghostty_init(0, nil), GHOSTTY_SUCCESS)
+        XCTAssertEqual(ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv), GHOSTTY_SUCCESS)
         let root = try stateDir()
         addTeardownBlock { try? FileManager.default.removeItem(atPath: root) }
         let directory = URL(fileURLWithPath: root).appendingPathComponent("comma,colon:")

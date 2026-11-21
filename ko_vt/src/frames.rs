@@ -61,14 +61,14 @@ impl Terminal {
             return Ok(None);
         }
         let keys = [
-            sys::GHOSTTY_KITTY_IMAGE_DATA_WIDTH,
-            sys::GHOSTTY_KITTY_IMAGE_DATA_HEIGHT,
-            sys::GHOSTTY_KITTY_IMAGE_DATA_FRAME_COUNT,
-            sys::GHOSTTY_KITTY_IMAGE_DATA_ANIMATION_STATE,
-            sys::GHOSTTY_KITTY_IMAGE_DATA_CURRENT_FRAME,
-            sys::GHOSTTY_KITTY_IMAGE_DATA_MAX_LOOPS,
-            sys::GHOSTTY_KITTY_IMAGE_DATA_CURRENT_LOOP,
-            sys::GHOSTTY_KITTY_IMAGE_DATA_PENDING_FRAMES,
+            sys::GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_WIDTH,
+            sys::GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_HEIGHT,
+            sys::GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_FRAME_COUNT,
+            sys::GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_ANIMATION_STATE,
+            sys::GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_CURRENT_FRAME,
+            sys::GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_MAX_LOOPS,
+            sys::GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_CURRENT_LOOP,
+            sys::GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_PENDING_FRAMES,
         ];
         let (mut width, mut height) = (0u32, 0u32);
         let mut frames = 0u32;

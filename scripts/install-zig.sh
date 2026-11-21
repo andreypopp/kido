@@ -15,7 +15,7 @@
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
-release=0.17.0
+release=0.17.1
 
 if [ "${1:-}" = "--print-key" ]; then
 	printf '%s-%s\n' "$release" "$(git hash-object "$script_dir/install-zig.sh")"
@@ -24,10 +24,10 @@ fi
 prefix=${1:?"usage: $0 <prefix>"}
 
 case "$(uname -s)-$(uname -m)" in
-	Darwin-arm64) platform=aarch64-macos sum=b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a ;;
-	Darwin-x86_64) platform=x86_64-macos sum=4f9a1c5269aa17ebda5e6d3c2b89d6cbf36f7d2b22a0306e9ab98f25f95529c6 ;;
-	Linux-x86_64) platform=x86_64-linux sum=1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026 ;;
-	Linux-aarch64 | Linux-arm64) platform=aarch64-linux sum=9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8 ;;
+	Darwin-arm64) platform=aarch64-macos sum=75f1bc7a1e9852f17ec9a0c1895f767c4ec56d46bc8a834920eece1d0359dd8d ;;
+	Darwin-x86_64) platform=x86_64-macos sum=9af07b20319fbd0c92ee46ad23e81d6a782b1aaea2cfb8dcbff35f1d2c7ddbb7 ;;
+	Linux-x86_64) platform=x86_64-linux sum=3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a ;;
+	Linux-aarch64 | Linux-arm64) platform=aarch64-linux sum=a1546d5646eb184437918d6635ca6b762a0e889eac09cef720ee7a1ed3fe7795 ;;
 	*) echo "install-zig.sh: no zig release for $(uname -s) $(uname -m)" >&2; exit 1 ;;
 esac
 

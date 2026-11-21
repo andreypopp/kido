@@ -145,9 +145,6 @@ impl Terminal {
             code => return Err(Error::Ghostty(code)),
         }
         let mut found = vec![sys::GhosttySelection::default(); buffer.len];
-        for selection in &mut found {
-            selection.size = std::mem::size_of::<sys::GhosttySelection>();
-        }
         buffer.ptr = found.as_mut_ptr();
         buffer.cap = found.len();
         check(read(&mut buffer))?;
@@ -250,8 +247,13 @@ mod tests {
         finish(&mut vt, search);
         assert_eq!(vt.search_matches(search).unwrap().len(), 1);
         vt.search_end(search);
-        for _ in 0..5324 {
-            vt.write(b"padding\r\n");
+        for _ in 0..64 {
+            if vt.memory().unwrap().pages >= 3 {
+                break;
+            }
+            for _ in 0..1024 {
+                vt.write(b"padding\r\n");
+            }
         }
         while vt.compress_step().unwrap() {}
         assert!(vt.memory().unwrap().compressed_pages > 0);

@@ -1,4 +1,4 @@
-use std::ffi::{c_char, c_void};
+use std::ffi::c_void;
 use std::ptr;
 
 use ko_pane_wire::frame::{Key, KeyAction, Mouse, MouseAction, MouseButton};
@@ -89,7 +89,7 @@ pub struct Pasted {
 }
 
 fn sized(
-    mut call: impl FnMut(*mut c_char, usize, &mut usize) -> sys::GhosttyResult,
+    mut call: impl FnMut(*mut u8, usize, &mut usize) -> sys::GhosttyResult,
 ) -> Result<Vec<u8>, Error> {
     let mut written = 0;
     match call(ptr::null_mut(), 0, &mut written) {
@@ -188,19 +188,39 @@ impl Terminal {
         // SAFETY: the handles are live, the terminal is live, and MACOS_OPTION_AS_ALT takes the
         // option-as-alt enum; the text outlives the encode.
         unsafe {
-            sys::ghostty_key_encoder_setopt_from_terminal(keys.encoder, self.vt.as_ptr());
-            sys::ghostty_key_encoder_setopt(
+            check(sys::ghostty_key_encoder_set_from_terminal(
+                keys.encoder,
+                self.vt.as_ptr(),
+            ))?;
+            check(sys::ghostty_key_encoder_set(
                 keys.encoder,
                 sys::GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT,
                 ptr::from_ref(&option_as_alt).cast(),
-            );
-            sys::ghostty_key_event_set_action(keys.event, action);
-            sys::ghostty_key_event_set_key(keys.event, i32::from(key.key.get()));
-            sys::ghostty_key_event_set_mods(keys.event, key.mods);
-            sys::ghostty_key_event_set_consumed_mods(keys.event, consumed);
-            sys::ghostty_key_event_set_unshifted_codepoint(keys.event, u32::from(key.unshifted));
-            sys::ghostty_key_event_set_utf8(keys.event, key.text.as_ptr().cast(), key.text.len());
-            sys::ghostty_key_event_set_composing(keys.event, key.composing);
+            ))?;
+            check(sys::ghostty_key_event_set_action(keys.event, action))?;
+            check(sys::ghostty_key_event_set_key(
+                keys.event,
+                u32::from(key.key.get()),
+            ))?;
+            check(sys::ghostty_key_event_set_mods(keys.event, key.mods))?;
+            check(sys::ghostty_key_event_set_consumed_mods(
+                keys.event, consumed,
+            ))?;
+            check(sys::ghostty_key_event_set_unshifted_codepoint(
+                keys.event,
+                u32::from(key.unshifted),
+            ))?;
+            check(sys::ghostty_key_event_set_utf8(
+                keys.event,
+                sys::GhosttyString {
+                    ptr: key.text.as_ptr(),
+                    len: key.text.len(),
+                },
+            ))?;
+            check(sys::ghostty_key_event_set_composing(
+                keys.event,
+                key.composing,
+            ))?;
         }
         sized(|out, capacity, written| {
             // SAFETY: the handles are live, and out holds capacity writable bytes.
@@ -250,27 +270,30 @@ impl Terminal {
         // SAFETY: the handles are live, the terminal is live, and each option takes the type that
         // mouse.h documents for it.
         unsafe {
-            sys::ghostty_mouse_encoder_setopt_from_terminal(mice.encoder, self.vt.as_ptr());
-            sys::ghostty_mouse_encoder_setopt(
+            check(sys::ghostty_mouse_encoder_set_from_terminal(
+                mice.encoder,
+                self.vt.as_ptr(),
+            ))?;
+            check(sys::ghostty_mouse_encoder_set(
                 mice.encoder,
                 sys::GHOSTTY_MOUSE_ENCODER_OPT_SIZE,
                 ptr::from_ref(&size).cast(),
-            );
-            sys::ghostty_mouse_encoder_setopt(
+            ))?;
+            check(sys::ghostty_mouse_encoder_set(
                 mice.encoder,
                 sys::GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED,
                 ptr::from_ref(&pressed).cast(),
-            );
-            sys::ghostty_mouse_event_set_action(mice.event, action);
-            sys::ghostty_mouse_event_set_button(mice.event, button);
-            sys::ghostty_mouse_event_set_mods(mice.event, mouse.mods);
-            sys::ghostty_mouse_event_set_position(
+            ))?;
+            check(sys::ghostty_mouse_event_set_action(mice.event, action))?;
+            check(sys::ghostty_mouse_event_set_button(mice.event, button))?;
+            check(sys::ghostty_mouse_event_set_mods(mice.event, mouse.mods))?;
+            check(sys::ghostty_mouse_event_set_position(
                 mice.event,
                 sys::GhosttyMousePosition {
                     x: f32::from(mouse.col),
                     y: f32::from(mouse.row),
                 },
-            );
+            ))?;
         }
         sized(|out, capacity, written| {
             // SAFETY: the handles are live, and out holds capacity writable bytes.

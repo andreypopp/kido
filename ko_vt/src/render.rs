@@ -45,15 +45,15 @@ impl Attributes {
 
     fn of(style: &sys::GhosttyStyle) -> Attributes {
         let flags = [
-            style.bold,
-            style.italic,
-            style.underline != 0,
-            style.inverse,
-            style.faint,
-            style.blink,
-            style.invisible,
-            style.strikethrough,
-            style.overline,
+            style.flags & (1 << 0) != 0,
+            style.flags & (1 << 1) != 0,
+            (style.flags >> sys::GHOSTTY_STYLE_UNDERLINE_SHIFT) & 7 != 0,
+            style.flags & (1 << 4) != 0,
+            style.flags & (1 << 2) != 0,
+            style.flags & (1 << 3) != 0,
+            style.flags & (1 << 5) != 0,
+            style.flags & (1 << 6) != 0,
+            style.flags & (1 << 7) != 0,
         ];
         Attributes(
             flags
@@ -198,7 +198,7 @@ unsafe extern "C" fn hold(terminal: sys::GhosttyTerminal, userdata: *mut c_void,
 }
 
 fn colour(color: sys::GhosttyStyleColor) -> Colour {
-    match color.tag {
+    match u32::from(color.tag) {
         // SAFETY: the tag names the palette member as the active one.
         sys::GHOSTTY_STYLE_COLOR_PALETTE => Colour::Indexed(unsafe { color.value.palette }),
         sys::GHOSTTY_STYLE_COLOR_RGB => {
@@ -313,11 +313,9 @@ impl Terminal {
             x: cursor.viewport_x,
             y: cursor.viewport_y,
             shape: match cursor.visual_style {
-                sys::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR => CursorShape::Bar,
-                sys::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE => CursorShape::Underline,
-                sys::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW => {
-                    CursorShape::HollowBlock
-                }
+                sys::GHOSTTY_CURSOR_STYLE_BAR => CursorShape::Bar,
+                sys::GHOSTTY_CURSOR_STYLE_UNDERLINE => CursorShape::Underline,
+                sys::GHOSTTY_CURSOR_STYLE_BLOCK_HOLLOW => CursorShape::HollowBlock,
                 _ => CursorShape::Block,
             },
         });
@@ -338,7 +336,6 @@ fn fill(render: &Render, target: &mut Cell) -> Result<(), Error> {
     let style = render.get_cells(
         keys::STYLE,
         sys::GhosttyStyle {
-            size: size_of::<sys::GhosttyStyle>(),
             ..Default::default()
         },
     )?;
@@ -500,7 +497,7 @@ mod tests {
                 "10 \"x\" 1 Indexed(2) Rgb(1, 2, 3)",
             ]
         );
-        vt.scroll(-1);
+        vt.scroll(-1).unwrap();
         assert_eq!(rendered(&mut vt).cells[0].text, "f");
         assert!(vt.bottom().unwrap());
         assert!(!vt.bottom().unwrap());

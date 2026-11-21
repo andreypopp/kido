@@ -1,4 +1,4 @@
-use std::ffi::c_int;
+use std::ffi::c_uint;
 use std::marker::PhantomData;
 
 use ko_vt_sys as sys;
@@ -17,16 +17,16 @@ pub(super) struct Cell;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Key<D, T> {
-    raw: c_int,
+    raw: c_uint,
     ty: PhantomData<(D, T)>,
 }
 
 impl<D, T> Key<D, T> {
-    pub(super) fn raw(&self) -> c_int {
+    pub(super) fn raw(&self) -> c_uint {
         self.raw
     }
 
-    const fn new(raw: c_int) -> Self {
+    const fn new(raw: c_uint) -> Self {
         Self {
             raw,
             ty: PhantomData,

@@ -190,13 +190,13 @@ extension NSColor {
                 }
             },
             action_cb: { @Sendable app, target, action in
-                GhosttyRuntime.action(app!, target, action)
+                GhosttyRuntime.action(app, target, action)
             },
             read_clipboard_cb: { @Sendable userdata, location, state, mimes, count, list in
                 nonisolated(unsafe) let (userdata, state) = (userdata, state)
                 return MainActor.assumeIsolated {
                     let view = Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
-                    guard view.acceptingInput, let state else { return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE }
+                    guard view.acceptingInput else { return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE }
                     switch ghostty_clipboard_request_kind(state) {
                     case GHOSTTY_CLIPBOARD_REQUEST_PASTE:
                         let image = location == GHOSTTY_CLIPBOARD_STANDARD && view.pasteImage()
@@ -214,8 +214,8 @@ extension NSColor {
             confirm_read_clipboard_cb: { @Sendable userdata, payload, state, request in
                 nonisolated(unsafe) let (userdata, state) = (userdata, state)
                 var text: String?
-                if request == GHOSTTY_CLIPBOARD_REQUEST_PASTE, let payload = payload?.pointee, let contents = payload.contents,
-                   let index = (0..<payload.contents_len).first(where: { String(cString: contents[$0].mime) == "text/plain" }) {
+                if request == GHOSTTY_CLIPBOARD_REQUEST_PASTE, let contents = payload.pointee.contents,
+                   let index = (0..<payload.pointee.contents_len).first(where: { String(cString: contents[$0].mime) == "text/plain" }) {
                     let content = contents[index]
                     text = String(decoding: UnsafeRawBufferPointer(start: content.data, count: content.len), as: UTF8.self)
                 }
@@ -505,7 +505,7 @@ extension NSColor {
         switch action.tag {
         #if KIDO_VISUAL
         case GHOSTTY_ACTION_SET_TITLE:
-            let title = action.action.set_title.title.map { String(cString: $0) } ?? ""
+            let title = String(cString: action.action.set_title.title)
             PaneView.onMain(userdata) { $0.visualTitles.append(title) }
             return true
         #endif
@@ -517,15 +517,15 @@ extension NSColor {
             let link = action.action.open_url
             if link.kind != GHOSTTY_ACTION_OPEN_URL_KIND_OSC8,
                Unmanaged<PaneView>.fromOpaque(userdata!)._withUnsafeGuaranteedRef(\.host) == .local { return false }
-            guard let bytes = link.url else { return true }
-            let text = String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(link.len)), as: UTF8.self)
+            let text = String(decoding: UnsafeRawBufferPointer(start: link.url, count: Int(link.len)), as: UTF8.self)
             PaneView.onMain(userdata) { $0.onURL(text) }
             return true
         case GHOSTTY_ACTION_START_SEARCH:
-            let needle = action.action.start_search.needle.map { String(cString: $0) }
+            let needle = String(cString: action.action.start_search.needle)
             PaneView.onMain(userdata) {
                 $0.showFind()
-                if let needle { $0.find?.field.stringValue = needle; $0.find?.search() }
+                $0.find?.field.stringValue = needle
+                $0.find?.search()
             }
             return true
         case GHOSTTY_ACTION_END_SEARCH:
@@ -636,8 +636,8 @@ extension NSColor {
         }
     }
 
-    static func completeClipboard(_ surface: ghostty_surface_t?, _ contents: [KoClipboardContent], available: [String] = [],
-                                  _ state: UnsafeMutableRawPointer?, confirmed: Bool) {
+    static func completeClipboard(_ surface: ghostty_surface_t, _ contents: [KoClipboardContent], available: [String] = [],
+                                  _ state: UnsafeMutableRawPointer, confirmed: Bool) {
         withClipboard(contents, available: available, item: { ghostty_clipboard_content_s(mime: $0, data: $1.assumingMemoryBound(to: CChar.self), len: $2) }) { items, listing in
             var payload = ghostty_clipboard_complete_s(contents: items.baseAddress, contents_len: items.count,
                 available: listing.baseAddress, available_len: listing.count, confirmed: confirmed, remember: false)

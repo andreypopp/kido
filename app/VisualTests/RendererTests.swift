@@ -371,12 +371,16 @@ import KoModel
         options.platform_tag = GHOSTTY_PLATFORM_MACOS
         options.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(nsview: Unmanaged.passUnretained(view).toOpaque()))
         options.io_mode = GHOSTTY_SURFACE_IO_MANUAL_MIRROR
-        var callbacks = ghostty_runtime_config_s()
-        callbacks.wakeup_cb = { _ in }
-        callbacks.action_cb = { _, _, _ in false }
-        callbacks.read_clipboard_cb = { _, _, _, _, _, _ in GHOSTTY_CLIPBOARD_READ_UNAVAILABLE }
-        callbacks.confirm_read_clipboard_cb = { _, _, _, _ in }
-        callbacks.write_clipboard_cb = { _, _, _, _, _ in GHOSTTY_CLIPBOARD_WRITE_OK }
+        var callbacks = ghostty_runtime_config_s(
+            userdata: nil,
+            supports_selection_clipboard: false,
+            supports_paste_events: false,
+            wakeup_cb: { _ in },
+            action_cb: { _, _, _ in false },
+            read_clipboard_cb: { _, _, _, _, _, _ in GHOSTTY_CLIPBOARD_READ_UNAVAILABLE },
+            confirm_read_clipboard_cb: { _, _, _, _ in },
+            write_clipboard_cb: { _, _, _, _, _ in GHOSTTY_CLIPBOARD_WRITE_OK },
+            close_surface_cb: nil)
         let config = try XCTUnwrap(ghostty_config_clone(runtime.config))
         let initial = "cursor-style-blink = true\nfont-size = 6\n"
         ghostty_config_load_string(config, initial, UInt(initial.utf8.count), "/renderer-test")
@@ -628,7 +632,7 @@ import KoModel
         target.target.surface = pane.surface
         var action = ghostty_action_s()
         action.tag = GHOSTTY_ACTION_SCROLLBAR
-        XCTAssertTrue(GhosttyRuntime.action(ghostty_surface_app(pane.surface)!, target, action))
+        XCTAssertTrue(GhosttyRuntime.action(ghostty_surface_app(pane.surface), target, action))
         await mainQueueFence()
         await mainQueueFence()
     }

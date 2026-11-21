@@ -685,7 +685,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     func retryImages() { images?.retry() }
     private var presented = (visible: true, realized: true)
     private var eventMonitor: Any?
-    private var paste: (alert: NSAlert, state: UnsafeMutableRawPointer?)?
+    private var paste: (alert: NSAlert, state: UnsafeMutableRawPointer)?
     let runtime: GhosttyRuntime
     private var surfaceScale: CGFloat
     private var clipboard: (read: KoClipboardRead, timeout: DispatchWorkItem?, deadline: DispatchTime)?
@@ -752,7 +752,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         // Called on the reader or Ghostty's IO thread; a strong reference
         // taken there could be the view's last.
         config.io_write_cb = { userdata, bytes, count in
-            guard let bytes, count > 0 else { return }
+            guard count > 0 else { return }
             let data = Data(bytes: bytes, count: Int(count))
             PaneView.onMain(userdata) { pane in
                 guard pane.acceptingInput else { return pane.inputFailed(KO_ERR_REFUSED) }
@@ -1325,11 +1325,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     // MARK: - Clipboard
 
     // A request is completed exactly once; an empty completion refuses it.
-    private func complete(_ state: UnsafeMutableRawPointer?, _ text: String) {
+    private func complete(_ state: UnsafeMutableRawPointer, _ text: String) {
         complete(state, [KoClipboardContent(mime: "text/plain", data: Data(text.utf8))])
     }
 
-    private func complete(_ state: UnsafeMutableRawPointer?, _ contents: [KoClipboardContent], available: [String] = []) {
+    private func complete(_ state: UnsafeMutableRawPointer, _ contents: [KoClipboardContent], available: [String] = []) {
         snapScroll()
         GhosttyRuntime.completeClipboard(surface, contents, available: available, state, confirmed: true)
     }
@@ -1448,7 +1448,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         return true
     }
 
-    func confirmPaste(_ text: String, _ state: UnsafeMutableRawPointer?) {
+    func confirmPaste(_ text: String, _ state: UnsafeMutableRawPointer) {
         guard !disposed, paste == nil, copyMode == nil, let window else { return complete(state, "") }
         let alert = NSAlert()
         alert.messageText = "Paste this text?"

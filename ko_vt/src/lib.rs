@@ -1003,17 +1003,21 @@ impl Terminal {
         Ok(result == sys::GHOSTTY_TERMINAL_COMPRESSION_RESULT_PENDING)
     }
 
-    pub fn scroll(&mut self, delta: isize) {
-        self.scroll_viewport(sys::GHOSTTY_SCROLL_VIEWPORT_DELTA, delta);
+    pub fn scroll(&mut self, delta: isize) -> Result<(), Error> {
+        self.scroll_viewport(sys::GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA, delta)
     }
 
-    fn scroll_viewport(&mut self, tag: sys::GhosttyTerminalScrollViewportTag, delta: isize) {
+    fn scroll_viewport(
+        &mut self,
+        tag: sys::GhosttyTerminalScrollViewportTag,
+        delta: isize,
+    ) -> Result<(), Error> {
         let to = sys::GhosttyTerminalScrollViewport {
             tag,
             value: sys::GhosttyTerminalScrollViewportValue { delta },
         };
         // SAFETY: the handle is live, and the viewport request is initialized.
-        unsafe { sys::ghostty_terminal_scroll_viewport(self.vt.as_ptr(), to) };
+        check(unsafe { sys::ghostty_terminal_scroll_viewport(self.vt.as_ptr(), to) })
     }
 
     pub fn viewport_offset(&self) -> Result<u64, Error> {
@@ -1027,15 +1031,14 @@ impl Terminal {
 
     pub fn bottom(&mut self) -> Result<bool, Error> {
         let before = self.viewport_offset()?;
-        self.scroll_viewport(sys::GHOSTTY_SCROLL_VIEWPORT_BOTTOM, 0);
+        self.scroll_viewport(sys::GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM, 0)?;
         Ok(before != self.viewport_offset()?)
     }
 
     pub fn scroll_to(&mut self, row: u32) -> Result<(), Error> {
         let delta = isize::try_from(row).map_err(|_| Error::Rows(row as usize))?;
-        self.scroll_viewport(sys::GHOSTTY_SCROLL_VIEWPORT_TOP, 0);
-        self.scroll(delta);
-        Ok(())
+        self.scroll_viewport(sys::GHOSTTY_TERMINAL_SCROLL_VIEWPORT_TOP, 0)?;
+        self.scroll(delta)
     }
 
     fn grid_ref(
@@ -1053,7 +1056,6 @@ impl Terminal {
             },
         };
         let mut grid = sys::GhosttyGridRef {
-            size: size_of::<sys::GhosttyGridRef>(),
             ..Default::default()
         };
         // SAFETY: the live terminal validates the point and writes the grid ref.
@@ -1080,21 +1082,20 @@ impl Terminal {
 
     pub fn text_between(&self, span: Span) -> Result<Vec<u8>, Error> {
         let selection = sys::GhosttySelection {
-            size: size_of::<sys::GhosttySelection>(),
             rectangle: span.shape == Shape::Rectangle,
             start: self.grid_ref(sys::GHOSTTY_POINT_TAG_SCREEN, span.start)?,
             end: self.grid_ref(sys::GHOSTTY_POINT_TAG_SCREEN, span.end)?,
         };
-        let options = sys::GhosttyFormatterTerminalOptions {
-            size: size_of::<sys::GhosttyFormatterTerminalOptions>(),
-            emit: sys::GHOSTTY_FORMATTER_FORMAT_PLAIN,
-            trim: true,
-            unwrap: span.shape == Shape::Linear,
-            selection: &selection,
-            ..Default::default()
-        };
+
         let mut out = Vec::new();
-        self.format_selection(options, writer(&mut out))?;
+        self.format_selection(
+            Format::Plain,
+            true,
+            span.shape == Shape::Linear,
+            0,
+            &selection,
+            writer(&mut out),
+        )?;
         Ok(out)
     }
 
@@ -1226,7 +1227,6 @@ impl Terminal {
         let start = total.saturating_sub(usize::from(rows));
         let start = usize::try_from(history).map_or(0, |history| start.saturating_sub(history));
         let selection = sys::GhosttySelection {
-            size: size_of::<sys::GhosttySelection>(),
             start: self.grid_ref(
                 sys::GHOSTTY_POINT_TAG_SCREEN,
                 Cell {
@@ -1243,26 +1243,15 @@ impl Terminal {
             )?,
             ..Default::default()
         };
-        let options = sys::GhosttyFormatterTerminalOptions {
-            size: size_of::<sys::GhosttyFormatterTerminalOptions>(),
-            emit: if format == Format::Vt {
-                sys::GHOSTTY_FORMATTER_FORMAT_VT
-            } else {
-                sys::GHOSTTY_FORMATTER_FORMAT_PLAIN
-            },
-            trim: true,
-            extra: sys::GhosttyFormatterTerminalExtra {
-                size: size_of::<sys::GhosttyFormatterTerminalExtra>(),
-                screen: sys::GhosttyFormatterScreenExtra {
-                    size: size_of::<sys::GhosttyFormatterScreenExtra>(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            selection: &selection,
-            ..Default::default()
-        };
-        self.format_selection(options, callback_writer(&mut emit))
+
+        self.format_selection(
+            format,
+            true,
+            false,
+            0,
+            &selection,
+            callback_writer(&mut emit),
+        )
     }
 
     pub fn dump(&self, format: Format) -> Result<Vec<u8>, Error> {
@@ -1284,7 +1273,6 @@ impl Terminal {
         };
         let last = u32::try_from(rows.saturating_sub(1)).map_err(|_| Error::Rows(rows))?;
         let selection = sys::GhosttySelection {
-            size: size_of::<sys::GhosttySelection>(),
             start: self.grid_ref(tag, Cell { col: 0, row: 0 })?,
             end: self.grid_ref(
                 tag,
@@ -1296,62 +1284,69 @@ impl Terminal {
             ..Default::default()
         };
         let vt = format == Format::Vt;
-        let options = sys::GhosttyFormatterTerminalOptions {
-            size: size_of::<sys::GhosttyFormatterTerminalOptions>(),
-            emit: if vt {
-                sys::GHOSTTY_FORMATTER_FORMAT_VT
-            } else {
-                sys::GHOSTTY_FORMATTER_FORMAT_PLAIN
-            },
-            trim: false,
-            extra: sys::GhosttyFormatterTerminalExtra {
-                size: size_of::<sys::GhosttyFormatterTerminalExtra>(),
-                modes: vt,
-                scrolling_region: vt,
-                keyboard: vt,
-                screen: sys::GhosttyFormatterScreenExtra {
-                    size: if vt {
-                        size_of::<sys::GhosttyFormatterScreenExtra>()
-                    } else {
-                        0
-                    },
-                    cursor: vt,
-                    style: vt,
-                    hyperlink: vt,
-                    protection: vt,
-                    kitty_keyboard: vt,
-                    charsets: vt,
-                },
-                ..Default::default()
-            },
-            selection: &selection,
-            ..Default::default()
+        let extras = if vt {
+            sys::GHOSTTY_FORMATTER_EXTRA_MODES
+                | sys::GHOSTTY_FORMATTER_EXTRA_SCROLLING_REGION
+                | sys::GHOSTTY_FORMATTER_EXTRA_KEYBOARD
+                | sys::GHOSTTY_FORMATTER_EXTRA_CURSOR
+                | sys::GHOSTTY_FORMATTER_EXTRA_STYLE
+                | sys::GHOSTTY_FORMATTER_EXTRA_HYPERLINK
+                | sys::GHOSTTY_FORMATTER_EXTRA_PROTECTION
+                | sys::GHOSTTY_FORMATTER_EXTRA_KITTY_KEYBOARD
+                | sys::GHOSTTY_FORMATTER_EXTRA_CHARSETS
+        } else {
+            sys::GHOSTTY_FORMATTER_EXTRAS_NONE
         };
         let mut out = Vec::new();
-        self.format_selection(options, writer(&mut out))?;
+        self.format_selection(format, false, false, extras, &selection, writer(&mut out))?;
         Ok(out)
     }
 
     fn format_selection(
         &self,
-        options: sys::GhosttyFormatterTerminalOptions,
+        format: Format,
+        trim: bool,
+        unwrap: bool,
+        extras: sys::GhosttyFormatterExtras,
+        selection: &sys::GhosttySelection,
         writer: sys::GhosttyWriter,
     ) -> Result<(), Error> {
         let mut formatter = ptr::null_mut();
-        // SAFETY: the options and its selection outlive the formatter, which is freed below.
+        // SAFETY: the terminal and selection outlive the formatter, which is freed below.
         check(unsafe {
-            sys::ghostty_formatter_terminal_new(
-                ptr::null(),
-                &mut formatter,
-                self.vt.as_ptr(),
-                options,
-            )
+            sys::ghostty_formatter_terminal_new(ptr::null(), &mut formatter, self.vt.as_ptr())
         })?;
         // SAFETY: the formatter is live, and the caller's writer outlives the call.
-        let result = unsafe { sys::ghostty_formatter_format(formatter, writer) };
+        let result = unsafe {
+            let emit = match format {
+                Format::Plain => sys::GHOSTTY_FORMATTER_FORMAT_PLAIN,
+                Format::Vt => sys::GHOSTTY_FORMATTER_FORMAT_VT,
+            };
+            [
+                (sys::GHOSTTY_FORMATTER_OPT_EMIT, ptr::from_ref(&emit).cast()),
+                (sys::GHOSTTY_FORMATTER_OPT_TRIM, ptr::from_ref(&trim).cast()),
+                (
+                    sys::GHOSTTY_FORMATTER_OPT_UNWRAP,
+                    ptr::from_ref(&unwrap).cast(),
+                ),
+                (
+                    sys::GHOSTTY_FORMATTER_OPT_EXTRAS,
+                    ptr::from_ref(&extras).cast(),
+                ),
+                (
+                    sys::GHOSTTY_FORMATTER_OPT_SELECTION,
+                    ptr::from_ref(selection).cast(),
+                ),
+            ]
+            .into_iter()
+            .try_for_each(|(option, value)| {
+                check(sys::ghostty_formatter_set(formatter, option, value))
+            })
+            .and_then(|()| check(sys::ghostty_formatter_format(formatter, writer)))
+        };
         // SAFETY: the formatter was created above and is not used again.
         unsafe { sys::ghostty_formatter_free(formatter) };
-        check(result)
+        result
     }
 }
 
@@ -1532,7 +1527,7 @@ mod tests {
         assert_eq!(vt.viewport_offset().unwrap(), 2);
         vt.scroll_to(0).unwrap();
         assert_eq!(vt.viewport_offset().unwrap(), 0);
-        vt.scroll(1);
+        vt.scroll(1).unwrap();
         assert_eq!(vt.viewport_offset().unwrap(), 1);
         let cell = |row, col| Cell { row, col };
         assert_eq!(
@@ -1600,31 +1595,27 @@ mod tests {
                 "open hyperlink",
                 "\x1b]8;;https://example.org\x1b\\ab".to_owned(),
                 "cd\x1b]8;;\x1b\\ ef".to_owned(),
-                true,
             ),
-            ("pen", "\x1b[1;31mab".to_owned(), "cd".to_owned(), true),
-            ("pending wrap", "x".repeat(30), "y".to_owned(), true),
-            ("charset", "\x1b(0ab".to_owned(), "qq".to_owned(), true),
+            ("pen", "\x1b[1;31mab".to_owned(), "cd".to_owned()),
+            ("pending wrap", "x".repeat(30), "y".to_owned()),
+            ("charset", "\x1b(0ab".to_owned(), "qq".to_owned()),
             (
                 "inside OSC 8 uri",
                 "\x1b]8;;file:///tmp/1".to_owned(),
                 "06\x1b\\/tmp/106\x1b]8;;\x1b\\ ef".to_owned(),
-                true,
             ),
             (
                 "alternate screen",
                 "primary\r\n\x1b[?1049halt".to_owned(),
                 "\x1b[?1049l".to_owned(),
-                true,
             ),
             (
                 "OSC 8 rows scrolled after decode",
                 osc8(0),
                 (1..=8).map(osc8).collect(),
-                false,
             ),
         ];
-        for (label, before, after, same_vt) in cases {
+        for (label, before, after) in cases {
             let mut server = make(30, 6);
             server.write(before.as_bytes());
             let bytes = snapshot(&server);
@@ -1634,8 +1625,11 @@ mod tests {
                 terminal.write(after.as_bytes());
             }
             for terminal in [&screen, &full] {
-                let vt = server.dump(Format::Vt).unwrap() == terminal.dump(Format::Vt).unwrap();
-                assert_eq!(vt, same_vt, "{label}");
+                assert_eq!(
+                    server.dump(Format::Vt).unwrap(),
+                    terminal.dump(Format::Vt).unwrap(),
+                    "{label}"
+                );
                 assert_eq!(
                     server.dump(Format::Plain).unwrap(),
                     terminal.dump(Format::Plain).unwrap(),
@@ -2130,7 +2124,7 @@ mod tests {
     #[test]
     fn the_frame_key_bound_is_the_last_ghostty_key() {
         assert_eq!(
-            i32::from(ko_pane_wire::frame::MAX_KEY),
+            u32::from(ko_pane_wire::frame::MAX_KEY),
             sys::GHOSTTY_KEY_PASTE
         );
     }

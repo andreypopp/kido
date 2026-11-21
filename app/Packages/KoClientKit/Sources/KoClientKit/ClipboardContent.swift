@@ -14,10 +14,10 @@ public struct KoClipboardContent: Equatable {
 public func withClipboard<Item, Result>(
     _ contents: [KoClipboardContent], available: [String] = [],
     item: (UnsafePointer<CChar>, UnsafeRawPointer, Int) -> Item,
-    _ body: (UnsafeBufferPointer<Item>, UnsafeBufferPointer<UnsafePointer<CChar>?>) -> Result
+    _ body: (UnsafeBufferPointer<Item>, UnsafeBufferPointer<UnsafePointer<CChar>>) -> Result
 ) -> Result {
     let names = contents.map { strdup($0.mime)! }
-    let types = available.map { UnsafePointer(strdup($0)!) as UnsafePointer<CChar>? }
+    let types = available.map { UnsafePointer(strdup($0)!) }
     defer {
         names.forEach { free($0) }
         types.forEach { free(UnsafeMutablePointer(mutating: $0)) }

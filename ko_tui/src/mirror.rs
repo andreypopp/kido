@@ -600,7 +600,7 @@ impl Mirror {
         };
         state.surface = match (full, loading) {
             (true, Some(delta)) => {
-                screen.vt.scroll(delta);
+                screen.vt.scroll(delta).map_err(text)?;
                 Surface::Full(screen)
             }
             (true, None) => Surface::Full(screen),
@@ -829,21 +829,21 @@ impl Mirror {
 
     pub(crate) fn scroll(&mut self, poll: &mut Poll, delta: isize) -> Result<(), String> {
         let resync = self.update(|state| match std::mem::take(&mut state.surface) {
-            Surface::Empty => false,
+            Surface::Empty => Ok(false),
             Surface::Full(mut screen) => {
-                screen.vt.scroll(delta);
+                let result = screen.vt.scroll(delta);
                 state.surface = Surface::Full(screen);
-                false
+                result.map(|()| false).map_err(text)
             }
             Surface::Partial(screen) => {
                 state.surface = Surface::Loading(screen, delta);
-                true
+                Ok(true)
             }
             Surface::Loading(screen, pending) => {
                 state.surface = Surface::Loading(screen, pending + delta);
-                false
+                Ok(false)
             }
-        });
+        })?;
         if resync {
             self.resync(poll)?;
         }

@@ -404,7 +404,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
     }
 
     func testSidebarShade() async throws {
-        XCTAssertEqual(ghostty_init(0, nil), GHOSTTY_SUCCESS)
+        XCTAssertEqual(ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv), GHOSTTY_SUCCESS)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("shade-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory.appendingPathComponent("other"), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -599,7 +599,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
     }
 
     func testLiveHeaderTheme() async throws {
-        XCTAssertEqual(ghostty_init(0, nil), GHOSTTY_SUCCESS)
+        XCTAssertEqual(ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv), GHOSTTY_SUCCESS)
         let board = NSPasteboard(name: .init("live-header-\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))

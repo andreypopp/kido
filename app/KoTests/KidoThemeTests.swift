@@ -15,7 +15,7 @@ import XCTest
     private static let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
 
     private func parse(_ name: String) throws -> Colors {
-        XCTAssertEqual(ghostty_init(0, nil), GHOSTTY_SUCCESS)
+        XCTAssertEqual(ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv), GHOSTTY_SUCCESS)
         let path = Self.app.appendingPathComponent("Resources/ghostty/themes/" + name).path
         let text = try String(contentsOfFile: path, encoding: .utf8)
         let config = try XCTUnwrap(ghostty_config_new())

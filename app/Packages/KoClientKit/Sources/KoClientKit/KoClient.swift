@@ -544,7 +544,9 @@ private final class UploadReader: @unchecked Sendable {
             let empty = [ko_clipboard_content()]
             _ = try? handle.call { client in
                 empty.withUnsafeBufferPointer { empty in
-                    ko_client_clipboard_answer(client, id, contents == nil ? nil : (items.baseAddress ?? empty.baseAddress), items.count, types.baseAddress, types.count)
+                    types.withMemoryRebound(to: UnsafePointer<CChar>?.self) { types in
+                        ko_client_clipboard_answer(client, id, contents == nil ? nil : (items.baseAddress ?? empty.baseAddress), items.count, types.baseAddress, types.count)
+                    }
                 }
             }
         }
