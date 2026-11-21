@@ -2168,12 +2168,13 @@ light and dark in the gallery.
   classifier is not shown archived threads (they leave
   `threadContext`) and cannot label into one: an answer that names
   an archived thread counts as a failure (plan decision 3: the
-  message goes without a marker). An explicit message to an
-  archived thread restores it: its chip in the composer (a click
-  on a message's chip, `/thread`, the naming chip), a filter on it
-  (a click on its dimmed row filters as on a live row), a turn
-  moved or a thread merged into it. Rename works as on a live
-  thread. The state is koa's, per session, in the session's thread
+  message goes without a marker). Only ↺ restores (user,
+  2026-11-21: not an explicit message): a message sent to an
+  archived thread by its chip in the composer (a click on a
+  message's chip, `/thread`, the naming chip), a filter on it (a
+  click on its dimmed row filters as on a live row), a turn moved
+  or a thread merged into it all leave it archived. Rename works as
+  on a live thread. The state is koa's, per session, in the session's thread
   list (`archived: true`), so it survives a reload and a resume.
 - **The classifier MVP, reviewed** (2026-11-21; the user promoted
   the MVP of plans/koa-thread-classifier.md; the page's panel
