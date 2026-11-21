@@ -47,18 +47,19 @@ const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, clas
   return result;
 };
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
-type PageMemory = { scroll: Saved[]; drafts: [view: string, text: string][]; filters: [scope: string, thread: ThreadName][] };
+type PageMemory = { scroll: Saved[]; drafts: [view: string, text: string][]; filters: [scope: string, thread: ThreadName][]; composerThreads: [scope: string, thread: ThreadName][] };
 const stored: unknown = history.state;
 const pageMemory = (stored: unknown): stored is PageMemory => isRecord(stored) && Array.isArray(stored.scroll) && stored.scroll.every(saved => {
   if (!isRecord(saved) || !isRecord(saved.scope) || typeof saved.scope.view !== 'string' || saved.scope.sessionId !== undefined && typeof saved.scope.sessionId !== 'string' || !Number.isInteger(saved.last) || !isRecord(saved.anchor) || typeof saved.anchor.offset !== 'number' || !Number.isFinite(saved.anchor.offset) || !isRecord(saved.anchor.item)) return false;
   const item = saved.anchor.item;
   return item.kind === 'message' && Number.isInteger(item.seq) && (item.row === undefined || typeof item.row === 'string') || item.kind === 'job' && Number.isInteger(item.byte);
-}) && Array.isArray(stored.drafts) && stored.drafts.every(entry => Array.isArray(entry) && entry.length === 2 && entry.every(value => typeof value === 'string')) && Array.isArray(stored.filters) && stored.filters.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && parseThreadName(entry[1]) !== undefined) ;
+}) && Array.isArray(stored.drafts) && stored.drafts.every(entry => Array.isArray(entry) && entry.length === 2 && entry.every(value => typeof value === 'string')) && ['filters', 'composerThreads'].every(key => { const entries = stored[key]; return Array.isArray(entries) && entries.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && parseThreadName(entry[1]) !== undefined); });
 const memory = pageMemory(stored) ? stored : undefined;
 const threadItems = new Map<number, Extract<WireItem, { kind: 'threads' }>>();
 const projections = new Map<number, WireItem | undefined>();
 const threadFilters = new Map<string, ThreadName>(memory?.filters);
-const threadCell = Object.assign(node('span', undefined, 'thread-cell'), { id: 'thread-cell' });
+const composerThreads = new Map<string, ThreadName>(memory?.composerThreads);
+const composerThread = node('div', undefined, 'message-header composer-thread');
 const threadMeasure = node('span', '0', 'thread-measure');
 threadMeasure.setAttribute('aria-hidden', 'true'); document.body.append(threadMeasure);
 const threadFilter = (): ThreadName | undefined => state.view.type === 'root' ? threadFilters.get(filterKey()) : undefined;
@@ -154,7 +155,11 @@ function refreshThreadItems() {
 }
 function setThread(name: ThreadName | undefined) {
   const next = threadFilter() === name ? undefined : name;
-  if (next) threadFilters.set(filterKey(), next); else threadFilters.delete(filterKey());
+  if (next) composerThreads.set(filterKey(), next);
+  updateThreadFilter(next);
+}
+function updateThreadFilter(name: ThreadName | undefined) {
+  if (name) threadFilters.set(filterKey(), name); else threadFilters.delete(filterKey());
   historyRequest = undefined; historyBefore = undefined;
   closeThreads(); refreshThreadItems(); renderThreads(); refreshComposer();
   enqueue({ type: 'reset' });
@@ -170,17 +175,30 @@ function threadName(name: ThreadName) {
   label.append(node('span', '#', 'thread-hash'), node('span', name));
   return label;
 }
-function replyPill(name: ThreadName | undefined, at: number) {
-  const mark = node('span', undefined, name ? 'reply-pill' : 'reply-pill plain');
-  const time = node('time', timestamp(at)); time.dateTime = new Date(at).toISOString();
-  if (!name) { mark.append(time); return mark; }
+const composerThreadName = (): ThreadName | undefined => state.view.type === 'root' ? composerThreads.get(filterKey()) : undefined;
+function setComposerThread(name: ThreadName | undefined) {
+  if (name) composerThreads.set(filterKey(), name); else composerThreads.delete(filterKey());
+  refreshComposer();
+}
+function threadChip(name: ThreadName, clear = false) {
+  const mark = node('span', undefined, 'thread-chip');
   mark.dataset.thread = name;
   mark.style.setProperty('--thread-color', threadColour(name));
-  mark.setAttribute('role', 'button'); mark.tabIndex = -1;
-  mark.setAttribute('aria-label', 'Filter to thread ' + name); mark.onclick = () => setThread(name);
-  mark.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setThread(name); } };
-  mark.append(threadName(name), time);
+  mark.title = name; mark.append(threadName(name));
+  if (clear) {
+    const button = node('button', '×', 'thread-clear'); button.type = 'button'; button.setAttribute('aria-label', 'Drop composer thread'); button.onclick = () => setComposerThread(undefined); mark.append(button);
+  } else {
+    mark.setAttribute('role', 'button'); mark.tabIndex = -1;
+    mark.setAttribute('aria-label', 'Compose in thread ' + name); mark.onclick = () => setComposerThread(name);
+    mark.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setComposerThread(name); } };
+  }
   return mark;
+}
+function messageHeader(name: ThreadName | undefined, at?: number) {
+  const row = node('div', undefined, 'message-header');
+  if (name && !threadFilter() && state.view.type === 'root') row.append(threadChip(name));
+  if (at !== undefined) { const time = node('time', timestamp(at)); time.dateTime = new Date(at).toISOString(); row.append(time); }
+  return row;
 }
 let threadDragged = false;
 function dragThread(event: PointerEvent, source: HTMLElement, from: ThreadName) {
@@ -240,7 +258,8 @@ async function moveThread(from: ThreadName, to: ThreadName) {
   try {
     const filtered = threadFilter() === from;
     await fetchJSON('/threads/move', { sessionId: state.sessionId, from, to });
-    if (filtered) { threadFilters.delete(filterKey()); setThread(to); }
+    if (composerThreadName() === from) composerThreads.set(filterKey(), to);
+    if (filtered) updateThreadFilter(to); else refreshComposer();
   } catch (error) { reportError(error); }
 }
 let renaming = false, threadClick: number | undefined;
@@ -322,7 +341,7 @@ function fitThreads(width = document.documentElement.clientWidth) {
 }
 function renderThreads() {
   if (renaming) return;
-  const host = element('threads'), cell = threadCell, filter = threadFilter();
+  const host = element('threads'), filter = threadFilter();
   host.hidden = state.view.type !== 'root' || !('threads' in state) || !state.threads.length;
   const column = element('transcript').getBoundingClientRect(), width = document.documentElement.clientWidth;
   const mode = threadMode(width, column.width, threadMeasure.getBoundingClientRect().width);
@@ -330,8 +349,6 @@ function renderThreads() {
   document.body.classList.toggle('with-threads', !host.hidden && mode === 'line');
   host.style.left = mode === 'block' ? column.left + column.width + 20 + 'px' : '';
   host.style.width = mode === 'block' ? Math.min(360, width - column.width - 28) + 'px' : '';
-  cell.remove(); cell.replaceChildren();
-  if (filter) { const model = element('model-cell'); model.parentNode?.insertBefore(cell, model); const separator = node('i', undefined, 'sep'); separator.setAttribute('aria-hidden', 'true'); cell.append(threadName(filter), separator); }
   if (!('threads' in state) || host.hidden) { host.replaceChildren(); threadCapsule = undefined; return; }
   const previousPanel = host.querySelector<HTMLElement>('.thread-panel'), open = previousMode === 'line' && previousPanel?.hidden === false;
   const scrollTop = previousPanel?.scrollTop ?? 0;
@@ -365,7 +382,7 @@ function renderThreads() {
   host.replaceChildren(...(capsule ? [capsule, panel] : [panel]));
   if (open || previousMode === 'block' && mode === 'block') panel.scrollTop = scrollTop;
   if (capsule && !filter) fitThreads();
-  for (const mark of [...element('items').querySelectorAll<HTMLElement>('.reply-pill,.thread-name'), ...host.querySelectorAll<HTMLElement>('.thread-name')]) {
+  for (const mark of [...element('items').querySelectorAll<HTMLElement>('.thread-chip,.thread-name'), ...host.querySelectorAll<HTMLElement>('.thread-name')]) {
     const thread = state.threads.find(thread => thread.name === mark.dataset.thread);
     if (thread) mark.style.setProperty('--thread-color', threadColour(thread.name));
   }
@@ -1204,7 +1221,7 @@ function renderItem(item: WireItem) {
   const ids = new Set(refs.map(ref => 'image:' + ref.id));
   const children: HTMLElement[] = [], slots = new Map([...previous?.slots ?? []].filter(([key]) => ids.has(key)));
   let steps: Step[] = [], parts = children;
-  let section: HTMLElement | undefined, sectionThread: ThreadName | undefined;
+  let section: HTMLElement | undefined, sectionThread: ThreadName | undefined, hasHeader = false;
   const finishSection = () => {
     if (section) syncChildren(section, parts);
     section = undefined; parts = children;
@@ -1236,8 +1253,8 @@ function renderItem(item: WireItem) {
       if (block.type === 'text') {
         flush();
         const message = prose(key, block.text, item.final || index < item.blocks.length - 1, annotationItems.get(item.seq)?.get(index), 'assistant');
-        message.querySelector('.reply-pill')?.remove();
-        if (!parts.some(part => part.classList.contains('msg'))) message.prepend(replyPill(!filter && state.view.type === 'root' ? block.thread : undefined, item.at));
+        message.querySelector('.message-header')?.remove();
+        if (!parts.some(part => part.classList.contains('msg'))) { message.prepend(messageHeader(block.thread, hasHeader ? undefined : item.at)); hasHeader = true; }
         parts.push(message);
       }
       else steps.push({ kind: 'block', block, item, key, index, slots });
@@ -1253,12 +1270,13 @@ function renderItem(item: WireItem) {
   } else {
     view.className = 'msg ' + item.kind;
     if (item.kind === 'user') {
-      const time = node('time', timestamp(item.at)); time.dateTime = new Date(item.at).toISOString();
+      const names = threadItems.get(item.seq)?.threads ?? [];
+      const header = messageHeader(item.thread ?? (names.length === 1 ? names[0] : undefined), item.at);
       const text = node('div', undefined, 't'); text.append(prose(item.seq + ':user', item.text, true, undefined, 'user'));
       if (item.images.length) { const images = thumbnails(item.images, () => slots); images.load(); text.append(images.view); }
       const paths = item.attachments.filter(file => file.kind === 'file').map(file => file.path);
       if (paths.length) text.append(node('div', paths.join('\n'), 'paths'));
-      children.push(time, text);
+      children.push(header, text);
     } else if (item.kind === 'agent' || item.kind === 'job' || noticeOf(item) && runOf(runContext(), { kind: 'item', seq: item.seq })) {
       view.className = '';
       const key = sourceKey({ kind: 'item', seq: item.seq }), saved = previous?.slots.get(key);
@@ -1556,8 +1574,14 @@ function refreshComposer() {
   editor.running(running);
   editor.readonly(editing());
   draft.refresh();
-  const thread = threadFilter();
-  const addressed = thread ? '@' + (state.name || 'koa') + ' in #' + thread : viewedName();
+  const thread = composerThreadName();
+  composerThread.remove(); composerThread.replaceChildren();
+  if (state.view.type === 'root') {
+    if (thread) composerThread.append(threadChip(thread, true));
+    else { const chip = node('span', undefined, 'thread-chip thread-new'); chip.append(node('span', '+', 'thread-hash'), node('span', 'thread')); composerThread.append(chip); }
+    element('field').prepend(composerThread);
+  }
+  const addressed = viewedName();
   editor.placeholder(state.life.type === 'starting' ? 'Starting pi…' : state.life.type === 'switching' ? 'Loading…' : running ? 'running… ⎋ cancels' : draft.hover && !state.edit ? 'Drop to attach' : hasFailed() ? 'koa could not start the agent' : working && state.compaction !== 'running' ? 'Steer ' + addressed + '…' : 'Message ' + addressed + '…');
   if (state.edit) element('composer').setAttribute('title', 'Editing in ' + state.edit.editor); else element('composer').removeAttribute('title');
   element('model-name').textContent = state.model?.id ?? '';
@@ -2006,7 +2030,7 @@ function allMatches(needle: string) {
 }
 const squash = (text: string) => text.replace(/\s+/g, '');
 function leaves(node: Node, into: Node[] = []) {
-  if (node instanceof HTMLElement && node.classList.contains('reply-pill')) return into;
+  if (node instanceof HTMLElement && node.classList.contains('message-header')) return into;
   if (!node.childNodes.length) { if (node.textContent) into.push(node); }
   else for (const child of node.childNodes) leaves(child, into);
   return into;
@@ -2315,7 +2339,7 @@ async function send(mode: PromptMode = 'prompt') {
   submitting = true;
   decide({ type: 'submit' });
   try {
-    const result = await fetchJSON('/prompt', { sessionId: sendingSession, text, mode, attachments: files.map(file => file.id), ...(threadFilter() ? { thread: threadFilter() } : {}) });
+    const result = await fetchJSON('/prompt', { sessionId: sendingSession, text, mode, attachments: files.map(file => file.id), ...(composerThreadName() ? { thread: composerThreadName() } : {}) });
     if (result.disposition !== 'handled') draft.sent(files);
     if (state.view.id !== origin) { if (drafts.get(origin) === text) drafts.delete(origin); return; }
     if (state.sessionId !== sendingSession || scrolling.generation !== generation) return;
@@ -2359,7 +2383,7 @@ window.addEventListener('pagehide', () => {
   decide({ type: 'visibility' }); stopFrames();
   const current = new Map(drafts);
   current.set(state.view.id, editor.text());
-  const memory: PageMemory = { scroll, drafts: [...current].filter(([view, text]) => !!view && !!text), filters: [...threadFilters] };
+  const memory: PageMemory = { scroll, drafts: [...current].filter(([view, text]) => !!view && !!text), filters: [...threadFilters], composerThreads: [...composerThreads] };
   history.replaceState(memory, '');
 });
 document.addEventListener('visibilitychange', () => { decide({ type: 'visibility' }); cancelPending(); if (!document.hidden) { revealDirty ||= revealing.size > 0; windowDirty = true; armCap(); } schedule(); });

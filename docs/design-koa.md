@@ -773,10 +773,29 @@ item, for the same cursor reason as annotations.
 
 The page derives thread colors from order and keeps filtering local.
 The live feed is not filtered. Older-history reads filter before
-window limits, so sparse threads can load useful history. A filtered
-prompt gets a marker at submission, except a slash command: pi needs
-the slash at the start to expand a template or skill. Take-back hides
-the inserted marker. Runs remain whole under filtering.
+window limits, so sparse threads can load useful history. Runs remain
+whole under filtering.
+
+The page shows threads only in its own rendering: a header row on each
+user and agent message holds the message's time and its thread's
+chip, and a later section of a reply starts with a row of its own
+chip. The feed carries no header, so the native app's feed does not
+change. Under a filter the chips are omitted, because each would name
+the same thread.
+
+The composer's thread and the transcript's filter are two separate
+states of the root view, each kept per session in the page's history
+state, so both survive a reload. A click on a message's chip sets the
+composer's thread; it does not filter. Only the thread widget sets and
+clears the filter, and setting a filter also sets the composer's
+thread. The composer's × drops only the composer's thread. The
+composer's thread, not the filter, labels a submitted prompt: the
+prompt gets a marker and the classifier is not asked, except for a
+slash command, because pi needs the slash at the start to expand a
+template or skill. The thread stays after a send, so the next prompt
+goes to the same thread. Take-back hides the inserted marker. Child
+and job views have no composer thread: only the root takes thread
+labels.
 
 The thread panel shows for each thread the first line of its newest
 non-empty user or assistant message. The user drags a thread row onto

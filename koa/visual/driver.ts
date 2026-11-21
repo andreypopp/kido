@@ -238,8 +238,7 @@ async function assertCaptureWidth(web: Page, name: string, scenario: Scenario) {
                 if (key == "subagent-child" || key == "subagent-grandchild") {
                     const clear = await webviewJS(web, "(()=>{const first=document.querySelector('#items').firstElementChild;return !first||first.getBoundingClientRect().top>=document.querySelector('#bar').getBoundingClientRect().bottom})()")
                     equal(clear, true, "The first item clears the view bar at the current width")
-                    const dock = await webviewJS(web, "(()=>{const r=document.querySelector('#dock').getBoundingClientRect(),before=window.koaRootDocks?.[innerWidth];if(!before)throw Error('Missing root dock geometry');return JSON.stringify([r.top,r.bottom,r.height])===before})()")
-                    equal(dock, true, "The view bar leaves the dock unchanged at the current width")
+                    await assertBarDock(web)
                 }
                 if (key == "viewbar-menu") {
                     const menu = await webviewJS(web, "(()=>{const menu=document.querySelector('#bar-menu'),bar=document.querySelector('#bar').getBoundingClientRect(),box=menu.getBoundingClientRect();return !menu.hidden&&Math.abs(box.top-bar.bottom-4)<=.5&&[...menu.querySelectorAll('button')].every(row=>row.getBoundingClientRect().width<=box.width)})()")
@@ -254,7 +253,7 @@ async function assertCaptureWidth(web: Page, name: string, scenario: Scenario) {
         break;
         case "userMarkdown":
             if (key == "user-markdown") {
-                const markdown = await webviewJS(web, "(()=>{const user=document.querySelector('.user'),plain=Array.from(document.querySelectorAll('.user')).at(-1),assistant=document.querySelector('.assistant .prose'),p=plain.querySelector('.prose p'),u=user.querySelector('.t').getBoundingClientRect(),a=assistant.getBoundingClientRect(),well=plain.getBoundingClientRect(),time=plain.querySelector('time').getBoundingClientRect(),scroll=document.querySelector('#scroll').getBoundingClientRect(),font=parseFloat(getComputedStyle(document.body).fontSize),terminal=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ko-font-size')),editor=getComputedStyle(document.querySelector('.cm-content'));return plain.querySelector('time').textContent==='14:32'&&user.querySelectorAll('ul li').length===2&&user.querySelectorAll('code').length===2&&user.querySelector('b')===null&&user.textContent.includes('<b>raw HTML stays text</b>')&&Math.abs(u.left-a.left)<.1&&Math.abs(u.right-a.right)<.1&&well.left>=scroll.left+4&&well.right<=scroll.right-4&&getComputedStyle(p).marginTop==='0px'&&getComputedStyle(p).marginBottom==='0px'&&Math.abs(well.height-p.getBoundingClientRect().height-16)<.1&&Math.abs(time.top-p.getBoundingClientRect().top)<.1&&Math.abs(font-terminal*.92)<.01&&Math.abs(parseFloat(editor.fontSize)-font)<.01&&Number.isInteger(parseFloat(editor.minHeight))})()")
+                const markdown = await webviewJS(web, "(()=>{const user=document.querySelector('.user'),plain=Array.from(document.querySelectorAll('.user')).at(-1),assistant=document.querySelector('.assistant .prose'),p=plain.querySelector('.prose p'),u=user.querySelector('.t').getBoundingClientRect(),a=assistant.getBoundingClientRect(),well=plain.getBoundingClientRect(),time=plain.querySelector('time').getBoundingClientRect(),scroll=document.querySelector('#scroll').getBoundingClientRect(),font=parseFloat(getComputedStyle(document.body).fontSize),terminal=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ko-font-size')),editor=getComputedStyle(document.querySelector('.cm-content'));return plain.querySelector('time').textContent==='14:32'&&user.querySelectorAll('ul li').length===2&&user.querySelectorAll('code').length===2&&user.querySelector('b')===null&&user.textContent.includes('<b>raw HTML stays text</b>')&&Math.abs(u.left-a.left)<.1&&Math.abs(u.right-a.right)<.1&&well.left>=scroll.left+4&&well.right<=scroll.right-4&&getComputedStyle(p).marginTop==='0px'&&getComputedStyle(p).marginBottom==='0px'&&Math.abs(well.height-p.getBoundingClientRect().height-plain.querySelector('.message-header').getBoundingClientRect().height-18)<.1&&time.bottom<p.getBoundingClientRect().top&&Math.abs(font-terminal*.92)<.01&&Math.abs(parseFloat(editor.fontSize)-font)<.01&&Number.isInteger(parseFloat(editor.minHeight))})()")
                 equal(markdown, true, "User Markdown geometry follows the current width")
             }
 
@@ -344,11 +343,11 @@ async function prepareCapture(name: string, scenario: Scenario, measured: boolea
         const columnAligned = await webviewJS(web, "(()=>{const column=document.querySelector('#transcript'),rect=column.getBoundingClientRect(),field=document.querySelector(document.body.classList.contains('jobmode')?'#jobfoot .field':'#field'),box=field.getBoundingClientRect(),style=getComputedStyle(field),edge=box.left+parseFloat(style.borderLeftWidth)+parseFloat(style.paddingLeft);return Math.abs(rect.left)<.5&&rect.width<=720.5&&Math.abs(edge-rect.left-parseFloat(getComputedStyle(column).paddingLeft))<=1.5})()")
         equal(columnAligned, true, "Transcript and composer share the left-aligned column")
         if (name.includes("marks")) {
-            const aligned = await webviewJS(web, "(()=>{const times=['.reply-pill time','.user time','.run>.line .time'].map(selector=>document.querySelector(selector));if(times.some(time=>!time))throw Error('Missing transcript time');const edges=times.map(time=>time.getBoundingClientRect().right);return Math.max(...edges)-Math.min(...edges)<1})()")
+            const aligned = await webviewJS(web, "(()=>{const times=['.assistant .message-header time','.user time','.run>.line .time'].map(selector=>document.querySelector(selector));if(times.some(time=>!time))throw Error('Missing transcript time');const edges=times.map(time=>time.getBoundingClientRect().right);return Math.max(...edges)-Math.min(...edges)<1})()")
             equal(aligned, true, "Reply, user and run times share the text edge")
-            await assertReplyPillFirstLine(web, false)
+            await assertMessageHeader(web)
         } else if (name == "lines" || name.startsWith("threads-filter")) {
-            await assertReplyPillFirstLine(web, true)
+            await assertMessageHeader(web)
         }
     }
 async function driveThreads(web: Page, phases: string[], capture: (name: string) => Promise<void>, advance: () => Promise<void>) {
@@ -364,9 +363,9 @@ async function driveThreads(web: Page, phases: string[], capture: (name: string)
             await webviewUntil(web, `(()=>{const capsule=document.querySelector('.thread-capsule');return capsule.querySelectorAll('.thread-open>.thread-name').length===${expected}&&${expected == 9 ? "capsule.querySelector('.thread-more')===null" : "capsule.querySelector('.thread-more')?.textContent==='+5'"}})()`)
         }
         if (name.includes("marks")) {
-            await webviewUntil(web, "document.querySelector('.reply-pill .thread-name')!==null")
-            const hitBox = await webviewJS(web, "(()=>{const pill=document.querySelector('.reply-pill'),label=pill?.querySelector('.thread-name'),time=pill?.querySelector('time');if(!pill||!label||!time)throw Error('Missing reply pill');return pill.contains(label)&&pill.contains(time)&&pill.getBoundingClientRect().width>label.getBoundingClientRect().width&&getComputedStyle(pill).cursor==='pointer'&&getComputedStyle(pill).float==='right'})()")
-            equal(hitBox, true, "The complete reply pill is the filter control")
+            await webviewUntil(web, "document.querySelector('.thread-chip .thread-name')!==null")
+            const hitBox = await webviewJS(web, "(()=>{const chip=document.querySelector('.assistant .thread-chip'),header=chip?.parentElement,time=header?.querySelector('time');if(!chip||!time)throw Error('Missing message header');return !chip.contains(time)&&getComputedStyle(chip).cursor==='pointer'&&getComputedStyle(header).display==='flex'})()")
+            equal(hitBox, true, "Only the thread chip is the composer-thread control")
         }
         if (name == "threads-marks-narrow") {
             const wrapping = await webviewJS(web, "(()=>{const host=document.querySelector('.assistant>.reply-section>.msg');if(!host)throw Error('Missing threaded prose');const token='identifier'.repeat(100),p=document.createElement('p'),pre=document.createElement('pre'),table=document.createElement('table');p.textContent=pre.textContent=token;table.innerHTML='<tr><td>'+token+'</td></tr>';host.append(p,pre,table);try{return [p.scrollWidth<=p.clientWidth,getComputedStyle(pre).overflowWrap,getComputedStyle(table).overflowWrap,pre.scrollWidth>pre.clientWidth]}finally{p.remove();pre.remove();table.remove()}})()")
@@ -374,9 +373,9 @@ async function driveThreads(web: Page, phases: string[], capture: (name: string)
         }
         if (name.includes("filter")) {
             await webviewJS(web, "(()=>{document.querySelector('.thread-overflow').click();document.querySelector('.thread-entry[data-thread=sidebar]').click();return true})()")
-            await webviewUntil(web, `document.querySelector('.thread-clear')!==null&&document.querySelector('.user')!==null&&[...document.querySelectorAll('#items .reply-pill')].every(pill=>pill.classList.contains('plain'))&&${koaIdle}`)
-            const filtered = await webviewJS(web, "document.querySelectorAll('#items .thread-mark,#items .thread-section,#items .thread-edge,#items .thread-waiting').length===0&&[...document.querySelectorAll('#items .reply-pill')].every(pill=>pill.classList.contains('plain')&&!pill.querySelector('.thread-name')&&!pill.hasAttribute('role'))&&document.querySelector('#thread-cell').textContent==='#sidebar'")
-            equal(filtered, true, "Filtered replies have time-only pills and pending users have no label")
+            await webviewUntil(web, `document.querySelector('.composer-thread .thread-clear')!==null&&document.querySelector('.user')!==null&&document.querySelector('#items .thread-chip')===null&&${koaIdle}`)
+            const filtered = await webviewJS(web, "document.querySelector('#items .thread-chip')===null&&document.querySelector('#thread-cell')===null&&document.querySelector('.composer-thread .thread-name').textContent==='#sidebar'&&document.querySelector('.thread-capsule .thread-clear')!==null")
+            equal(filtered, true, "Filtered messages have time-only headers and the composer owns the chip")
         }
         if (name.includes("many") || name.endsWith("panel")) {
             await webviewJS(web, "(()=>{document.querySelector(document.querySelector('.thread-clear')?'.thread-open':'.thread-overflow').click();return true})()")
@@ -536,10 +535,6 @@ async function driveViews(web: Page, width: number, height: number, bar: boolean
             const hint = await text("document.querySelector('#prompt .cm-placeholder')?.textContent??''")
             equal(hint, placeholder, "The composer names the viewed agent")
         }
-        for (const currentWidth of (pairedWidths ? [width, 448] : [width])) {
-            await resizeKoa(web, currentWidth, height)
-            await webviewJS(web, "(()=>{const r=document.querySelector('#dock').getBoundingClientRect();window.koaRootDocks??={};window.koaRootDocks[innerWidth]=JSON.stringify([r.top,r.bottom,r.height]);return true})()")
-        }
         await resizeKoa(web, width, height)
         const rootDock = await dock()
         const rootPadding = await text("getComputedStyle(document.querySelector('#transcript')).paddingTop")
@@ -548,8 +543,7 @@ async function driveViews(web: Page, width: number, height: number, bar: boolean
         equal(rootBar, true, "The root view shows no bar and the composer keeps koa")
         await click(".assistant a.who")
         await assertBar("@reviewer", "Message @reviewer…")
-        const childDock = await dock()
-        equal(childDock, rootDock, "The dock does not move when the bar appears")
+        await assertBarDock(web)
         await capture(prefix + "child")
         await advance()
         await webviewUntil(web, `${koaWorking}`)
@@ -579,9 +573,13 @@ async function driveViews(web: Page, width: number, height: number, bar: boolean
         await capture(prefix + "root")
         return
     }
-async function assertReplyPillFirstLine(web: Page, plain: boolean) {
-        const result = await webviewJS<number[]>(web, `(()=>{const host=document.querySelector('${plain ? ".reply-pill.plain" : ".reply-pill"}')?.parentElement;if(!host)throw Error('Missing reply');const aligned=message=>{const pill=message.querySelector('.reply-pill'),block=[...message.children].find(child=>child!==pill);if(!pill||!block)throw Error('Missing first block');const walker=document.createTreeWalker(block,NodeFilter.SHOW_TEXT),text=walker.nextNode();if(!text)throw Error('Missing first line');const range=document.createRange();range.setStart(text,0);range.setEnd(text,1);const line=range.getBoundingClientRect(),rect=pill.getBoundingClientRect(),centre=(rect.top+rect.bottom)/2;return centre-(line.top+line.bottom)/2};const paragraph=aligned(host),heading=host.cloneNode(true);for(const child of [...heading.children])if(!child.classList.contains('reply-pill'))child.remove();const h=document.createElement('h2');h.textContent='Heading';heading.append(h);host.after(heading);try{const final=aligned(heading),wrapper=document.createElement('div');wrapper.className='reveal';wrapper.style.maxHeight='none';h.replaceWith(wrapper);wrapper.append(h);return [paragraph,final,aligned(heading)]}finally{heading.remove()}})()`)
-        require(result.every(value => Math.abs(value) <= 1.5), `Pills centre on the first paragraph and final or streaming heading lines: ${result}`)
+async function assertBarDock(web: Page) {
+        const unchanged = await webviewJS(web, "(()=>{const bar=document.querySelector('#bar'),hidden=bar.hidden,viewing=document.body.classList.contains('viewing'),dock=()=>{const r=document.querySelector('#dock').getBoundingClientRect();return JSON.stringify([r.top,r.bottom,r.height])},before=dock();try{bar.hidden=!hidden;document.body.classList.toggle('viewing',!viewing);return dock()===before}finally{bar.hidden=hidden;document.body.classList.toggle('viewing',viewing)}})()")
+        equal(unchanged, true, "The bar does not move the dock within the same view")
+    }
+async function assertMessageHeader(web: Page) {
+        const result = await webviewJS<number[]>(web, "(()=>{const header=document.querySelector('.assistant .message-header'),body=header?.nextElementSibling;if(!header||!body)throw Error('Missing reply header or body');const gap=(row,block)=>block.getBoundingClientRect().top-row.getBoundingClientRect().bottom,values=[gap(header,body)],message=header.parentElement.cloneNode(true);for(const child of [...message.children])if(!child.classList.contains('message-header'))child.remove();const heading=document.createElement('h2');heading.textContent='Heading';message.append(heading);header.parentElement.after(message);try{const row=message.querySelector('.message-header');values.push(gap(row,heading));const wrapper=document.createElement('div');wrapper.className='reveal';wrapper.style.maxHeight='none';heading.replaceWith(wrapper);wrapper.append(heading);values.push(gap(row,heading));return values}finally{message.remove()}})()")
+        require(result.every(gap => Math.abs(gap - 2) < 1), `Reply headers keep a 2px gap above prose and final or streaming headings: ${result}`)
     }
 async function testKoaWebviewDots() {
         const web = await scrollPage( "dots", "testKoaWebviewDots")
@@ -750,12 +748,12 @@ async function testKoaWebviewScrollbarJumpMountsHistory() {
 async function testKoaWebviewRhythm() {
         const web = await scrollPage( "rhythm", "testKoaWebviewRhythm")
         await webviewUntil(web, "document.querySelector('#items>[data-seq=\"0\"] ul')!==null&&document.querySelector('#items>[data-seq=\"14\"] p')!==null")
-        const initial = await webviewJS<Record<string, number>>(web, "(()=>{const row=n=>document.querySelector('#items>[data-seq=\"'+n+'\"]'),node=(n,selector)=>row(n).querySelector(selector),gap=(a,b)=>b.getBoundingClientRect().top-a.getBoundingClientRect().bottom,inside=row(10).querySelectorAll('.msg.prose');return {'list to run':gap(node(0,'ul'),node(1,'.run')),'run through follower to prose':gap(node(1,'.run'),node(3,'p')),'prose to run':gap(node(3,'.msg.prose'),node(4,'.run')),'run to user':gap(node(6,'.run'),row(7)),'prose to prose':gap(node(8,'.msg.prose'),node(9,'.msg.prose')),'section prose to run':gap(inside[0],node(10,'.run')),'section run to prose':gap(node(10,'.run'),inside[1]),'section list to run':gap(node(11,'ul'),node(11,'.run')),'notice to prose':gap(node(13,'.nrow'),node(14,'p'))}})()")
+        const initial = await webviewJS<Record<string, number>>(web, "(()=>{const row=n=>document.querySelector('#items>[data-seq=\"'+n+'\"]'),node=(n,selector)=>row(n).querySelector(selector),gap=(a,b)=>b.getBoundingClientRect().top-a.getBoundingClientRect().bottom,inside=row(10).querySelectorAll('.msg.prose');return {'list to run':gap(node(0,'ul'),node(1,'.run')),'run through follower to prose':gap(node(1,'.run'),node(3,'.msg.prose')),'prose to run':gap(node(3,'.msg.prose'),node(4,'.run')),'run to user':gap(node(6,'.run'),row(7)),'prose to prose':gap(node(8,'.msg.prose'),node(9,'.msg.prose')),'section prose to run':gap(inside[0],node(10,'.run')),'section run to prose':gap(node(10,'.run'),inside[1]),'section list to run':gap(node(11,'ul'),node(11,'.run')),'notice to prose':gap(node(13,'.nrow'),node(14,'.msg.prose'))}})()")
         for (const [name, gap] of Object.entries(initial)) { near(gap, 14, 0.5, name) }
         const notices = await webviewJS(web, "(()=>{const a=document.querySelector('#items>[data-seq=\"12\"] .nrow').getBoundingClientRect(),b=document.querySelector('#items>[data-seq=\"13\"] .nrow').getBoundingClientRect();return b.top-a.bottom})()")
         near(requireValue(Number(notices)), 2, 0.5, "Consecutive notice lines")
-        await webviewJS(web, "(()=>{document.querySelector('.reply-pill[data-thread=one]').click();return true})()")
-        await webviewUntil(web, `document.querySelector('.thread-clear')!==null&&document.querySelector('#items>[data-seq="5"]')===null&&document.querySelector('#items>[data-seq="4"] .run')?.dataset.rhythm==='compact'&&${koaIdle}`)
+        await webviewJS(web, "(()=>{document.querySelector('.thread-overflow').click();document.querySelector('.thread-entry[data-thread=one]').click();return true})()")
+        await webviewUntil(web, `document.querySelector('.composer-thread .thread-clear')!==null&&document.querySelector('#items>[data-seq="5"]')===null&&document.querySelector('#items>[data-seq="4"] .run')?.dataset.rhythm==='compact'&&${koaIdle}`)
         const filtered = await webviewJS(web, "(()=>{const a=document.querySelector('#items>[data-seq=\"4\"] .run').getBoundingClientRect(),b=document.querySelector('#items>[data-seq=\"6\"] .run').getBoundingClientRect();return b.top-a.bottom})()")
         near(requireValue(Number(filtered)), 2, 0.5, "Consecutive runs across a hidden prose boundary")
         await webviewJS(web, "(()=>{document.querySelector('#items>[data-seq=\"4\"] .run>.line').click();return true})()")
@@ -1299,7 +1297,7 @@ echo release
         }
         if (scenario == "userMarkdown") {
             await webviewUntil(web, "document.querySelectorAll('.user').length===2&&document.querySelector('.user ul li')&&document.querySelector('.user pre code')&&document.querySelector('.user blockquote')")
-            const markdown = await webviewJS(web, "(()=>{const user=document.querySelector('.user'),plain=Array.from(document.querySelectorAll('.user')).at(-1),assistant=document.querySelector('.assistant .prose'),p=plain.querySelector('.prose p'),u=user.querySelector('.t').getBoundingClientRect(),a=assistant.getBoundingClientRect(),well=plain.getBoundingClientRect(),time=plain.querySelector('time').getBoundingClientRect(),scroll=document.querySelector('#scroll').getBoundingClientRect(),font=parseFloat(getComputedStyle(document.body).fontSize),terminal=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ko-font-size')),editor=getComputedStyle(document.querySelector('.cm-content'));return plain.querySelector('time').textContent==='14:32'&&user.querySelectorAll('ul li').length===2&&user.querySelectorAll('code').length===2&&user.querySelector('b')===null&&user.textContent.includes('<b>raw HTML stays text</b>')&&Math.abs(u.left-a.left)<.1&&Math.abs(u.right-a.right)<.1&&well.left>=scroll.left+4&&well.right<=scroll.right-4&&getComputedStyle(p).marginTop==='0px'&&getComputedStyle(p).marginBottom==='0px'&&Math.abs(well.height-p.getBoundingClientRect().height-16)<.1&&Math.abs(time.top-p.getBoundingClientRect().top)<.1&&Math.abs(font-terminal*.92)<.01&&Math.abs(parseFloat(editor.fontSize)-font)<.01&&Number.isInteger(parseFloat(editor.minHeight))})()")
+            const markdown = await webviewJS(web, "(()=>{const user=document.querySelector('.user'),plain=Array.from(document.querySelectorAll('.user')).at(-1),assistant=document.querySelector('.assistant .prose'),p=plain.querySelector('.prose p'),u=user.querySelector('.t').getBoundingClientRect(),a=assistant.getBoundingClientRect(),well=plain.getBoundingClientRect(),time=plain.querySelector('time').getBoundingClientRect(),scroll=document.querySelector('#scroll').getBoundingClientRect(),font=parseFloat(getComputedStyle(document.body).fontSize),terminal=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ko-font-size')),editor=getComputedStyle(document.querySelector('.cm-content'));return plain.querySelector('time').textContent==='14:32'&&user.querySelectorAll('ul li').length===2&&user.querySelectorAll('code').length===2&&user.querySelector('b')===null&&user.textContent.includes('<b>raw HTML stays text</b>')&&Math.abs(u.left-a.left)<.1&&Math.abs(u.right-a.right)<.1&&well.left>=scroll.left+4&&well.right<=scroll.right-4&&getComputedStyle(p).marginTop==='0px'&&getComputedStyle(p).marginBottom==='0px'&&Math.abs(well.height-p.getBoundingClientRect().height-plain.querySelector('.message-header').getBoundingClientRect().height-18)<.1&&time.bottom<p.getBoundingClientRect().top&&Math.abs(font-terminal*.92)<.01&&Math.abs(parseFloat(editor.fontSize)-font)<.01&&Number.isInteger(parseFloat(editor.minHeight))})()")
             equal(markdown, true, "Markdown, first-line time, equal text widths, compact spacing and rounded composer size")
             const prefix = width < 750 ? "narrow-user-" : "user-"
             await capture(prefix + "markdown")
@@ -1697,7 +1695,7 @@ const entries: Record<string, () => Promise<void>> = {
   "Dots": testKoaWebviewDots,
   "RunStepsTransitions": testKoaWebviewRunStepsTransitions,
   "ScrollbarJumpMountsHistory": testKoaWebviewScrollbarJumpMountsHistory,
-  "BangCompletion": () => koaWebview("BangCompletion", 960, 357, "bang", true, ["bang-tab"]),
+  "BangCompletion": () => koaWebview("BangCompletion", 960, 397, "bang", true, ["bang-tab"]),
   "Bang": () => koaWebview("Bang", 960, 217, "bang", true, ["bang"]),
   "ComposerFootResponsive": () => koaWebview("testKoaWebviewComposerFootResponsive", 656, 297, "composer", false, ["foot-responsive"]),
   "ComposerFootStates": () => koaWebview("ComposerFootStates", 960, 557, "composer", true, ["foot-idle", "foot-working", "foot-editing", "foot-picker", "foot-toast", "foot-toast-err", "foot-narrow", "foot-extras", "foot-waiting", "foot-exited"]),

@@ -758,35 +758,67 @@ test('an open thread panel keeps its scroll through state updates and closes by 
   assert.equal(ui.panel().hidden, true);
 });
 
-test('reply sections carry interactive thread pills or a plain time with no marks or edges', async () => {
+test('reply sections carry interactive thread chips or a plain time with no marks or edges', async () => {
   const app = await page();
   const result = app.run(`(()=>{
     const at=Date.now(),reply=(seq,blocks)=>({seq,at,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks});
-    state={...state,working:true,view:{id:'root',path:[],type:'root'},sessionId:'pills',threads:[{name:'one'},{name:'two'}]};
+    state={...state,working:true,view:{id:'root',path:[],type:'root'},sessionId:'headers',threads:[{name:'one'},{name:'two'}]};
     put(reply(0,[{type:'text',text:'First',thread:'one'},{type:'text',text:'Second',thread:'two'}]));
     put(reply(1,[{type:'text',text:'Plain'}]));
     const all=node=>[node,...node.children.filter(child=>child instanceof HTMLElement).flatMap(all)];
-    const pills=all(views.get(0).view).filter(node=>node.classList.contains('reply-pill')),plain=all(views.get(1).view).find(node=>node.classList.contains('reply-pill'));
-    const labels=pills.map(pill=>[pill.querySelector('.thread-name')?.children[1].textContent,pill.children.find(node=>node.tagName==='TIME')?.textContent,pill.getAttribute('role'),typeof pill.onclick==='function']);
+    const headers=all(views.get(0).view).filter(node=>node.classList.contains('message-header')),plain=all(views.get(1).view).find(node=>node.classList.contains('message-header'));
+    const labels=headers.map(header=>[header.querySelector('.thread-name')?.children[1].textContent,header.children.find(node=>node.tagName==='TIME')?.textContent,header.querySelector('.thread-chip')?.getAttribute('role')??null,typeof header.querySelector('.thread-chip')?.onclick==='function']);
     const plainInfo=[plain?.children.find(node=>node.tagName==='TIME')?.textContent,plain?.getAttribute('role'),typeof plain?.onclick==='function'];
     const noMarks=all(views.get(0).view).every(node=>!node.classList.contains('thread-mark')&&!node.classList.contains('thread-edge'));
-    pills[0]?.onclick?.();
+    headers[0]?.querySelector('.thread-chip')?.onclick?.();
+    const selected=[composerThreadName(),threadFilter()];setThread('one');renderDirty();
     put({seq:2,at,kind:'user',revision:0,final:true,text:'pending',images:[],attachments:[]});
     const pending=all(views.get(2).view).some(node=>node.classList.contains('thread-waiting')||node.classList.contains('thread-pending'));
-    const filtered=all(views.get(0).view).filter(node=>node.classList.contains('reply-pill')).map(pill=>[pill.children.find(node=>node.tagName==='TIME')?.textContent,!!pill.querySelector('.thread-name'),pill.getAttribute('role'),typeof pill.onclick==='function']);
-    return [labels,plainInfo,noMarks,threadFilter(),pending,timestamp(at),filtered];
+    const filtered=all(views.get(0).view).filter(node=>node.classList.contains('message-header')).map(header=>[header.children.find(node=>node.tagName==='TIME')?.textContent,!!header.querySelector('.thread-name'),header.querySelector('.thread-chip')?.getAttribute('role')??null,typeof header.querySelector('.thread-chip')?.onclick==='function']);
+    return [labels,plainInfo,noMarks,threadFilter(),pending,timestamp(at),filtered,selected];
   })()`);
   const value=JSON.parse(JSON.stringify(result));
-  assert.deepEqual(value.slice(0,5), [[['one',value[5],'button',true],['two',value[5],'button',true]],[value[5],null,false],true,'one',false]);
+  assert.deepEqual(value.slice(0,5), [[['one',value[5],'button',true],['two',null,'button',true]],[value[5],null,false],true,'one',false]);
   assert.deepEqual(value[6], [[value[5],false,null,false]]);
+  assert.deepEqual(value[7], ['one',null]);
 });
 
-test('find ignores reply pill names and times and export contains only prose', async () => {
+test('message headers exclude runs and notices and the composer clear preserves the filter', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    state={...state,life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'headers',threads:[{name:'one'}]};
+    const base={at:1,revision:0,final:true};
+    const count=(root,name)=>root.children.reduce((sum,child)=>sum+(child instanceof HTMLElement?Number(child.classList.contains(name))+count(child,name):0),0);
+    put({...base,seq:0,kind:'user',text:'Question',thread:'one',images:[],attachments:[]});
+    put({...base,seq:1,kind:'assistant',blocks:[{type:'text',text:'Answer',thread:'one'}],stop:'stop',error:''});
+    put({...base,seq:2,kind:'assistant',blocks:[{type:'tool',id:'t',name:'bash',args:{text:'{}'},state:{type:'done',error:false,result:{text:'ok',images:[]}}}],stop:'stop',error:''});
+    put({...base,seq:3,kind:'notice',customType:'note',from:'worker',text:'Note'});
+    put({...base,seq:4,kind:'agent',direction:'in',from:{name:'worker'},text:{text:'Report',cut:0},inbound:{form:'report'}});
+    put({...base,seq:5,kind:'job',job:{id:'j',name:'build',log:'/tmp/build.log'},event:{type:'stream',batch:{text:'output',cut:0},omitted:0,cut:false}});
+    state={...state,queue:{steering:[{text:'Steer',attachments:[],thread:'one'}],followUp:[{text:'Later',attachments:[],thread:'one'}],classifying:[{text:'Pending',attachments:[],mode:'followUp'}]}};queue();
+    const queueCounts=[count(element('queue'),'message-header'),count(element('queue'),'thread-chip')];
+    for (const seq of [6,8,10]) put({...base,seq,kind:'user',text:'Implicit',images:[],attachments:[]});
+    put({...base,seq:7,kind:'threads',target:6,threads:['one']});
+    put({...base,seq:9,kind:'threads',target:8,threads:['one','two']});
+    const implicit=[6,8,10].map(seq=>[count(views.get(seq).view,'message-header'),count(views.get(seq).view,'thread-chip')]);
+    const counts=[0,1,2,3,4,5].map(seq=>[count(views.get(seq).view,'message-header'),count(views.get(seq).view,'thread-chip')]);
+    views.get(0).view.querySelector('.thread-chip').onclick();
+    setThread('one');renderDirty();
+    const filtered=[threadFilter(),!!element('field').querySelector('.composer-thread')?.querySelector('.thread-chip'),!!element('threads').querySelector('.thread-clear'),count(views.get(0).view,'thread-chip'),count(views.get(1).view,'thread-chip')];
+    element('field').querySelector('.thread-clear').onclick();
+    const dropped=[composerThreadName(),threadFilter(),!!element('field').querySelector('.thread-new')];
+    element('threads').querySelector('.thread-clear').onclick();
+    return [counts,filtered,threadFilter(),!!element('field').querySelector('.composer-thread'),queueCounts,implicit,dropped];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [[[1,1],[1,1],[0,0],[0,0],[0,0],[0,0]],['one',true,true,0,0],null,true,[0,0],[[1,1],[1,0],[1,0]],[null,'one',true]]);
+});
+
+test('find ignores message header names and times and export contains only prose', async () => {
   const app = await page();
   const result = app.run(`(()=>{
     const at=Date.now(),results=[];
     for(const text of ['one',timestamp(at)]){
-      const row=node('div'),pill=replyPill('one',at),paragraph=node('p'),leaf=document.createTextNode(text); paragraph.append(leaf);row.append(pill,paragraph);
+      const row=node('div'),header=messageHeader('one',at),paragraph=node('p'),leaf=document.createTextNode(text); paragraph.append(leaf);row.append(header,paragraph);
       const found=locate(row,[{text,lowered:text,folds:[],fences:[]}],{seq:0,segment:0,start:0},text.length);
       results.push(found?.start.node===leaf&&found?.end.node===leaf);
     }
@@ -796,31 +828,79 @@ test('find ignores reply pill names and times and export contains only prose', a
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [[true,true],'Only the reply']);
 });
 
-test('whole transcript selection starts at prose rather than an unselectable reply pill', async () => {
+test('whole transcript selection starts at prose rather than an unselectable message header', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    const row=node('div'),pill=replyPill('one',Date.now()),first=document.createTextNode('First'),last=document.createTextNode('Last');
-    row.append(pill,first,last);element('items').replaceChildren(row);order.push(0);
+    const row=node('div'),header=messageHeader('one',Date.now()),first=document.createTextNode('First'),last=document.createTextNode('Last');
+    row.append(header,first,last);element('items').replaceChildren(row);order.push(0);
     getSelection=()=>({rangeCount:1,isCollapsed:false,getRangeAt:()=>({startContainer:first,startOffset:0,endContainer:last,endOffset:4}),containsNode:()=>false});
     return wholeSelection();
   })()`);
   assert.equal(result,true);
 });
 
-test('a reply pill filters the capsule and prompt without a pending line', async () => {
+test('a message chip labels submissions and stays after send without filtering', async () => {
   const app = await page();
   const result = await app.run(`(async()=>{
     state={...state,life:{type:'ready'},working:true,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'}]};
     accept({kind:'user',seq:0,revision:1,at:1,final:true,text:'pending',images:[],attachments:[]});
-    const mark=replyPill('one',Date.now()),clickable=typeof mark.onclick==='function';mark.onclick?.();renderItem(visible(0));
+    const mark=threadChip('one'),clickable=typeof mark.onclick==='function';mark.onclick?.();renderItem(visible(0));
     const waiting=views.get(0).view.querySelector('.thread-waiting');
     const text=node=>node.textContent+node.children.map(text).join('');
-    const capsule=text(element('threads').querySelector('.thread-capsule'));
+    renderThreads();const capsule=text(element('threads').querySelector('.thread-capsule'));
     let sent;rendered=async()=>{};fetchJSON=async(path,body)=>{sent=body;return {disposition:'queued'}};
     editor.setText('continue');await send();
-    return [mark.tagName,mark.getAttribute('role'),clickable,threadFilter(),capsule,sent.thread,waiting?.tagName,typeof waiting?.onclick==='function'];
+    return [mark.tagName,mark.getAttribute('role'),clickable,threadFilter(),capsule,sent.thread,waiting?.tagName,typeof waiting?.onclick==='function',composerThreadName()];
   })()`);
-  assert.deepEqual(Array.from(result),['SPAN','button',true,'one','#one×','one',undefined,false]);
+  assert.deepEqual(Array.from(result),['SPAN','button',true,undefined,'#one…','one',undefined,false,'one']);
+});
+
+test('filtering selects the composer thread but dropping it submits unlabelled with the filter intact', async () => {
+  const app = await page();
+  const result = await app.run(`(async()=>{
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]};refreshComposer();
+    const initial=!!element('field').querySelector('.thread-new');
+    const sent=[];rendered=async()=>{};fetchJSON=async(path,body)=>{sent.push(body);return {disposition:'queued'}};
+    setThread('one');const selected=[composerThreadName(),threadFilter()];
+    editor.setText('first');await send();const sticky=composerThreadName();
+    setComposerThread('two');editor.setText('second');await send();
+    element('field').querySelector('.thread-clear').onclick();
+    editor.setText('classify this');await send();const filterAfterDrop=threadFilter();
+    setThread('two');element('threads').querySelector('.thread-clear').onclick();
+    return [initial,selected,sticky,sent.map(body=>body.thread),filterAfterDrop,threadFilter(),composerThreadName(),!!element('field').querySelector('.composer-thread')];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [true,['one','one'],'one',['one','two',null],'one',null,'two',true]);
+});
+
+test('composer threads stay with their root draft across reload and do not enter child or job views', async () => {
+  const app = await page();
+  const evaluate = app.repl();
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]};setThread('one');setComposerThread('two');editor.setText('draft');`);
+  app.windowListeners.get('pagehide')?.();
+  evaluate("element('field').replaceChildren()");
+  const restored = app.repl();
+  const result = restored(`(()=>{
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'}};refreshComposer();
+    const root=[threadFilter(),composerThreadName(),drafts.get('root')];
+    const rows=[];
+    for(const type of ['agent','job']){state={...state,view:{id:'child',path:[],type}};refreshComposer();rows.push([!!element('field').querySelector('.composer-thread'),composerThreadName()]);}
+    state={...state,sessionId:'other',view:{id:'root',path:[],type:'root'}};refreshComposer();
+    return [root,rows,composerThreadName(),!!element('field').querySelector('.thread-new')];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['one','two','draft'],[[false,null],[false,null]],null,true]);
+});
+
+test('moving a thread updates its composer chip without replacing an independent composer thread', async () => {
+  const app = await page();
+  const result = await app.run(`(async()=>{
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'A'},{name:'B'},{name:'C'}]};
+    fetchJSON=async()=>({});
+    threadChip('A').onclick();await moveThread('A','B');
+    const renamed=[threadFilter(),composerThreadName(),element('field').querySelector('.thread-name').title];
+    setThread('A');threadChip('C').onclick();await moveThread('A','B');
+    return [renamed,[threadFilter(),composerThreadName(),element('field').querySelector('.thread-name').title]];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [[null,'B','B'],['B','C','C']]);
 });
 
 test('block thread updates preserve the scrolled panel position', async () => {
@@ -916,11 +996,11 @@ test('thread capsules sort activity, keep palette identity and show the filter c
     const colours=[threadColour('one'),threadColour('two'),threadColour('seven')];
     state={...state,threads:[...state.threads,{name:'pending-old'},{name:'pending-new'}]};renderThreads();const pendingNames=element('threads').querySelector('.thread-open').children.filter(node=>node.classList.contains('thread-name')).slice(0,2).map(node=>node.dataset.thread);
     setThread('two');renderThreads();refreshComposer();
-    const filtered=text(element('threads').querySelector('.thread-capsule')),foot=text(threadCell),placeholder=element('prompt').children[0].placeholder;
+    const filtered=text(element('threads').querySelector('.thread-capsule')),foot=!!element('field').querySelector('.thread-cell'),placeholder=element('prompt').children[0].placeholder;
     toggleThreads();const panel=!element('threads').querySelector('.thread-panel').hidden;
     [one,two,many,colours,filtered,foot,placeholder,panel,pendingNames];
   `);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), ['#one…','#two·#one…','#seven·#six·#five·#four·#three·#two·#one…',['var(--thread-0)','var(--thread-1)','var(--thread-0)'],'#two×','#two','Message @pi in #two…',true,['pending-new','pending-old']]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), ['#one…','#two·#one…','#seven·#six·#five·#four·#three·#two·#one…',['var(--thread-0)','var(--thread-1)','var(--thread-0)'],'#two×',false,'Message koa…',true,['pending-new','pending-old']]);
 });
 
 test('unfiltered roots keep the original foot and wrap unthreaded replies', async () => {
@@ -949,7 +1029,7 @@ test('a filtered composer keeps the working and compaction verbs', async () => {
     for(const [working,compaction] of [[true,'idle'],[true,'running'],[false,'idle']]){state={...state,working,compaction};refreshComposer();hints.push(element('prompt').children[0].placeholder)}
     return hints;
   })()`);
-  assert.deepEqual(Array.from(result), ['Steer @ko in #work…','Message @ko in #work…','Message @ko in #work…']);
+  assert.deepEqual(Array.from(result), ['Steer koa…','Message koa…','Message koa…']);
 });
 
 test('reply sections never draw a thread edge', async () => {
@@ -968,7 +1048,7 @@ test('reply sections never draw a thread edge', async () => {
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [[false,null],[false,null],[false,null],[false,null]]);
 });
 
-test('only pending implicit users show under a filter and pills stay on reply sections', async () => {
+test('only pending implicit users show under a filter and chips stay on reply sections', async () => {
   const app = await page();
   const result = app.run(`
     state={...state,working:true,view:{id:'root',path:[],type:'root'},sessionId:'s',threads:[{name:'one'},{name:'two'}]};
@@ -983,7 +1063,7 @@ test('only pending implicit users show under a filter and pills stay on reply se
     accept(reply(5,[{type:'text',thread:'one',text:'First'}]));
     accept(user(6));accept(reply(7,[{type:'text',thread:'one',text:'Same'},{type:'text',text:'Unthreaded'},{type:'text',thread:'two',text:'Other'}]));
     renderItem(visible(5));renderItem(visible(6));renderItem(visible(7));
-    const marks=seq=>views.get(seq).view.querySelectorAll('.reply-section>.msg>.reply-pill').map(mark=>mark.dataset.thread).filter(Boolean);
+    const marks=seq=>views.get(seq).view.querySelectorAll('.reply-section>.msg>.message-header>.thread-chip').map(mark=>mark.dataset.thread).filter(Boolean);
     accept({kind:'agent',seq:8,revision:1,at:2,final:true,thread:'two',direction:'in',from:{name:'worker'},inbound:{form:'report',relation:'child'},text:{text:'done',cut:0}});renderItem(visible(8));renderItem(visible(7));
     accept({kind:'job',seq:9,revision:1,at:2,final:true,thread:'one',job:{id:'j',name:'verify',service:false,command:'true',log:'/tmp/job',place:{type:'mac'},startedAt:1},event:{type:'ended',end:{type:'exit',code:0},tail:{text:'',cut:0}}});renderItem(visible(9));reconcileRuns();
     [waits,waiting,removed,stayed,waitingAgain,settled,marks(5),marks(6),marks(7),marks(8),marks(9)];
@@ -2087,14 +2167,14 @@ test('notices join an open run but do not open one after prose', async () => {
   assert.deepEqual(value.slice(2), [['run:0:0'],'1:item',true,true,{kind:'block',seq:5,index:0},true,'Reply failed',['run:0:0','1:item']]);
 });
 
-test('each prose reply repeats its thread pill across intervening runs', async () => {
+test('each prose reply repeats its thread chip across intervening runs', async () => {
   const app = await page();
   const result = app.run(`(()=>{
     const reply=(seq,blocks)=>({seq,at:seq,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks}),prose=(seq,thread)=>reply(seq,[{type:'text',text:'Prose '+seq,thread}]),steps=(seq,thread)=>reply(seq,[{type:'thinking',text:'Plan',thread}]);
     put(prose(0,'one')); put(steps(1,'two')); put(prose(2,'two'));
     put(steps(3,'one')); put(prose(4,'two'));
     put(prose(5,'one')); put(steps(6,'two')); put(prose(7,'one'));
-    return [0,1,2,3,4,5,6,7].map(seq=>views.get(seq).view.querySelectorAll('.reply-section>.msg>.reply-pill').map(mark=>mark.dataset.thread).filter(Boolean));
+    return [0,1,2,3,4,5,6,7].map(seq=>views.get(seq).view.querySelectorAll('.reply-section>.msg>.message-header>.thread-chip').map(mark=>mark.dataset.thread).filter(Boolean));
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [['one'],[],['two'],[],['two'],['one'],[],['one']]);
 });
@@ -3830,8 +3910,8 @@ test('a new block holds, is measured after layout, grows with its measured heigh
   const page = await revealPage();
   page.hooks.layout = () => { page.evaluate("for (const [target, watch] of observed) if (watch.type === 'hold') Object.assign(target, { scrollHeight: 66, offsetHeight: 2, clientHeight: 0 })"); };
   page.deliver({ type: 'item', item: assistant(0, 'First.\n\nSecond.') });
-  const classes = () => String(page.evaluate("texts.get('0:0').view.children.filter(block => !block.classList.contains('reply-pill')).map(block => block.className).join('|')"));
-  const height = () => page.evaluate("texts.get('0:0').view.children.find(block => !block.classList.contains('reply-pill')).style['--h']");
+  const classes = () => String(page.evaluate("texts.get('0:0').view.children.filter(block => !block.classList.contains('message-header')).map(block => block.className).join('|')"));
+  const height = () => page.evaluate("texts.get('0:0').view.children.find(block => !block.classList.contains('message-header')).style['--h']");
   page.step(16);
   assert.deepEqual([classes(), height(), page.evaluate('measuredHolds.size')], ['hold|reveal dormant', undefined, 1]);
   page.step(16);
@@ -3845,7 +3925,7 @@ test('reduced motion shows a completed block at full height in its first frame w
   Object.assign(page.app.context, { matchMedia: () => ({ matches: true }) });
   page.deliver({ type: 'item', item: assistant(0, 'First.\n\nSecond.') });
   page.step(16);
-  assert.equal(page.evaluate("texts.get('0:0').view.children.find(block => !block.classList.contains('reply-pill')).className"), '');
+  assert.equal(page.evaluate("texts.get('0:0').view.children.find(block => !block.classList.contains('message-header')).className"), '');
   assert.equal(page.evaluate('growing.length + measuredHolds.size'), 0);
   assert.equal(page.evaluate('animating.size'), 0);
 });
