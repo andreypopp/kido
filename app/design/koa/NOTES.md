@@ -2051,6 +2051,53 @@ light and dark in the gallery.
   foreground, then the separator; at the narrow breakpoints the cell
   stays and the model goes first. The prompt carries the thread and
   koa writes the marker; the queue and steers the same.
+- **The header row and the chip** (user, 2026-11-21, approved;
+  header.html). Replaces the reply's
+  pill and the composer's foot cell. *The header row*: every
+  message, user or agent, starts with one row that holds only its
+  time at the right and, when the message has a thread, the thread's
+  chip at the left: a flex row at .8em/1.5 prose (a 15.6px line at
+  the 13px base), baseline-aligned, 2px to the body (4px in the
+  field), the body's first block with no top margin; the row is
+  reserved also when the message has no thread, with the time
+  alone. The time's design stays: the mono at tabular numerals, the
+  faint colour on a reply, the ink at 65% on a user block, its right
+  edge on the text edge like every other time. Inside a user block
+  the row sits inside the block's padding (8px 16px), above the
+  text; a reply's row is its first line. *The chip*: "# name" as an
+  outlined tag, .8em prose, "#" at 55% of the thread's colour, the
+  name at 600 in it, a 6px gap, 0/8px padding, 999px radius, the
+  fill the page background and a 1px edge in the colour at 30%, so
+  the same chip reads on the page, on the solid user block and in
+  the field; the name ellipsizes at 60% of the row, the full name
+  in its `title`. The chip is the mark's control, as the pill was:
+  the hand over the chip only, hover underlines the name at 50%,
+  pressed 100%, a click filters to the thread. *Multi-section
+  replies*: the first section's chip is in the header with the
+  time; each later section starts with a row of its own chip and
+  no time, 10px above (the time belongs to the message, and it is
+  on the first row). *User messages*: the chip when the thread is
+  known (the classifier's label, a filter, a typed marker); none
+  for a message that has none or whose reply spans two threads.
+  *Runs, steps, notices, job lines, the queue dock's rows and the
+  pending prompt*: unchanged, no header and no chip (the queue's
+  row is one line; the composer's chip already names the thread of
+  what the dock holds under a filter). *Narrow*: the row keeps its
+  two ends; the chip ellipsizes first. *Under a filter*: the chip
+  stands at the top left of the field, above the text, in a row of
+  the same metrics, with an × after the name (14px, the muted
+  colour, 0/3px padding, 4px radius, hover the well2) that clears
+  the filter; the placeholder is the plain "Steer @ko…" / "Message
+  @ko…" and the foot's thread cell is removed; the transcript's
+  messages show the time alone in their header (the name would say
+  the same on every row). The line-mode capsule under a filter keeps
+  "# name" (opens the panel) and loses its ×, which lives on the
+  composer's chip now; the panel keeps "All threads"; block mode's
+  current row and "All threads" are unchanged. Decided by the user
+  (2026-11-21): the foot cell and the "in #name" placeholder go;
+  the capsule's × moves to the composer's chip; the queue's rows
+  carry no chip. The reply's pill, the foot cell and the "in #name"
+  placeholder in the bullets above are history.
 - **The classifier MVP, reviewed** (2026-11-21; the user promoted
   the MVP of plans/koa-thread-classifier.md; the page's panel
   gained drag, rename and a pending prompt). What agrees with the
