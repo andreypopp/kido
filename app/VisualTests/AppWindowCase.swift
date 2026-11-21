@@ -146,6 +146,11 @@ import XCTest
         window.appearance = NSAppearance(named: .aqua)
         window.colorSpace = .displayP3
         session = SessionView(runtime: runtime)
+        let focusChanged: (NSResponder?, NSResponder?) -> Void = { [weak self] _, _ in
+            self?.session?.windows.values.forEach { $0.updateFocusTreatment() }
+        }
+        (window as? OwnerWindow)?.focusChanged = focusChanged
+        session.hostFocusChanged = focusChanged
         runtime.onConfigReload = { [weak self] font in self?.session.reloadConfig(font: font) }
         runtime.onConfigChange = { [weak self] in self?.session?.updateWebview() }
         session.frame = NSRect(x: 0, y: 0, width: width, height: height)
@@ -282,6 +287,8 @@ import XCTest
     @discardableResult
     func webviewSnapshot(_ pane: PaneView, _ name: String, file: StaticString = #filePath, testName: String = #function, afterCapture: (() -> Void)? = nil) async throws -> (chrome: NSBitmapImageRep, page: NSBitmapImageRep) {
         let webview = try XCTUnwrap(pane.webviewView)
+        let host = webview.window, responder = host?.firstResponder
+        defer { host?.makeFirstResponder(responder) }
         let image = try await KoaCapture.page(webview.browser)
         afterCapture?()
         let overlay = NSImageView(frame: webview.browser.frame)

@@ -306,6 +306,7 @@ import SidebarFeed
         for dark in [false, true] {
             if dark { try await darken() }
             terminal?.updateFocusTreatment()
+            XCTAssertTrue(OwnerWindow.focusedPane === pane, "webview owns focus: \(String(describing: window.firstResponder))")
             let image = try await webviewSnapshot(pane, dark ? "dark" : "light").chrome
             for (x, y) in [(image.pixelsWide / 2, 0), (image.pixelsWide / 2, image.pixelsHigh - 1), (0, image.pixelsHigh / 2), (image.pixelsWide - 1, image.pixelsHigh / 2)] {
                 let color = try XCTUnwrap(image.colorAt(x: x, y: y))

@@ -119,6 +119,15 @@ import XCTest
         try await runtimeSnapshot(dark, "failed")
     }
 
+    private func focusFloat(_ pane: PaneID) throws {
+        let view = try XCTUnwrap(terminal?.displayedPanes.first { $0.pane == pane })
+        let host = try XCTUnwrap(view.window as? FloatWindow)
+        host.makeFirstResponder(view.inputResponder)
+        host.becameKey()
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: host)
+        XCTAssertTrue(OwnerWindow.focusedPane === view)
+    }
+
     // float: a float in a runtime over two host panes, its stripe clipped by the card's corners.
     func runtimeFloatState(dark: Bool) async throws {
         try koRuntimes(["py311": ["command": [String: Any]()]])
@@ -131,6 +140,7 @@ import XCTest
         try await marks { $0[pane]?.state == .up }
         try client?.select(KO_SELECT_PANE, pane)
         try await wait("the float is active") { self.terminal?.active == pane }
+        try focusFloat(pane)
         try await fill(pane, "py311 /work\r\n$ pytest -x")
         try await settle()
         try await runtimeSnapshot(dark, "float")
@@ -148,6 +158,7 @@ import XCTest
         let pane = PaneID(number: 3)
         try client?.select(KO_SELECT_PANE, pane)
         try await wait("the float is active") { self.terminal?.active == pane }
+        try focusFloat(pane)
         let host = try XCTUnwrap(terminal?.displayedPanes.first { $0.pane == pane }?.window as? FloatWindow)
         func hover(_ point: CGPoint) throws {
             let event = try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: host.content.convert(point, to: nil), modifierFlags: [], timestamp: 0,

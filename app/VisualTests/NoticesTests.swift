@@ -54,7 +54,10 @@ import XCTest
             for state in ["transient", "two", "long", "config", "config-transient", "columns", "float", "banner", "none", "fullscreen-docked", "fullscreen-floating", "floating", "collapsed", "fullscreen-collapsed"] {
                 for entry in owner.notices.testTransients.entries { owner.notices.dismiss(entry.id) }
                 owner.runtime.testConfigError(nil)
-                owner.testBanner.isHidden = true
+                if !owner.testBanner.isHidden {
+                    owner.testBanner.isHidden = true
+                    owner.focusSelected()
+                }
                 owner.sidebar.dismissFloating()
                 owner.sidebar.isCollapsed = state == "collapsed" || state == "floating" || state == "fullscreen-floating" || state == "fullscreen-collapsed"
                 if state == "floating" || state == "fullscreen-floating" { owner.sidebar.focusSidebar(nil); owner.focusSelected() }
