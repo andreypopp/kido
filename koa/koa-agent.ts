@@ -1692,7 +1692,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   let settled = true;
   let turnEndedByControl = false;
   let workGeneration = 0;
-  let queuedParentWork = 0;
+  const queuedInput: { type: "user" | typeof MESSAGE_CUSTOM_TYPE | typeof STEER_CUSTOM_TYPE; text: string }[] = [];
 
   type Ending =
     | { kind: "awaiting-first-turn" }
@@ -1742,7 +1742,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   const deliverAgentMessage = (agent: AgentRef, relation: Relation, text: string, work: boolean, runtime?: string, returnTo?: { session: string; pane: string }): void => {
     const from = agent.name, header = senderHeader(from, relation, runtime, returnTo);
-    if (work) queuedParentWork++;
+    if (work) queuedInput.push({ type: MESSAGE_CUSTOM_TYPE, text });
     pi.sendMessage(
       { customType: MESSAGE_CUSTOM_TYPE, content: `${header}\n${text}`, display: true, details: { ...relationshipThread(agent), from, work, agent, body: text, inbound: { form: 'message', relation, ...(runtime ? { runtime } : {}) } } satisfies MessageDetails },
       { deliverAs: "followUp", triggerTurn: true },
@@ -1774,7 +1774,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     switch (m.kind) {
       case "user":
         if (m.text) {
-          queuedParentWork++;
+          queuedInput.push({ type: "user", text: m.text });
           deliver(m.text);
         }
         return;
@@ -1784,7 +1784,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       case "steer": {
         if (!m.text) return;
         const from = m.agent.name;
-        if (m.relation === "parent") queuedParentWork++;
+        if (m.relation === "parent") queuedInput.push({ type: STEER_CUSTOM_TYPE, text: m.text });
         workStarted();
         // pi drains followUp only once the agent has decided to stop; steer joins the run under way.
         pi.sendMessage(
@@ -2136,12 +2136,19 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     if (!startupCancelled) await apiCall("DELETE", varPath(VAR_TASK));
   };
 
+  pi.on("input", (event) => {
+    if (event.source !== "extension" && event.streamingBehavior) queuedInput.push({ type: "user", text: event.text });
+  });
+
   pi.on("message_start", (event) => {
     const m = event?.message;
     if (!ownSessionId) return;
     const details = isRecord(m) && isRecord(m.details) ? m.details : undefined;
     if (m?.role === "user" || details?.work === true) {
-      if (queuedParentWork > 0) queuedParentWork--;
+      const type = m.role === "user" ? "user" : m.role === "custom" ? m.customType : undefined;
+      const text = m.role === "user" ? contentText(m.content, "") : details?.body;
+      const index = queuedInput.findIndex(input => input.type === type && (input.type === "user" && typeof text === "string" ? text.startsWith(input.text) : input.text === text));
+      if (index !== -1) queuedInput.splice(index, 1);
       host.self.parent?.extension?.markWork(ownSessionId);
     }
   });
@@ -2774,7 +2781,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     if (event?.toolResults?.length) { host.jobs.flushStreams(); return; }
     if (event.message.role !== "assistant" || event.message.stopReason !== "stop" || event.message.content.some(part => part.type === "toolCall")) return;
     ending = { kind: "ended", text: contentText(event.message.content, "") };
-    if (queuedParentWork > 0) await reportIfPending();
+    if (queuedInput.length > 0) await reportIfPending();
   });
 
   pi.on("agent_end", (event) => {
@@ -2819,7 +2826,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   pi.on("agent_settled", async (event: { aborted?: boolean }, ctx: { isIdle(): boolean }) => {
     if (!ctx.isIdle()) return;
-    if (!event?.aborted) queuedParentWork = 0;
+    if (!event?.aborted) queuedInput.length = 0;
     host.jobs.finishWorking();
     settled = true;
     if (event?.aborted) ending = { kind: "aborted" };

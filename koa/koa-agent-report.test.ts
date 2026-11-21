@@ -54,7 +54,7 @@ test("a child reports completed work only before queued parent input or after se
       await s.emit("turn_end", { message: assistant("stop", "second result"), toolResults: [] });
       assert.deepEqual(ledger.reports, ["first result", "second result"]);
       await s.emit("turn_start");
-      await s.emit("message_start", { message: { role: "custom", customType: "ko-message", details: { work: true } } });
+      await s.emit("message_start", { message: { role: "custom", customType: "ko-message", details: { work: true, body: "follow up" } } });
       await s.emit("turn_end", { message: assistant("stop", "follow-up result"), toolResults: [] });
       assert.deepEqual(ledger.reports, ["first result", "second result"]);
       await s.emit("agent_end", { messages: [assistant("stop", "follow-up result")] });
@@ -75,6 +75,26 @@ test("a child reports completed work only before queued parent input or after se
       await s.emit("message_start", { message: { role: "user", content: "empty result" } });
       await idleTurn(s);
       assert.equal(ledger.reports.at(-1), 'subagent "worker" ended its turn with no message');
+      await s.emit("message_start", { message: { role: "user", content: "page task" } });
+      await s.emit("agent_start");
+      await s.emit("input", { type: "input", text: "page steer", source: "rpc", streamingBehavior: "steer" });
+      await s.emit("turn_end", { message: assistant("stop", "before page steer"), toolResults: [] });
+      assert.equal(ledger.reports.at(-1), "before page steer", "a queued page steer releases the completed turn report");
+      await extension.receive({ kind: "message", agent: { name: "boss", session: "boss-session" }, relation: "parent", text: "parent after page" });
+      await s.emit("message_start", { message: { role: "user", content: [{ type: "text", text: "page steer" }] } });
+      await s.emit("turn_end", { message: assistant("stop", "before parent message"), toolResults: [] });
+      assert.equal(ledger.reports.at(-1), "before parent message", "starting the page steer preserves queued parent input");
+      await s.emit("message_start", { message: { role: "user", content: "different page input" } });
+      await s.emit("turn_end", { message: assistant("stop", "parent still queued"), toolResults: [] });
+      assert.equal(ledger.reports.at(-1), "parent still queued", "unmatched user input does not consume queued parent work");
+      await s.emit("message_start", { message: { role: "custom", customType: "ko-message", details: { work: true, body: "parent after page" } } });
+      const count = ledger.reports.length;
+      await s.emit("turn_end", { message: assistant("stop", "after parent starts"), toolResults: [] });
+      assert.equal(ledger.reports.length, count, "each queued input is consumed only once");
+      await s.emit("input", { type: "input", text: "page image follow-up", source: "rpc", streamingBehavior: "followUp" });
+      await s.emit("message_start", { message: { role: "user", content: [{ type: "text", text: "page image follow-up\nImage resized to fit model limits." }] } });
+      await s.emit("turn_end", { message: assistant("stop", "after image follow-up"), toolResults: [] });
+      assert.equal(ledger.reports.length, count, "an appended image hint does not leave queued user input");
       await s.tool("stop_async_bash").execute("s", { job: jobId(service) });
     });
   } finally { await fx.restore(); }
