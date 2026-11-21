@@ -6,6 +6,7 @@ on:
     paths:
       - 'website/**'
       - '.github/workflows/website.yml'
+      - 'share/ko/openapi.json'
   workflow_dispatch:
 
 permissions:
