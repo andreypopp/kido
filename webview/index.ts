@@ -9,7 +9,7 @@ import type { Socket } from "node:net";
 import type { components } from "./ko-api.d.ts";
 
 type SupportedLine = Extract<components["schemas"]["ServeOut"], { type: "supported" }>;
-type Options = { ko?: string; target?: "pane" | "browser"; timeoutMs?: number };
+type Options = { ko?: string; target?: "pane" | "browser"; timeoutMs?: number; killMs?: number };
 
 export type Webview = {
   readonly url?: string;
@@ -33,6 +33,8 @@ export function webview(server: Server, options?: Options): Promise<Webview | nu
 export async function webview(server: Server, options: Options = {}): Promise<Webview | null> {
   const timeoutMs = options.timeoutMs === undefined ? 5000 : options.timeoutMs;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2147483647) throw new Error("timeoutMs must be a positive timer duration");
+  const killMs = options.killMs ?? 1000;
+  if (!Number.isSafeInteger(killMs) || killMs <= 0 || killMs > 2147483647) throw new Error("killMs must be a positive timer duration");
   const dir = mkdtempSync(join(tmpdir(), "kido-webview-"));
   chmodSync(dir, 0o700);
   const socketPath = join(dir, "webview.sock");
@@ -57,7 +59,7 @@ export async function webview(server: Server, options: Options = {}): Promise<We
         ended = true; clearTimeout(timer); child.off("close", finish); child.unref();
         child.stdin?.destroy(); child.stdout?.destroy(); child.stderr?.destroy(); resolve();
       };
-      const timer = setTimeout(() => { child.kill("SIGKILL"); finish(); }, 1000);
+      const timer = setTimeout(() => { child.kill("SIGKILL"); finish(); }, killMs);
       if (child.exitCode !== null || child.signalCode !== null) finish();
       else { child.once("close", finish); child.kill("SIGTERM"); }
     });

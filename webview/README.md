@@ -40,7 +40,8 @@ and serves again. Use `off` to remove a
 `supported` listener. Pass `{ ko: "/path/to/ko" }` to select the executable.
 `timeoutMs` (default 5000) bounds the bridge's start, each `show` and
 `hide`, and `close`; a step that passes it rejects, and the SDK ends
-its child.
+its child. `killMs` (default 1000) is the time from that child's
+`SIGTERM` to its `SIGKILL`.
 
 For development, `webview(server, { target: "browser" })` serves the same
 server on a free port of `127.0.0.1` and shows the page in your

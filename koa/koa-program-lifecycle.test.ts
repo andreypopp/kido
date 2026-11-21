@@ -83,7 +83,7 @@ test("quit exits at its deadline when the reply stalls and the client never read
     ServerResponse.prototype.end = function(...args) {
       return this.req.url === "/quit" ? this : end.apply(this, args);
     };`);
-  const app = await realFixture(t, { replies: [], env: { NODE_OPTIONS: `--import=${hook}` } });
+  const app = await realFixture(t, { replies: [], env: { NODE_OPTIONS: `--import=${hook}`, KO_QUIT_REPLY_MS: "100" } });
   const url = new URL(app.base);
   const body = JSON.stringify({ sessionId: app.records().filter(record => record.type === "state").at(-1)?.sessionId });
   const socket = connect(Number(url.port), "127.0.0.1", () => socket.write(`POST /quit HTTP/1.1\r\nHost: ${url.host}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`));
@@ -94,7 +94,7 @@ test("quit exits at its deadline when the reply stalls and the client never read
 });
 
 test("a stuck extension shutdown is bounded and koa still exits", { timeout: 30000 }, async t => {
-  const app = await realFixture(t, { replies: [], extensions: { "stuck.ts": `export default function (pi) { pi.on("session_shutdown", () => new Promise(() => {})); }\n` } });
+  const app = await realFixture(t, { replies: [], env: { KO_HOST_STOP_MS: "100" }, extensions: { "stuck.ts": `export default function (pi) { pi.on("session_shutdown", () => new Promise(() => {})); }\n` } });
   assert.equal((await app.post("quit")).status, 200);
   assert.equal(await Promise.race([app.close.then(() => true), timers.setTimeout(15000, false, { ref: false })]), true);
 });

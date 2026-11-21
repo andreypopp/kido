@@ -35,7 +35,7 @@ test("close bounds a stuck leave and ends its bridge", { timeout: 5000 }, async 
   try {
     process.stdout.isTTY = true;
     const app = createServer();
-    const view = await webview(app, { ko, timeoutMs: 1000 }); assert.ok(view);
+    const view = await webview(app, { ko, timeoutMs: 1000, killMs: 100 }); assert.ok(view);
     const socketPath = app.address(); assert.ok(typeof socketPath === "string");
     await view.show(); assert.equal(view.shown, true);
     const started = Date.now();
@@ -56,7 +56,7 @@ test("close cancels a stuck enter and queued actions", { timeout: 5000 }, async 
   try {
     process.stdout.isTTY = true;
     const app = createServer();
-    view = await webview(app, { ko, timeoutMs: 1000 }); assert.ok(view);
+    view = await webview(app, { ko, timeoutMs: 1000, killMs: 100 }); assert.ok(view);
     const socketPath = app.address(); assert.ok(typeof socketPath === "string");
     const first = assert.rejects(view.show('/first'), /closed/), queued = assert.rejects(view.show('/queued'), /closed/);
     const socket = await started;
@@ -119,6 +119,7 @@ test("browser Host guard and show/hide rules", { timeout: 15000 }, async () => {
       if (buffered.length < 6 + length) return;
       const payload = Buffer.from(buffered.subarray(6, 6 + length));
       for (let i = 0; i < length; i++) payload[i] = payload[i] ^ buffered[2 + i % 4];
+      if ((buffered[0] & 15) === 8) { socket.end(Buffer.concat([Buffer.from([0x88, length]), payload])); return; }
       socket.write(Buffer.concat([Buffer.from([0x81, length]), payload]));
       buffered = buffered.subarray(6 + length);
     };
@@ -174,7 +175,9 @@ test("browser Host guard and show/hide rules", { timeout: 15000 }, async () => {
       const ws = new WebSocket(urlOf(wv).replace("http:", "ws:"));
       ws.onopen = () => ws.send("hello");
       ws.onerror = () => reject(new Error("WebSocket failed"));
-      ws.onmessage = event => { try { assert.equal(event.data, "hello"); resolve(); } catch (error) { reject(error); } finally { ws.close(); } };
+      let received = false;
+      ws.onmessage = event => { try { assert.equal(event.data, "hello"); received = true; } catch (error) { reject(error); } finally { ws.close(); } };
+      ws.onclose = () => { try { assert.equal(received, true); resolve(); } catch (error) { reject(error); } };
     });
   } finally {
     await wv.close();
@@ -294,7 +297,7 @@ test("browser close ends an unresponsive forward at its deadline", { timeout: 40
     peers.add(socket);
     socket.on("close", () => peers.delete(socket));
   });
-  const wv = await webview(server, { target: "browser" });
+  const wv = await webview(server, { target: "browser", timeoutMs: 100 });
   const url = new URL(urlOf(wv));
   const socket = net.connect(Number(url.port), "127.0.0.1", () => socket.write(`GET / HTTP/1.1\r\nHost: localhost:${url.port}\r\n\r\n`));
   const closed = new Promise<void>(resolve => { socket.on("close", resolve); socket.on("error", () => {}); });

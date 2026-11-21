@@ -188,7 +188,8 @@ The README gives the calls; the rules that it does not state:
 - Every wait has a deadline, `timeoutMs` (5 s by default): the
   bridge's first `supported` line, each `enter` and `leave`, the
   browser opener and `close`. A child of the SDK that passes it, or
-  that a `close` cancels, gets `SIGTERM` and, 1 s later, `SIGKILL`.
+  that a `close` cancels, gets `SIGTERM` and, `killMs` later (1 s by
+  default), `SIGKILL`.
   A program that ends must not hang on a bridge or a client that
   does not answer. `close` is one promise for every caller; it
   cancels the queued `show` and `hide`, and always removes the

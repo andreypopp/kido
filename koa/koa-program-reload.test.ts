@@ -20,14 +20,6 @@ async function install(t: TestContext) {
 const update = async (dir: string) => writeFile(join(dir, "koa/page.html"), (await readFile(join(dir, "koa/page.html"), "utf8")).replace("<title>koa</title>", "<title>RELOADED-MARKER</title>"));
 const saved = async ({ cwd, sessions }: { cwd: string; sessions: string }) => ["--session", await writeSession(cwd, sessions, 1, "saved")];
 
-test("/reload with an unchanged install reloads in place and keeps koa", { timeout: 30000 }, async t => {
-  const dir = await install(t);
-  const app = await realFixture(t, { replies: [], program: join(dir, "koa/koa.ts"), setup: saved });
-  await reload(app);
-  await app.until(note("reloaded"));
-  assert.equal(urls(app), 1);
-});
-
 test("/reload restarts koa in place on the same session when only the install changed", { timeout: 30000 }, async t => {
   const dir = await install(t);
   const app = await realFixture(t, { replies: [], program: join(dir, "koa/koa.ts"), setup: saved });

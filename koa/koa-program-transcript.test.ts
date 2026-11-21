@@ -15,7 +15,7 @@ test('completion limits active searches and kills expired children', { timeout: 
   const sockets = new Set<import('node:net').Socket>(); let accepted = 0;
   const server = createServer(socket => { accepted++; sockets.add(socket); socket.on('data', () => {}); socket.once('close', () => sockets.delete(socket)); });
   server.listen(gate); await once(server, 'listening'); t.after(() => { for (const socket of sockets) socket.destroy(); server.close(); });
-  const app = await realFixture(t, {replies: [], env: { KOA_FD: fd } });
+  const app = await realFixture(t, {replies: [], env: { KOA_FD: fd, KO_COMPLETION_SEARCH_MS: "800" } });
   const controller = new AbortController();
   const first = fetch(app.base + 'complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: app.records().filter(record => record.type === 'state').at(-1)?.sessionId, text: '@', pos: 1 }), signal: controller.signal });
   const rejected = assert.rejects(first, { name: 'AbortError' });

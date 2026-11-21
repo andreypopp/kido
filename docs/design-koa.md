@@ -448,10 +448,10 @@ exists from the moment the SDK's view exists, cancels the open
 dialogs, disposes every agent's runtime first, deepest first (pi
 aborts the turn, emits `session_shutdown` with reason `quit` to the
 extensions and settles its credential writes), bounded by
-`HOST_STOP_MS`, then starts every other teardown in
+`KO_HOST_STOP_MS` (5 s), then starts every other teardown in
 reverse order and waits for all of them. A stuck extension thus never
 keeps koa alive. The reply to the page's own quit request is sent
-before the shutdown starts, with a deadline (`QUIT_REPLY_MS`). Every
+before the shutdown starts, with a deadline (`KO_QUIT_REPLY_MS`, 1 s). Every
 group signal of koa goes through one function, `signalChild` in
 `koa-child.ts`, which takes a child that koa spawned (`fd`) and
 ignores `ESRCH` and `EPERM`, as `signalJob` does

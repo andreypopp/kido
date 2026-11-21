@@ -207,7 +207,10 @@ the pane's terminal. It runs 20 random cases under `cargo test`;
 ## The TypeScript suite
 
 `scripts/test-ts.sh` runs `koa-*.test.ts` and `agents.test.ts` of
-`koa/` and the `.pi/tests/` guard under Node's native TypeScript support. koa's
+`koa/` and the `.pi/tests/` guard under Node's native TypeScript support,
+through `koa/testdata/run-tests.mjs`, which keeps the order of its
+arguments: the script names the longest files first, so that no
+worker idles at the end. koa's
 own tests run koa with the pinned real pi against the scripted model
 provider of `koa-fake-provider.ts` (design-koa.md, "Tests"). The
 agent extension's tests (`koa-agent-*.test.ts`, over

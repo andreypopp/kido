@@ -51,4 +51,8 @@ make --no-print-directory build
 if [ "$#" -gt 0 ]; then
 	exec ../scripts/quiet-limit 180 -- node --test --test-timeout=60000 --test-concurrency=4 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./testdata/start-reporter.mjs --test-reporter-destination=stdout "$@"
 fi
-exec ../scripts/quiet-limit 180 -- node --test --test-timeout=60000 --test-concurrency=4 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./testdata/start-reporter.mjs --test-reporter-destination=stdout koa-*.test.ts agents.test.ts ../.pi/tests/no-git-writes.test.ts
+set -- koa-program-lifecycle.test.ts koa-program-agents.test.ts koa-program-editor.test.ts koa-program-session.test.ts koa-webview-sdk.test.ts koa-program-job-view.test.ts koa-agent-runtime.test.ts koa-program-real.test.ts
+for file in koa-*.test.ts agents.test.ts ../.pi/tests/no-git-writes.test.ts; do
+	case " $* " in *" $file "*) ;; *) set -- "$@" "$file" ;; esac
+done
+exec ../scripts/quiet-limit 180 -- node ./testdata/run-tests.mjs "$@"
