@@ -548,6 +548,85 @@ import SidebarFeed
         XCTAssertEqual(session.visualHotSurfaces, 32, "the oldest window goes first and the next fits the budget")
     }
 
+    func testClosingLastFloatInHiddenWindowRestoresParent() async throws {
+        let (owner, slot, parent, child) = try await webviewChildSlot(keepHidden: 0, extraWindows: #",{"name":"other","tree":\#(koPane("sleep 600"))}"#)
+        let session = try XCTUnwrap(owner.testSession)
+        let parentView = try XCTUnwrap(slot.displayedPanes.first { $0.pane == parent })
+        let originalPage = try XCTUnwrap(parentView.webviewView)
+        let model = try XCTUnwrap(owner.testModel)
+        let other = try XCTUnwrap(model.layout.layout.windows.first { $0.name == "other" })
+        let otherPane = try XCTUnwrap(other.panes.first)
+        let home = try XCTUnwrap(slot.windowID)
+        let revision = model.layout.revision
+        let document = #"{"revision":\#(revision),"layout":{"sessions":[{"id":"session_1","name":"main","windows":[{"id":"\#(home)","name":"parent","tree":{"pane":"\#(parent)"},"floats":[{"pane":"\#(child)","border":true,"x":3,"y":2,"cols":30,"rows":8}]},{"id":"\#(other.id)","name":"other","tree":{"pane":"\#(otherPane)"}}]}]}}"#
+        try await ko(layoutPut(document, dir: directory.path), dir: directory.path)
+        try await wait("child floats") { slot.hasFloats }
+        try owner.testClient?.select(KO_SELECT_PANE, otherPane)
+        try await wait("parent window hidden and page released") { slot.isHidden && parentView.webviewView == nil }
+        try await ko(["api", "-X", "DELETE", "/panes/\(child)"], dir: directory.path)
+        try await wait("last float removed") { !slot.hasFloats && !slot.displayedPanes.contains { $0.pane == child } }
+        try owner.testClient?.select(KO_SELECT_PANE, parent)
+        try await wait("parent window shown") { !slot.isHidden }
+        XCTAssertTrue(slot.displayedPanes.contains { $0.pane == parent }, "showing the window restores tiled membership")
+        let restored = try XCTUnwrap(slot.displayedPanes.first { $0.pane == parent })
+        XCTAssertFalse(restored.isHiddenOrHasHiddenAncestor, "showing the window restores the parent")
+        XCTAssertEqual(slot.visualChromes.first { $0.pane == parent }?.isHidden, false)
+        try await wait("parent page recreated") { restored.webviewView?.browser.isLoading == false && restored.webviewView?.browser.url != nil }
+        XCTAssertFalse(restored.webviewView === originalPage)
+        await mainQueueFence()
+        XCTAssertEqual(session.activePane?.pane, parent)
+        XCTAssertEqual(owner.testModel?.selection.pane, parent)
+    }
+
+    func testKeyNotificationDuringWindowSwitchDoesNotSelectStalePane() async throws {
+        let leaf = koPane("sleep 600")
+        let floating = #"{"pane":{"new":{"parent":"pane_2","close":"on_exit","command":{"type":"argv","argv":["/bin/sleep","600"]}}},"x":3,"y":2,"cols":30,"rows":8}"#
+        try await start(windows: #"[{"name":"home","tree":{"split":"h","children":[\#(leaf),\#(leaf)]}}]"#)
+        let revision = try XCTUnwrap(koModel?.layout.revision)
+        let draft = #"{"revision":\#(revision),"layout":{"sessions":[{"id":"session_1","name":"main","windows":[{"id":"window_1","name":"home","tree":{"split":"h","children":[{"pane":"pane_1"},{"pane":"pane_2"}]},"floats":[\#(floating)]}]}]}}"#
+        try await ko(layoutPut(draft, dir: directory.path), dir: directory.path)
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        owner.testServerDir = directory.path
+        addTeardownBlock { @MainActor in owner.close() }
+        owner.start()
+        try await wait("owner has float") { owner.testSession?.pane(PaneID(number: 3))?.window is FloatWindow }
+        let session = try XCTUnwrap(owner.testSession)
+        let stale = try XCTUnwrap(session.pane(PaneID(number: 1)))
+        let target = PaneID(number: 2)
+        let host = try XCTUnwrap(session.pane(PaneID(number: 3))?.window as? FloatWindow)
+        let policy = NSApp.activationPolicy()
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        defer { owner.window.orderOut(nil); NSApp.setActivationPolicy(policy) }
+        owner.window.makeKeyAndOrderFront(nil)
+        owner.window.makeFirstResponder(stale)
+        try owner.testClient?.select(KO_SELECT_PANE, PaneID(number: 3))
+        try await wait("float selected") { owner.testModel?.selection.pane == PaneID(number: 3) }
+        host.makeKeyAndOrderFront(nil)
+        host.makeFirstResponder(session.pane(PaneID(number: 3)))
+        try await wait("float is key") { NSApp.keyWindow === host }
+        XCTAssertTrue(PaneView.owner(owner.window.firstResponder) === stale)
+        var updates: [Bool] = []
+        let observer = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: owner.window, queue: nil) { _ in
+            MainActor.assumeIsolated { updates.append(session.updating) }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        var echoes: [PaneID] = []
+        let select = session.selectPane
+        session.selectPane = { echoes.append($0); select($0) }
+        defer { session.selectPane = select }
+        try await ko(["api", "-X", "DELETE", "/panes/pane_3"], dir: directory.path)
+        try await wait("main window became key") { !updates.isEmpty }
+        XCTAssertTrue(updates.contains(true), "AppKit must deliver the key notification during reconciliation: \(updates)")
+        guard updates.contains(true) else { return }
+        XCTAssertFalse(echoes.contains(stale.pane), "a key notification during reconciliation must not select the stale responder")
+        try await wait("target selected and focused") {
+            owner.testModel?.selection.pane == target && PaneView.owner(owner.window.firstResponder)?.pane == target
+        }
+        XCTAssertEqual(owner.testModel?.selection.pane, target)
+        XCTAssertEqual(PaneView.owner(owner.window.firstResponder)?.pane, target)
+    }
+
     func testWebviewChildSlotFrames() async throws {
         try await webviewChildSlotFrames(keepHidden: 4)
     }

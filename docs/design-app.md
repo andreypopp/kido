@@ -1247,7 +1247,10 @@ key, so it never holds focus over an activation, and an open palette
 closes when the window becomes key. AppKit keeps a window's first
 responder over resign and become key, so without this rule a stale
 responder (the window itself, a hidden pane) survives the activation and
-no pane takes typing. The palette's dismissal restores its saved
+no pane takes typing. A window that becomes key while the session
+applies a server change (a closing key float hands key to its main
+window) selects nothing: the server's selection wins over the stale
+responder. The palette's dismissal restores its saved
 responder only while that view is visible, else the selected pane, as
 after a jump. The connection banner clears the first responder when it
 shows; when a connection is ready and the banner was showing, the
@@ -1641,8 +1644,10 @@ edits; `ko layout edit EDIT-JSON` sends the same typed edit from the
 command line.
 
 Frame changes place only the shown window; membership and stacking are
-reconciled only when the layout's topology changes. Hidden windows are placed
-when shown. Terminal focus survives resizing and sidebar collapse;
+reconciled only when the layout's topology changes or the window's
+visibility changes. A hidden window's reconcile leaves out its tiled
+panes, so showing it always reconciles again: otherwise a float that
+closes while its window is hidden leaves the tiled panes hidden. Terminal focus survives resizing and sidebar collapse;
 showing another window or creating the active pane’s view can move focus.
 
 The standard window buttons are AppKit's: the toolbar re-lays them out

@@ -91,7 +91,7 @@ final class WindowView: NSView {
     override var isHidden: Bool {
         didSet {
             guard isHidden != oldValue else { return }
-            if hasFloats { needsReconcile = true }
+            needsReconcile = true
             if isHidden { endDrag(); toolbar?.removeFromSuperview(); toolbar = nil; raisedFor = nil } else { raiseActiveFloat() }
             syncHosts()
         }
@@ -1332,7 +1332,7 @@ final class WindowView: NSView {
     }
 
     @objc private func didBecomeKey() {
-        guard !isHidden, let window else { return }
+        guard !isHidden, session?.updating != true, let window else { return }
         if let pane = PaneView.owner(window.firstResponder), contains(pane), !pane.isHiddenOrHasHiddenAncestor {
             session?.selectPane(pane.pane)
         } else if window.attachedSheet == nil, !(session?.sidebarFocused() ?? false), activePane?.window === window {
