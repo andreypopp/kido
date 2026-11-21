@@ -52,6 +52,52 @@ test('view memory restores readers, excludes following and rejects another sessi
   assert.deepEqual(scrollMemory(travelling), [other]);
 });
 
+test('following memory waits for non-empty positioning before background growth becomes reader', () => {
+  const memory = scrollMemory(fixture().state());
+  const m: Measure = { now: 1000, top: 0, max: 0, viewport: 300, width: 700, dock: 250, origin: 0, focused: false, visible: true, reducedMotion: true, lookup: () => ({ kind: 'removed' }) };
+  let result = scrollUpdate(scrollInitial({ view: '', sessionId: undefined }, memory), [{ type: 'switch', scope }, { type: 'reset' }], m);
+  result = scrollUpdate(result.state, [layout], { ...m, max: 900 });
+  assert.equal(result.state.kind, 'following');
+  assert.equal(result.decision.scrollTop, 900);
+  result = scrollUpdate(scrollStored(result.state, 900), [{ type: 'focus' }], { ...m, top: 900, max: 900, focused: true });
+  assert.equal(result.state.kind, 'following');
+  result = scrollUpdate(result.state, [layout], { ...m, top: 900, max: 1000 });
+  assert.equal(result.state.kind, 'reader');
+});
+
+test('background reset waits for new layout rather than completing against old content', () => {
+  const f = fixture();
+  f.step([{ type: 'reset' }], { focused: false, top: 500, max: 500 });
+  const placed = f.step([layout], { max: 900 });
+  assert.equal(placed.state.kind, 'following');
+  assert.equal(placed.decision.scrollTop, 900);
+  const growth = f.step([layout], { max: 1000 });
+  assert.equal(growth.state.kind, 'reader');
+  assert.equal(growth.decision.scrollTop, undefined);
+});
+
+test('completed Latest travel does not retain positioning intent during background growth', () => {
+  const f = fixture();
+  f.step([intent], { top: 500 });
+  f.step([{ type: 'latest' }]);
+  const placed = f.step([{ type: 'frame' }], { now: 1300 });
+  assert.equal(placed.state.kind, 'following');
+  assert.equal(placed.decision.scrollTop, 900);
+  const growth = f.step([layout], { focused: false, max: 1000 });
+  assert.equal(growth.state.kind, 'reader');
+  assert.equal(growth.decision.scrollTop, undefined);
+});
+
+test('reader input cancels initial positioning even at an empty bottom', () => {
+  const m: Measure = { now: 1000, top: 0, max: 0, viewport: 300, width: 700, dock: 250, origin: 0, focused: false, visible: true, reducedMotion: true, lookup: () => ({ kind: 'removed' }) };
+  const cancelled = scrollUpdate(scrollInitial(scope), [intent], m);
+  assert.equal(cancelled.state.kind, 'following');
+  assert.ok(cancelled.state.kind === 'following' && !cancelled.state.positioning);
+  const result = scrollUpdate(cancelled.state, [layout], { ...m, max: 900 });
+  assert.equal(result.state.kind, 'reader');
+  assert.equal(result.decision.scrollTop, undefined);
+});
+
 test('a toggle holds its anchor, cancels travel and glide, and follows only at the bottom', () => {
   for (const mode of ['following', 'glide', 'reader', 'travel'] as const) {
     const f = fixture();

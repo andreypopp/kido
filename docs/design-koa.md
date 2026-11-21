@@ -499,7 +499,14 @@ the scrollable extent and feeding back into the next measurement.
 A hidden or unfocused following page becomes a reader when new
 content or layout moves the bottom. Focus alone never resumes
 following. The user's send and Latest do; a reset opens a following
-view at the end even in the background. New-content counts use
+view at the end even in the background. An explicit following intent
+(the start of a page, a reset, or a switch to a view that the memory
+does not hold as a reader) lasts through the initial delivery and
+layout, focused or not, until the view is placed at a non-empty
+bottom or reader input cancels it; only growth after that placement
+makes an unfocused page a reader. So a reload or `/restart` of a
+following view opens at the bottom. `pagehide` saves the memory
+before its last scroll update. New-content counts use
 visible assistant prose and runs, not patches, metadata or each step
 that joins a run. `koa/page/extent.ts` and the scroll reducer share
 that unit of content.

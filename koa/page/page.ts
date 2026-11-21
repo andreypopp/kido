@@ -2247,10 +2247,11 @@ document.addEventListener('click', event => {
   else if (pane) window.ko?.focus?.(pane);
 });
 window.addEventListener('pagehide', () => {
+  const scroll = scrollMemory(scrolling);
   decide({ type: 'visibility' }); stopFrames();
   const current = new Map(drafts);
   current.set(state.view.id, editor.text());
-  const memory: PageMemory = { scroll: scrollMemory(scrolling), drafts: [...current].filter(([view, text]) => !!view && !!text), filters: [...threadFilters] };
+  const memory: PageMemory = { scroll, drafts: [...current].filter(([view, text]) => !!view && !!text), filters: [...threadFilters] };
   history.replaceState(memory, '');
 });
 document.addEventListener('visibilitychange', () => { decide({ type: 'visibility' }); cancelPending(); if (!document.hidden) { revealDirty ||= revealing.size > 0; windowDirty = true; armCap(); } schedule(); });

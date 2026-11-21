@@ -22,7 +22,7 @@ type Common = {
   settling: 'none' | 'render' | 'delivery';
 };
 export type State = Common & (
-  | { kind: 'following'; glide?: Glide }
+  | { kind: 'following'; positioning?: boolean; glide?: Glide }
   | { kind: 'reader'; anchor?: Anchor; travel?: Travel }
   | { kind: 'restoring'; target: Saved; waiting: boolean }
 );
@@ -76,6 +76,7 @@ export function scrollMemory(state: State): Saved[] {
 export function scrollInitial(scope: Scope, memory: Saved[] = []): State {
   return {
     kind: 'following',
+    positioning: true,
     scope,
     saved: new Map(memory.map(saved => [saved.scope.view, saved])),
     candidates: new Map(),
@@ -87,7 +88,7 @@ export function scrollInitial(scope: Scope, memory: Saved[] = []): State {
 }
 function common(state: State): Common {
   switch (state.kind) {
-    case 'following': { const { kind, glide, ...data } = state; return data; }
+    case 'following': { const { kind, positioning, glide, ...data } = state; return data; }
     case 'reader': { const { kind, anchor, travel, ...data } = state; return data; }
     case 'restoring': { const { kind, target, waiting, ...data } = state; return data; }
   }
@@ -139,7 +140,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     state.threshold = false;
   };
   const follow = () => {
-    state = { ...common(state), kind: 'following' };
+    state = { ...common(state), kind: 'following', positioning: true };
     clear();
     force = true;
   };
@@ -156,6 +157,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     switch (event.type) {
       case 'input':
         if (overscrolled) break;
+        if (state.kind === 'following') state.positioning = undefined;
         if (state.kind === 'following' && event.direction === 'up' && m.max > 1 || state.kind === 'reader' && state.travel) {
           state.forceItem = undefined;
           reader();
@@ -201,7 +203,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
           const key = row ?? '', before = known?.get(key);
           const unread = event.visible && (before?.unread || !before?.visible && !(state.kind === 'following' && focused) && (state.kind !== 'restoring' || event.seq > state.target.last));
           if (before?.visible !== event.visible || before?.unread !== unread || before?.index !== index) candidates(event.seq).set(key, { row, index, visible: event.visible, unread });
-          if (unread && state.kind === 'following') reader();
+          if (unread && state.kind === 'following' && !state.positioning) reader();
         });
         break;
       }
@@ -221,7 +223,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         instant = true;
         state = target && target.scope.sessionId === event.scope.sessionId
           ? { ...common(state), kind: 'restoring', target, waiting: true }
-          : { ...common(state), kind: 'following' };
+          : { ...common(state), kind: 'following', positioning: true };
         force = state.kind === 'following';
         break;
       }
@@ -234,6 +236,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         clear();
         instant = true;
         force = state.kind === 'following';
+        if (state.kind === 'following') state.positioning = true;
         if (state.kind === 'restoring') state = { ...state, waiting: false };
         break;
       case 'restore-result':
@@ -298,9 +301,9 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     newInstant = true;
     state.settling = 'delivery';
   }
-  if (!overscrolled && state.kind === 'following' && !focused && !force && m.max - m.top > 1) reader(previous.kind === 'following' ? m.anchor : undefined);
+  if (!overscrolled && state.kind === 'following' && !focused && !force && !state.positioning && m.max - m.top > 1) reader(previous.kind === 'following' ? m.anchor : undefined);
   if (!overscrolled && state.kind === 'following') {
-    if (force || focused) scrollTop = m.max;
+    if (force || focused || state.positioning) scrollTop = m.max;
     if (instant || !focused || m.reducedMotion || !state.last) state = { ...state, glide: undefined };
     else {
       const delta = sentHeight ?? m.max - state.last.max;
@@ -330,6 +333,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
       else scrollTop = m.max;
     }
   }
+  if (state.kind === 'following' && scrollTop === m.max && m.max > 0 && !events.some(event => event.type === 'reset' || event.type === 'switch')) state.positioning = undefined;
   if (scrollTop !== undefined) scrollTop = Math.max(0, Math.min(m.max, scrollTop));
   const top = scrollTop ?? (overscrolled ? state.last?.top ?? Math.max(0, Math.min(m.max, m.top)) : m.top);
   const distance = m.max - top;
