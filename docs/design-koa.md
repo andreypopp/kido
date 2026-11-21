@@ -1,2508 +1,1272 @@
-# koa, the webview harness for pi
-
-koa is a program for a Kido pane. It runs pi's session in its own
-process through pi's SDK and shows the session as an HTML page in the
-pane through the webview feature. In development the same
-page shows in a browser (`koa --browser`). koa is also the stress test
-of the webview feature: its workloads load and measure the webview
-path.
-
-This document gives koa's design and its reasons. Other documents
-give what koa builds on and do not repeat it here:
-
-- [design-webview.md](design-webview.md): webview panes, the SDK
-  `@kido/webview` and its browser target, the live channel and the
-  sandbox.
-- [protocol.md](protocol.md), section 16: the escape, `supported`,
-  the serve stream and the proxy route.
-- [design-app.md](design-app.md), "Webview panes": the web view,
-  keys, the theme properties, hidden pages, Quick Look from a page
-  and drops on a page.
-- [design.md](design.md), "The harness extension", and
-  [design-subagents.md](design-subagents.md): the agent extension,
-  koa's extension inside its session, which holds the agent tools.
-- [design-program-status.md](design-program-status.md): the OSC 7501
-  record that koa writes.
-
-The UI reference is the set of mockups in `app/design/koa/`; the
-index at the top of its `NOTES.md` names the reference for each part
-of the page. This document does not repeat the mockups' values.
-
-## Goals and non-goals
-
-Goals, in priority order:
-
-1. **One pane, one page.** The transcript, the composer and its foot.
-   Streaming Markdown; each run of tool calls and thinking folds into
-   one line, and each step opens to its details.
-2. **A koa pane is an agent pane.** The sidebar shows it as a pi
-   agent, `ko prompt` and `message_agent` reach it, and the agent
-   extension's tools work in it. koa is Kido's one pi harness.
-3. **The webview path under load, measured.** Long sessions, fast
-   token streams, large tool output, reloads and reconnects, many
-   panes, hidden pages and theme changes.
-4. **Small.** TypeScript that Node 24 runs as is, with no runtime
-   dependency in the program; the page's npm packages are bundled at
-   build time.
-
-Non-goals:
-
-- A terminal UI, and a terminal harness (the user's decision). In a
-  client that shows no webviews (`ko_tui`, a terminal view of a
-  remote server), koa prints one line that says so and keeps
-  serving; the page shows when a client with webviews connects, or in
-  a browser with `koa --browser` on the host where koa runs. Outside
-  a pane, koa runs only with `--browser`. A plain `pi` stays usable
-  in such a client, but as a `SomeAgent` with no harness
-  (design-program-status.md, "Pane kinds").
-- Session trees, `/tree`, forks and clones from the page, and the
-  built-in slash commands that koa refuses
-  ([plans/koa.md](../plans/koa.md)).
-
-## Where koa lives
-
-`koa/` holds the program (`koa.ts` and its `koa-*.ts` modules),
-the page's sources (`page/`), the fake model provider of the tests
-(`koa-fake-provider.ts`), the suite (`koa-*.test.ts`) and the stress runner
-(`stress/`). It also holds the agent extension (`koa-agent.ts`), its
-suite (`koa-agent-*.test.ts` over `koa-agent-fixture.ts`, on the fake
-ko of `testdata/fake_ko/`), the prompt snapshot
-`testdata/ko-prompts.txt`, the ko skill (`skills/ko/SKILL.md`)
-and the modules that the extension, koa and the page
-share: `records.ts` (the
-facts that the extension writes into its messages' details, with
-their guards), `agents.ts`, `token.ts` (the token grammar: the
-extension's `@` agent token runs through the file token rules),
-`text.ts`, `completion-context.ts` (the place where a command runs,
-which the extension answers through its host; "Shell
-completion") and
-`runtime-exec.ts` (the client of a runtime's exec route, the
-extension's routed commands and koa's shell completion). The records of koa and its page are
-`koa/koa-records.ts`.
-
-The files of `koa/`: `koa.ts`, the program; `page/`, the
-TypeScript sources of its page (`page.ts`, `markdown.ts`, the
-streaming markdown over marked and remend, `page.html`, `page.css`),
-which `make -C koa` bundles with esbuild into one unminified
-`page.js`; `package.json` and its lockfile pin esbuild, TypeScript 7
-(the one type checker of every TypeScript in the repository), the
-page's npm packages and the development packages of the extension and
-the suites; `koa-assemble.ts`, the one HTML response;
-`koa-transcript.ts`, the transcript model, its delivery and the image
-store; `koa-image.ts`, the image sniffer; `koa-timer.ts`, the timer
-that reports a throw; `koa-http.ts`, the HTTP helpers and the one
-file server with its checked, size-capped open; `koa-records.ts`, the
-records that koa and its page share; `koa-complete.ts`, completion;
-`koa-shell.ts` and `koa-shell.sh`, Tab completion in `!` mode from
-bash; `koa-attach.ts`, attachments; `koa-queue.ts`, the queue's
-attachments; `koa-child.ts`, the signals of koa's own children, pi's
-package lookup and the run of the session picker; `koa-sdk.ts`, the
-SDK's import boundary; `koa-agents.ts`, the host of the session: the session's
-creation from pi's arguments, the UI context, the binding and the
-helpers that call the session; `koa-args.ts`, the rules for pi's
-arguments at startup and at a restart; `koa-resume.ts`, the picker
-extension of `koa --resume`; `koa-commands.ts`, the built-in slash
-commands; `koa-identity.ts`, the hash of koa's installed files;
-`koa-session-dir.ts`, the session directory rule of both pickers;
-`prompt.ts`, the prompt text rules that koa and its page share;
-`koa-fake-provider.ts`, the scripted model provider of its suite
-`koa-*.test.ts`;
-`stress/`, the stress workloads and runner (not installed);
-`testdata/replay.ts`, the replay server of the page tests, with its
-scenario types (`testdata/scenario.ts`), their shared records
-(`testdata/scenario-parts.ts`, the records that two or more
-scenarios share) and the scenarios
-(`testdata/scenarios/`), none of them installed ("Tests").
-
-koa builds on its own: `koa/Makefile` (`make -C koa`, no cargo and
-no git) writes `build/koa/`, which is also the layout of `make -C koa
-install PREFIX=DIR` and of koa's release tarball: `bin/koa`, the
-shim `koa/bin/koa`, and `share/koa/` with `koa/` (the program, the
-extension, the shared modules, the skill and the built page, the
-files of `KOA_SRC` in `koa/Makefile`) and `webview/`, koa's copy of
-the SDK. The shim checks the host and runs
-`${0%/*}/../share/koa/koa/koa.ts`, so a Homebrew symlink of `bin/koa`
-finds the linked `share/koa`, and a `brew upgrade koa` replaces the
-files under a running koa as an install does (`koa-identity.ts` then
-makes `/reload` restart it). ko does not ship koa: the login shell
-of a koa pane runs the `koa` of the login PATH (design.md, "Starting a koa agent"). koa needs
-only a `ko` on PATH at runtime, which every pane has, and it finds it
-there, so it always talks to the ko that runs its pane. koa takes ko's
-API types from `../webview/ko-api.d.ts`, with type-only imports. The
-checkout and every installed layout keep `koa/` and `webview/` as
-siblings, so koa's relative imports of `../webview/` resolve
-the same way in the checkout and in every installed layout: ko's
-`share/ko` keeps its SDK, and koa's `share/koa` its copy.
-
-**The host's needs.** koa runs where its pane's program runs: the
-Mac, a remote server (`ko HOST`), or a runtime or container. That
-host needs Node 24 or later and `pi` on PATH; the page's client needs
-nothing. The shim checks both before any JavaScript runs, so a
-missing one shows as one line in the pane. A remote server or a
-runtime image installs koa beside ko from koa's release tarball
-(docs/release.md, "koa").
-
-**The page is built, not committed.** The page is TypeScript in
-`koa/page/`, which esbuild bundles with CodeMirror, `marked`
-and `remend` from `koa/package.json` into one unminified
-`page.js` at koa's build (`make -C koa`; `make -C koa watch` rebuilds
-on each save). The user decided this: vendored files needed a rewriter
-of their imports, and a committed bundle is a large generated diff in
-every page commit that no reviewer reads. The cost is that koa's
-build needs Node and npm. The bundle is not minified, so it is
-readable in WebKit's inspector; the bridge does not compress, so the
-plain size is the wire size. The program itself is not bundled: Node
-runs `koa.ts` and the agent extension as they are. koa turns on Node's
-compile cache before it loads pi's SDK, so a start after the first
-skips compiling the SDK again; most of a start is that compilation
-and pi's loading of the extensions, which jiti transforms itself and
-Node's cache does not cover.
-
-**One response for the page.** A remote server costs one round trip
-for each asset, so koa inlines `page.html`, `page.css` and `page.js`
-into one document for `/` (`koa-assemble.ts`). koa assembles it once
-at startup and serves that copy for its whole life, and it reads
-`koa-shell.sh` at startup too: a running koa always serves the page of
-its own code, so an install that replaces the files under it (a
-`brew upgrade koa`) cannot give an old koa a new page that expects state
-it does not send. A page file that is missing at startup stops koa.
-For development, `KOA_PAGE_RELOAD=1` assembles the page again for each
-load, so `make -C koa watch` and ⌘R show a change. A new page reaches a
-running pane only through `/reload`, which replaces koa itself
-when its files changed ("`/reload` reloads pi" below), or `/restart`.
-
-**A page talks only to the koa that served it.** koa mints an
-instance id at start and puts it in the document's `koa-instance`
-meta; the page sends it with each open of `/events`. koa answers an
-open with another id with one `reload` record, and the page loads
-its document again. A page of an older koa that reconnects to a new
-one (the app missed the serve stream's drop, a hidden page comes
-back, a back/forward cache) thus never applies a new koa's records.
-The record and the parameter are the one contract between two koa
-versions.
-
-**A record that the page cannot apply ends the feed.** A throw while
-the page applies an event record closes the event source and shows
-the error with a request to reload the pane; it does not reconnect,
-also not when the page comes back from the back/forward cache,
-because a reconnect gets the same record and throws again, over state
-that is partly applied. Only a transport error reconnects.
-
-**Type checks.** TypeScript 7 from `koa/package.json` is the one
-type checker of the repository. `koa/tsconfig.json` checks the
-Node side, koa and the agent extension included; `koa/page/tsconfig.json` checks the
-page against the DOM alone. The record modules import nothing from
-pi, because pi's declarations pull Node's globals into the page's
-check. Where `koa-records.ts` names a closed set that pi also defines
-(the thinking levels, the dialog methods, the command sources),
-`koa.ts` proves at compile time that the two sets are equal, so pi
-stays the source and a change in pi fails the check. The relations
-of `records.ts` derive from ko's schema (`webview/ko-api.d.ts`).
-
-## The process
-
-**One process in the pane.** koa is the pane's program: its stdout
-is the pane's tty, so the SDK's `show` and `hide` and koa's own OSC
-7501 and OSC 0 reach the pane. Every agent of the pane runs inside
-koa as an `AgentSession` of pi's SDK, each wrapped in an
-`AgentSessionRuntime`: the root, which koa starts from its command
-line, and its subagents (design-subagents.md, "The tree"). The root's
-`/new`, `/resume` and an extension's `newSession`, `fork` and
-`switchSession` use pi's own switch. There is no pi child, no RPC
-stream and no session channel. One process has one set of bugs and
-one event path. The cost: koa supplies what pi's RPC mode supplied
-(the extension UI context, the command handlers, the session switch),
-and a fault of pi or of an extension ends every agent of the pane ("A
-crash keeps the pane" below).
-
-**pi's package.** koa loads the SDK of the pi that the user runs, not
-a copy of its own. It finds pi's package directory (`piPackage` in
-`koa-child.ts`): the executable on PATH (or `--pi`), its real path,
-the first parent directory whose `package.json` names
-`@earendil-works/pi-coding-agent`, else Homebrew's
-`../libexec/lib/node_modules/@earendil-works/pi-coding-agent` beside
-the real path, because Homebrew's `pi` is a shell wrapper. A pi
-whose package koa cannot find stops koa with one line.
-
-**The import boundary.** The installed koa has no `node_modules`, and
-pi's package exports only its index. `loadSdk`
-(`koa-sdk.ts`) registers one `node:module` resolve hook that maps the specifiers
-`@earendil-works/pi-coding-agent`, `typebox` and `marked` to the files of the
-selected package, only for importers inside koa's own directory (its
-real path, because Node reports `/tmp` as `/private/tmp`), so a user's
-extension resolves its own imports unchanged. Then koa imports pi's
-index and, by absolute file URL, the modules that the index does not
-export: the built-in extensions, the project trust resolution and its
-RPC context, the path helpers and the theme. `koa.ts` imports
-`koa-agents.ts`, and with it the agent extension, and `koa-view.ts`,
-which reaches `marked` through `markdown-line.ts`, only after the hook
-exists. The program uses pi's `marked`, and the page bundles its own
-from `koa/package.json`. One SDK instance serves the process, so the queue patch below
-reaches the class that every session uses.
-
-**The host.** `koa-agents.ts` holds the tree of agents (`createTree`)
-and makes the root session from pi's parsed arguments, as pi's `main.js` does
-for its own modes; `main.js` exports no function that does it without
-printing, prompting or exiting. The session manager comes first, from
-`--session`, `--fork`, `--continue`, `--session-id` and
-`--no-session`, with the session directory rule of
-`koa-session-dir.ts`. The launch directory is the session's
-directory, also for a session that `--session` or an existing
-`--session-id` opens, whatever directory its header records
-(design.md, "Starting a koa agent"); then the services: the settings, the resource
-loader with the extension, skill and prompt paths of the command line
-(resolved from the launch directory), the model and its thinking
-level, the scoped models and the tool flags. The resource loader gets
-pi's own built-in extensions (`builtInExtensions` of
-`dist/extensions/index.js`), which pi's `main.js` adds and the SDK
-does not, then the agent extension as an inline factory named `koa`
-and hidden. Without the first list, the built-in tools of pi would
-vanish in koa. One `ModelRuntime` serves every session of the host:
-the credentials and the models of the agent directory, which koa
-resolves once with pi's `getAgentDir` and gives to the editor and
-completion too. Unknown flags, such as the extension's `--runtime`, go
-to the services as `extensionFlagValues`, which pi checks after the
-factories register their flags. A subagent's services have its own
-cwd, the built-in extensions and the agent extension, and only its
-`--runtime` as a flag value: the root's command line options are not
-the child's.
-
-**Project trust** follows `main.js` in RPC mode: a trust cache for
-each directory, the stored decision, the command line override and
-pi's default, and an extension's `project_trust` handler asked with
-pi's RPC context (`mode: "rpc"`, `hasUI: false`), not with koa's
-page. A page is not a reason to trust a project: the root keeps the
-trust that a pi in RPC mode had. The session's own UI context, bound
-after it, has `hasUI` true.
-
-**The UI context.** `uiContext` in `koa-agents.ts` is the
-`ExtensionUIContext` of every extension: `select`, `confirm`,
-`input` and `editor` are the page's dialog cards, with the signal and
-the timeout of pi's options; `notify` is a notice item; `setStatus`
-the foot's statuses; `setEditorText` and `pasteToEditor` the
-composer. The members that only pi's TUI can show (widgets, the
-footer, the header, the title, the working indicator, custom
-components, themes) do nothing, as they did over RPC. The session
-binds it with `mode: "rpc"`, so the extensions' mode checks keep
-their meaning, and with the command context actions of RPC mode
-(`waitForIdle`, `newSession`, `fork`, `navigateTree`,
-`switchSession`, `reload`). `onError` and the loader's diagnostics
-are notice items: a fault of one extension handler does not stop the
-session.
-
-**The binding order.** koa creates its HTTP server before it binds: the HTTP server
-exists, then the session's subscription, then `bindExtensions`,
-because a `session_start` handler can ask a dialog or start a turn,
-and both must reach the page. `setRebindSession` runs the same
-binding for each new session of a switch, and it is the only binding;
-koa does not bind again after a switch, because a binding emits
-`session_start`.
-
-**Events.** koa subscribes to the session's events. They are not
-pi's RPC records: RPC strips the growing message from
-`message_update` and sends deltas. koa gives the transcript the
-session's own message at each `message_update` and takes only the
-thinking start and end times from the delta; pi parses the tool
-arguments. The transcript treats pi's objects as read-only and
-converts them at its flush ("The transcript").
-
-**Readiness.** koa refuses the session's routes until the session is
-loaded and rebuilt, because a prompt sent before that snapshot was
-lost when the snapshot arrived. Each route names its access in
-`koa.ts`:
-completion, the attachment routes and the dialog answer work while
-the session starts, because a `session_start` handler can wait for a
-dialog's answer.
-
-**The command line is checked before the webview.** koa parses its
-whole command line once, with Node's strict `util.parseArgs`, against
-the one table of the options that it accepts (`koa-args.ts`): pi's
-session, model, tool, context and trust options, and koa's own
-`--browser`, `--pi`, `--metrics`, `--metrics-mode` and `--runtime`.
-Every other option is an error, with `koa: <message>`: pi's flags
-that end or bypass the session (`--mode`, `--print`, `--export`,
-`--list-models`, `--version`, the theme flags) and pi's keys and
-logging are not koa's options. One table means that koa's own options
-and pi's values cannot be confused: a value that starts with `-` is
-written `--name=VALUE`, which the parser refuses as ambiguous in two
-words. `util.parseArgs` takes only one-character short names, so pi's
-`-xt`, `-nt`, `-nbt`, `-ne`, `-ns`, `-np`, `-nc` and `-na` have only
-their long forms in koa. koa then builds pi's arguments from the
-parsed values (`restartArgs`) and passes them to pi's exported
-`parseArgs`, so pi still decides what each flag means; pi's errors
-and an `@file` argument, also after `--`, are refused with exit code
-1. An attachment is not pi's inline file expansion, so the page's
-attachments are the way. `--approve` and `--no-approve` together are
-refused, because the parsed values do not keep their order. The other
-positionals are messages; `--` ends the options. koa sends pi's positional messages as pi's
-interactive mode does: one by one, each after the previous run
-settles, once after the session is ready, not when a page connects.
-
-**`--resume` picks before the webview.** When an argument is
-`--resume` or `-r`, koa first runs a picker child on the terminal,
-before the SDK's view exists: `pi --mode rpc --no-session
---no-extensions --extension koa-resume.ts`, with the terminal as its
-streams, koa's pi arguments in `KOA_RESUME_ARGS` and a pipe on fd 3
-(`pickSession` in `koa-child.ts`). The picker stays a child because
-it owns the terminal before the webview does. The extension decides
-with pi's exported `parseArgs`: when pi would not run its picker
-(`--session`, `--fork`, `--no-session` and the other flags that
-precede the picker in pi's `main.js`), it answers `skip`. Else it
-shows pi's exported `SessionSelectorComponent` with pi's two session
-loaders and the session directory that pi resolves
-(`koa-session-dir.ts`, which the page's picker also uses), answers
-`ready` when the screen takes input, then `selected` with the file or
-`cancel`, restores the terminal and exits. On `selected`, koa adds
-`--session <file>` before `--`. On `cancel`, koa prints "No session
-selected" and exits 0 with no webview. Subagent sessions do not
-show, because they live outside pi's session tree.
-
-The picker relies on one pi detail: pi awaits an extension's factory
-before it starts its RPC loop, so the factory owns the terminal and
-exits the process. A pi that changes this never hangs koa: koa waits
-for `ready` for 10 s, and an exit or
-an end of fd 3 without a result, an invalid line or a picker that
-does not exit after its result is an error that names `pi
---version`'s output, with exit code 1. koa forwards `SIGTERM`,
-`SIGHUP` and `SIGINT` to the picker while it runs and stops it on
-every exit. pi exports its keybindings manager only as a type, so the
-picker's list uses pi's app bindings, but its search field has
-pi-tui's default editing keys.
-
-**A top-level agent takes its spawner's mode** (the user's decision).
-A top-level agent is a `koa` command (design.md, "Starting a koa
-agent"). koa gives the agent extension browser mode as a field of its
-host, never from pi's mode, and the extension sets the command's
-`browser` under it.
-
-**The agent extension inside the session.** The extension takes its
-host from a closure (`agentExtension(host)` in `koa-agent.ts`); the
-host names the agent that the instance serves. The host's `facts` are
-the pane, the ko executable and the runtime, which koa reads once from
-its environment at its edge (`hostFacts`); the extension reads no
-environment for them. The tree keeps what must outlive one load of an
-extension: the pane's message stream and its id ring, each agent's
-jobs and records, the exit cleanup, because `session.reload()` runs
-the factory again. The root's `session_start` writes the `koa.*`
-variables and starts the peer client; a subagent's writes neither. A
-message on the pane's stream goes to the agent that its `data.to`
-names, a `user` prompt to the agent of its `record`
-(design-subagents.md, "The pane's queue"), and reaches koa as
-that session's message events.
-
-**The queue patch.** pi's `clearQueue` drops queued custom messages
-with the user's text, and koa's queue take-back must keep the
-agents' messages. `koa-agents.ts` wraps `AgentSession.prototype.clearQueue`
-once in the process, so that it puts the custom messages back. The
-patch goes when pi has a `clearQueue` that keeps them.
-
-**Status and title.** koa writes the pane's root record `app=koa`
-itself, always for the root agent, whatever the page shows: working from `agent_start` (and during a compaction), at
-`agent_settled` idle when aborted, else error or done from the last
-assistant message, blocked with kind question while a dialog is open,
-and `clear` when the session fails. With the extension's
-`koa.session`, the row is a `KoaAgent` (design-program-status.md). koa
-sets the pane title with OSC 0 from the root session's name and
-directory. Each subagent's status is a record of the pane
-(design-subagents.md, "In the sidebar"), by the same rule. The
-record is selectable, closeable and promptable: a `select` from the
-user switches the view, a `close` stops that subagent, and a prompt
-for the record reaches that subagent as the user's text
-(design-subagents.md, "The pane's queue").
-
-**The session's directory** is the runtime's `cwd`, which pi sets
-from the session that it opened: a session of another directory runs
-in that directory, and `/new` after a switch to another folder starts
-in that folder. koa's own working directory does not change.
-
-**A session that fails to start.** When the root's session cannot be made
-(an unknown model, a broken settings file, a switch whose new session
-fails after pi tore the old one down), koa goes to `failed`: the
-transcript stays, and the failed card above the field shows pi's
-error and "Start again"; the foot has no state. "Start again"
-(`/agent/start`) makes the session again from the arguments of a
-restart (`restartArgs` in `koa-args.ts`, from the parsed values:
-`--session` of the last session file, without the session, provider,
-model and thinking flags, because the session file holds the pickers' changes). A torn
-down session is never used again, also when the next one has the
-same id. A subagent whose extensions fail to bind shows the same card
-in its view; "Start again" there makes only that child again, from
-its spawn's inputs.
-
-**A crash keeps the pane.** pi and every extension run in koa's
-process, so an uncaught exception ends koa and every agent in it.
-koa installs one `uncaughtException` handler: it writes the error to
-stderr, which is the pane's screen, sets its own pane's `close` to
-`keep` with a synchronous `ko api PATCH /panes/$KO_PANE` (2 s
-deadline), and exits 1, so the user can read the error. A normal exit
-keeps `close: exit`. A fault that pi reports (an extension error, a
-provider error) is a notice, not a crash.
-
-**Shutdown.** koa ends on `SIGTERM`, `SIGHUP`, `SIGINT`, a `stop`
-message, a quit from the root's view (Control-D in an empty composer)
-and the root's extension's `ctx.shutdown()`; a subagent's
-`ctx.shutdown()` stops only that subagent. Every part that koa makes
-registers its own teardown as it is made, and one shutdown, which
-exists from the moment the SDK's view exists, cancels the open
-dialogs, disposes every agent's runtime first, deepest first (pi
-aborts the turn, emits `session_shutdown` with reason `quit` to the
-extensions and settles its credential writes), bounded by
-5 s, then starts every other teardown in
-reverse order and waits for all of them. A stuck extension thus never
-keeps koa alive. The reply to the page's own quit request is sent
-before the shutdown starts, with a deadline (1 s). Every
-group signal of koa goes through one function, `signalChild` in
-`koa-child.ts`, which takes a child that koa spawned (`fd`) and
-ignores `ESRCH` and `EPERM`, as `signalJob` does
-(design-subagents.md, "Stopping a job"); `scripts/lint.sh` permits
-`process.kill` only there. The session picker shares koa's group, so
-it gets its signals through its own `ChildProcess.kill`.
-
-**Errors do not stop koa.** An error of a child, a stream, an event
-handler or a timer callback is reported as one `koa:` line on stderr
-or as a notice, and koa goes on; only the loss of the terminal and
-an uncaught exception stop it. The edges:
-
-- The transcript's flush takes each held message or tool result out
-  of its queue before it applies it, and reports a throw, so one bad
-  entry does not block the later ones.
-- Every timer callback runs through `later` (`koa-timer.ts`), which
-  reports a throw.
-- A signal error other than `ESRCH` and `EPERM` is reported by
-  `signalChild`, which never throws, so the shutdown continues.
-- An error on the `fd` child's stdout ends the completion read with
-  no result.
-- An error on koa's own stdout means that the terminal is gone: koa
-  shuts down as on `SIGHUP`; before the shutdown exists (`--help`),
-  the error is ignored. An error on koa's own stderr is ignored,
-  because there is no other place to report it.
-
-**`/reload` reloads pi, and replaces koa when koa was updated.** It
-has two layers (the user's decision):
-
-1. **pi in place.** koa calls `session.reload()` on every live
-   agent, root first, while the pane's queue holds its messages. pi emits
-   `session_shutdown` with reason `reload`, loads its settings,
-   extensions, skills and prompts again, runs the inline factory
-   again, binds the saved UI and emits `session_start`; the session,
-   its history, koa's subscription, the page and the transcript stay.
-   The tree keeps the message stream, the id ring, the jobs and the
-   records, so the new extension instance uses them. koa holds the session in
-   `reloading`, which blocks the composer as a session switch does
-   but keeps the events, because a `session_start` handler can start
-   a turn and the restart must see it. koa buffers the UI records,
-   drops the extensions' statuses and refreshes. The factory's own
-   code (koa's modules) does not load again: Node keeps the module,
-   so a change of it needs the second layer. A failure shows pi's
-   error and goes no further.
-2. **koa when it was updated.** A page of a new koa must not run
-   against an old koa: one once crash-looped on a record's shape.
-   koa hashes its installed files at start (`installedIdentity` in
-   `koa-identity.ts`: `koa/` with the page and the agent extension,
-   and `webview/`) and again after layer 1. A content hash, not a
-   build stamp: ko's build id changes with every commit, and only
-   koa's own files matter. A read that fails counts as no change.
-   When the hash differs, koa asks the tree (`restartState`) for the
-   running jobs of every agent, services included, and the children
-   that have not reported on their last work, because a restart ends
-   them. koa restarts only when nothing
-   is running, a session file exists (a restart without one loses
-   the conversation) and the session is still idle; else it shows one
-   info note with the first reason, in the order jobs, subagents, no
-   session file (`deferralText` in `koa-commands.ts`). The next
-   `/reload` tries again.
-
-The restart answers the page, runs koa's one shutdown, except that
-the SDK's `close(false)` keeps the pane in webview mode, waits for
-its own stdout and stderr to drain, and calls `process.execve` with
-Node, its script path as the shim gave it, and its parsed options,
-koa's own included, by the rule of "Start again" (`restartArgs`), each
-valued option as one `--name=VALUE` argument: the same pid
-in the same pane, so the pane's row and children stay, and the script
-path resolves to the files that a koa upgrade installed; pi's SDK
-loads again from the installed pi, so a pi upgrade also takes effect. `KOA_RELOAD` in the new process holds the number of
-in-process subagents, at every depth, that the restart ended. koa
-reads and removes it at start; it skips the `--resume` picker and the
-positional messages and adds one note once the session is ready:
-"restarted · N subagents ended" ("1 subagent ended"), or "reloaded"
-when none ended. A crash adds no note.
-While the restart runs, the page shows "Reloading…" in its error line
-and blocks the composer; during the gap the app shows its "The
-program is not serving", and the new serve stream loads the new page.
-The new koa calls the SDK only when its HTTP server exists, at the end
-of its start, so the new serve stream exists only when the new koa
-answers. A new koa that fails before that leaves "The program is not
-serving", and a failed page load shows the app's error with Retry
-(the user's design, never a fall back to the terminal). Attachments
-in the composer and the scroll position go with the page. In browser
-mode, the new koa listens on a new port and opens a new tab.
-
-`/reload` runs only when every agent is ready and idle: no turn, no
-compaction, no `!` command that has not completed, no queued prompt,
-no dialog and no external editor, opening and closing included,
-because each is state that a reload or a restart cannot carry, and
-pi's `reload()` refuses a streaming session.
-Otherwise it is refused with a warning line.
-
-**`/restart` restarts koa.** It is the second layer of `/reload`
-without its checks: no identity check, no idle rule and no deferral,
-on the session file of the root. It is the escape hatch for a koa or
-a pi in a bad state, so it must work in that state; a running turn
-ends, and the jobs end with the process. Without a session file the
-new koa starts by the original arguments. The new koa starts only the
-root: each subagent lists as ended with `koa restarted` and resumes
-on a message (design-subagents.md, "Restarting through a message").
-`/new`, `/resume`, `/reload`, `/restart` and `/quit` act on the root,
-so they run only in the root's view ("Views").
-
-**The private directory.** koa makes one directory `koa-<pid>-*` under
-the temporary directory at start (0700) for the image stores and the
-uploads, and removes it at exit; a stopped agent's image store goes
-with its view. A koa that dies by a signal leaves
-it; the host's cleaning of the temporary directory removes it.
-
-## The page and koa
-
-The page talks to koa over HTTP only: one `EventSource` on `/events`
-and short `fetch` requests. No WebSocket. Every body is a string or a
-`Uint8Array`, because WebKit gives a scheme handler a `Blob` or
-`FormData` body empty (design-app.md, "Webview panes"). koa's routes
-are in `koa.ts` (the commands), `koa-transcript.ts` (`/events`,
-`/items`, `/images/`) and `koa-attach.ts` (`/attachments`, `/steps/`);
-each route's body validator is beside its handler, in `koa.ts` for
-the commands. A call of the session that fails answers 409 with
-pi's error text, and the page keeps the composer's text.
-
-**Commands need a typed body.** A `POST` must have the content type
-`application/json` (an upload chunk `application/octet-stream`), else
-koa answers 415. A browser sends a form post with a simple content
-type to any origin without asking; this rule makes such a post do
-nothing ("Browser mode" below).
-
-**Built-in commands are koa's.** pi's session does not run the
-built-in slash commands of its TUI, so a built-in sent as a prompt
-reaches the model as text. koa intercepts every built-in before pi's
-`prompt` (`koa-commands.ts`): its catalog is pi's own
-`BUILTIN_SLASH_COMMANDS` with pi's descriptions, plus the names that
-pi dispatches but does not list (`debug` and two easter eggs). A
-built-in wins over an extension command or a template of the same
-name, as in pi's TUI, which dispatches its built-ins before
-`session.prompt`; completion drops the shadowed entry. The user chose
-the supported set; each calls the session:
-
-- `/model` and `/thinking` without an argument open the foot's
-  picker. `/model <text>` sets the model when pi's
-  `findExactModelReferenceMatch` finds it among the available
-  models, else it opens the picker with the text as its search.
-  `/thinking <level>` sets an available level. Both report
-  "model: … · thinking …" as a notification.
-- `/compact [instructions]` calls pi's `compact` and answers the
-  page at once; pi's compaction events own the outcome ("The
-  transcript" below), and Escape aborts it as it aborts a run. While
-  a compaction runs, Return sends and queues nothing.
-- `/session` shows `getSessionStats`; `/export [path]` writes pi's
-  HTML export, with pi's default name when no path is given (a
-  `.jsonl` path is refused: the page exports HTML only); `/name` sets
-  or shows the session name, in pi's words.
-- `/copy` puts `getLastAssistantText` on the clipboard with OSC 52
-  on koa's own stdout, the pane's tty, where koa also writes OSC 7501
-  and OSC 0. The user's `clipboard.write` policy decides, and it
-  works for a remote koa and in a browser. A page's
-  `navigator.clipboard` write needs a user gesture in WebKit and the
-  text arrives after it.
-- `/resume` and `/new` switch the session inside the page ("Sessions
-  inside the page" below).
-- `/quit` shuts koa down as Control-D does.
-- `/reload` reloads pi in place, and replaces koa on the same
-  session when koa was updated ("`/reload` reloads pi" above).
-- `/restart` restarts koa on its session ("`/restart` restarts koa"
-  above).
-
-Every other built-in is refused with a warning line, "/settings is
-not available in koa", and its text stays out of pi; completion does
-not list it. The arguments of a built-in never carry attachments: the
-page keeps them in the composer. The built-ins come first in
-completion, in the supported order, with the kind `built-in`.
-
-## Sessions inside the page
-
-`/resume` opens a session picker in the page and `/new` starts a new
-session, as in pi's TUI; `koa --resume` keeps its terminal picker
-("The process" above), which the user decided. Both commands consume
-their text in the composer; the rest of the draft (its attachments)
-stays across the switch. The picker's look is the mockup's
-(app/design/koa, "Sessions inside the page").
-
-**In place, through pi's runtime.** koa calls the runtime's
-`switchSession` or `newSession`: pi's runtime asks the
-extensions (`session_before_switch`, which can cancel), aborts the
-turn and a running bash command, shuts the old session down and starts
-a new `AgentSession`, which koa binds ("The binding order"). The
-agent extension follows through its own `session_shutdown` and
-`session_start` (its pane variables, registry and peers), so koa does
-nothing for it. A cancelled switch changes nothing in koa. A switch
-that fails after pi tore the old session down leaves koa `failed`
-("A session that fails to start").
-
-**The list.** The host lists the sessions (`list` in
-`koa-agents.ts`) with pi's `SessionManager.list` or `listAll` over the
-session directory that pi resolves, for this folder or all, with the
-page's abort as the signal. The first message of a row is cut to its
-first line on the wire. Subagent sessions do not show, because they
-live outside pi's session tree.
-
-**The switch.** Every replacement of the session goes through one
-path in the host (`replace` in `koa-agents.ts`): koa's `/new` and
-`/resume`, and an extension's `ctx.newSession`, `ctx.switchSession`
-and `ctx.fork`, so each gets the same reset and refresh. koa's state
-has a `switching` phase. While it lasts, koa refuses the routes of
-the session (prompts, abort, the queue, model, thinking, completion,
-attachments and step files); dialog answers and quit still work,
-because an extension can ask before it allows the switch. When pi
-has made the new session, the rebind resets koa's state of the
-session once (`resetSession`: the queue, the attachments, the
-partial message, dialogs, statuses, the `!` commands) and makes the
-new session the owner of the events, before pi binds the extensions
-and runs `session_start`. So a turn that a `session_start` handler
-starts reaches the page. koa keeps the extensions' fire-and-forget UI
-records of the switch and replays them in order after it. On success
-koa refreshes as at start and adds one notice: "session: <name> · N
-messages" or "new session". A refresh that fails ends with an empty
-transcript, the error as a notice and the session ready. An
-extension's `ctx.navigateTree` stays in the same session: koa
-rebuilds the transcript and puts pi's returned editor text into the
-composer.
-
-Every request that acts on a session carries the page's `sessionId`:
-a JSON command in its body, a read (`/items`, `/history`, `/models`,
-`/images`, `/steps`) in its query. koa refuses a request of another
-session than the viewed agent's with 409, and checks again after the
-body has arrived and before it acts, so a request that a session
-switch or a view switch overtook never reaches the new session. The
-attachment routes are the host's, like `/events`: the store is one
-for the pane, and the send of the prompt is the gate.
-
-**pi's busy rule.** pi aborts a running turn or command on a switch
-and does not ask. The page asks first: while pi works or a `!` command
-runs, "Switch session?" with Cancel and Switch; Switch sends the page's
-abort (once for each of the two that runs, because the route cancels
-the command first), then opens the picker or starts the session. The
-confirmation is single-use. The reset drops the `!` commands of the
-old session, so a late result does not reach the new one.
-
-**Search** is a subsequence match over the name and the first message,
-in the page. pi's TUI also searches the message text, through a
-function that pi does not export, so the page's search is narrower.
-The rows of each scope stay while the picker is open, so ⇥ does not
-scan again.
-
-## Views
-
-koa keeps one transcript feed for each agent and shows one at a time,
-the view. A view is an agent or a background job ("The job view").
-The page's `State` (`koa-records.ts`) is the viewed agent's, or for a
-job its owner's: its `view` gives the path from the root to the view
-and its case, and its `agents` the targets of `@name` links, a view
-of this process or a pane. The look of a subagent's view and of the bar is the spec of
-app/design/koa/NOTES.md, "The view bar".
-
-**One switch.** `switchView` in `koa.ts` is the only code that changes
-the view: a `select` message of the user from the sidebar
-(design-subagents.md, "The pane's queue"), an `@name` link and the
-bar's buttons (`POST /view` from the page), and the stop of a viewed
-subagent, which switches to its nearest surviving ancestor. A switch
-is instant. It cancels the external editor and moves the page's
-event stream to the new agent's feed: it publishes the new agent's
-`state` first, then a `reset` of its feed, under a new epoch when no
-named stream follows that feed ("Named views" below), because
-the page renders `@name` links from the state and scopes its image
-reads by its `sessionId`. The feed is not rebuilt, so a streaming
-reply and a running tool continue where they were. Then the tree
-writes the `selection` of the two records that change. No key
-switches the view; keys for the hierarchy are a later item.
-
-**What follows the view.** The composer targets the viewed agent as
-the user's own text, without a header: the person is the user of
-every view. Escape, the queue, the pickers, the dialogs, the
-attachments, `!` commands, `/model`, `/thinking`, `/compact`, `/copy`,
-`/session`, `/export` and `/name` act on the viewed agent, and its
-transcript and composer show its state. `/new`, `/resume`, `/reload`, `/restart` and
-`/quit` are refused outside the root's view with the warning line
-`<command>: only in @<root's name>'s view`, also as routes. The page
-keeps one draft for each view (the text and the ready attachments),
-cancels pending uploads, completion and history reads at a switch,
-closes its pickers, menus and the lightbox, and opens the new view
-where the reader left it (app/design/koa/NOTES.md, "A view switch").
-At a switch it remembers, for the view it leaves, either that it
-followed the bottom or the top visible item, its offset and the
-newest item shown. On a return it restores that item, loads older
-pages until the item is present, and opens at the end when the item
-is gone; the items newer than the remembered one arrive as new
-items. The memory is the page's alone. A position belongs to the
-view's pi session as well as to the view, because each agent of the
-tree has its own `sessionId` and `/new` and `/resume` replace the
-root's session under the same view: a view returns to a position
-only under the session that it was saved in. A page load, so also
-`/reload` and `/restart`, starts with no memory, and a view not left
-before opens at its end.
-
-**Links.** An `@name` link of an agent of this process switches the
-view; one of another pane focuses that pane with `window.ko.focus`,
-and that pane keeps its own view.
-
-**Named views.** The view above is the pane's selection: the page,
-the sidebar, the records' `selection`, OSC 7501 and the external
-editor follow it. A client with its own navigation, such as the iOS
-app, names its view in each request instead: `view=<id>` in the
-query of a `GET` (`/events`, `/items`, `/history`, `/images/`,
-`/steps/`) and `view` in the JSON body of a `POST` (`ViewRequest` in
-`koa-records.ts`). The id is one that `resolveView` accepts: `""`
-for the root, an agent's id or record path, or a job's id. Without
-it, a request serves the selection, as the page's requests do. A
-named request never changes the selection, so two clients navigate
-the tree each on its own; only `POST /view` moves the selection.
-`handle` in `koa.ts` resolves the address once, after it reads the
-body, and every rule that the selection decides applies to the
-addressed view: the session check, "a job view takes no agent
-action", the root-only commands and the job actions. A selected
-request stays invalid when the selection or its session changes
-before it acts; a named one when its agent stops or its session
-changes. A named job `Clear` does not switch the pane. The external
-editor opens only for the selected agent: a named `/editor/open`
-for another agent is refused, so C-g keeps one owner.
-
-A named `/events` stream gets the addressed view's feed and its
-`state`, whose `view` is the view it named; `edit` is only in the
-state of the selected agent. A switch moves only the selected
-streams to the new feed and leaves the named ones where they are.
-A switch into a feed that has subscribers flushes its pending
-output to them and keeps its epoch; only a feed with no subscribers
-starts again under a new epoch. An agent's feed lives as long as
-the agent. A job's feed lives while the job is selected or a stream
-follows it, and closes when the last one ends; a new one starts
-under a new epoch. `/job/earlier` needs an open feed.
-
-An unknown or gone view answers 404 with the kind `view_gone`
-(`ViewGone`). When an agent stops, each named stream of it or of a
-view below it gets the record `view_gone` with the nearest
-surviving ancestor as `parent`, then the stream ends, so the client
-returns to that parent; the selected streams switch to it as
-before. A job that ends keeps its log view: its stream gets
-`job-gone` only when its log is gone ("The job view").
-
-## The transcript
-
-`koa-transcript.ts` projects pi's session into items in memory: user
-messages, assistant messages with their text, thinking and tool
-blocks, the custom messages that pi displays, user `!` commands,
-summaries, and koa's notifications. It takes whole pi messages, so a
-replay and the live stream use one conversion.
-
-The transcript is the whole active branch of the session, not the
-agent's context. A rebuild walks the branch from its root to its leaf
-and converts each entry with pi's `sessionEntryToContextMessages`,
-which koa gets from the loaded SDK. pi's context drops the turns
-before a compaction and applies context edits; the transcript keeps
-every turn as it was written. Each compaction is a summary row at its
-place in the branch, and the turns before it look the same as the
-turns after it (the user's decision). Other branches do not show; a
-branch summary on the path is a summary row.
-`koa-records.ts` defines the items and the records.
-
-- **Live messages.** Each `message_update` of the session carries
-  pi's whole partial message, with the tool arguments that pi parsed
-  so far, so a step line names its tool while the arguments still
-  stream. The module keeps only the newest message and converts it at
-  its flush; it never changes pi's object. `message_end` gives pi's
-  authoritative content.
-- **A tool's result** goes into the block of its call, so the page
-  never needs the call's item to place a result. koa stamps the times
-  of tool blocks and, with its own clock, of thinking blocks; a
-  replayed session has no thinking times, because pi's messages
-  carry none. A bash exit code comes from pi's structured result, or
-  from its status line on a replay, so no page parses it.
-- **Final.** An item is final when it can no longer change. An
-  assistant item becomes final after its end, when each call has its
-  result or will never run (an aborted or failed response).
-- **Caps.** Tool arguments, results, command output and agent texts
-  are capped, with the count of cut bytes (`MAX_WEBVIEW_*` in
-  `koa-transcript.ts`). The feed is the page's memory, so nothing in
-  it is unbounded.
-- **Runs are the page's.** A run is every consecutive step between
-  two visible elements: thinking and tool blocks, agent messages
-  (`spawn_agent` and `message_agent` calls, inbound messages, steers,
-  notices and reports) and job items (an `async_bash` start, a stream
-  batch, an end) (app/design/koa/NOTES.md, "Agent messages and jobs
-  are steps of the run"). Nothing stores it: the page projects it
-  from the existing item kinds, and the feed has no run, so the
-  feed's clients that do not group (the iOS app) read the same items.
-  A user message, assistant text with visible content and a `!`
-  command row end a run; the thread of a step never does (the user,
-  2026-11-20: a run is the work between two pieces of prose, and an
-  orchestrator's work interleaves threads). A notice joins the open
-  run as a step; with no open run it stays a row and opens none
-  ("Every notice is one row"). Assistant text
-  that is empty or only whitespace, such as a reply that is only a
-  thread label, hidden items and metadata items (annotations,
-  threads) stand nowhere, so they do not split it. A gap of unloaded
-  history ends the scan, so two runs never join across content that
-  the page has not seen. One function in `page/extent.ts` decides the
-  run's owner, the source of its first step, for rendering, the
-  position table, unread and find. A run's state is independent of
-  the turn: an item that arrives while the agent is idle joins the
-  last run when nothing stands between, otherwise it starts a new
-  folded run, and a turn's first step joins it in the same way. Fold
-  state is page-local and a reload loses it.
-- **Spacing is one margin below each block** (app/design/koa/NOTES.md,
-  "Compact spacing"). A group of lines (runs, notice rows, `!`
-  command rows) is one block: 2px between its lines, 14px after its
-  last line and after an open line; prose and a user message have
-  14px below, and the last block inside prose adds nothing. No block
-  has a top margin, so no two margins add. The lines of one group
-  are often in different rows (an agent item owns a run whose steps
-  come from the next reply, and that reply's row is empty), so CSS
-  sibling selectors cannot see the group's end. `rhythm` in
-  `page/page.ts` walks only the changed rows and their nearest
-  non-empty neighbours, skips empty rows and stops at a gap or the
-  new-messages divider, and sets each row's `data-rhythm`; the CSS
-  reads only that attribute. Each change of a row's first or last
-  block, of the row order or of the divider calls it.
-- **Thinking is Markdown when open.** A thinking step's line shows
-  its first line without Markdown syntax, as an agent step does. Its
-  text renders through the reply's Markdown memo only when the step
-  is open: the first open renders it, and while it streams open, each
-  rebuild gives the memo the new text, as a reply streams. A closed
-  step does no Markdown work. Redacted thinking stays plain text.
-  Inside the step, Markdown keeps the muted tone of thinking: bold is
-  weight only, code and quotes are quieter than in a reply, headings
-  are body size, and the step's own 260px scroller is the one
-  vertical scroll.
-- **Notifications** (pi's `notify`) are items, one line where they
-  arrived, and they stay. pi's messages have no notifications, so a
-  rebuild keeps the module's own notification items and merges them
-  by time when the rebuild is of the same session (a restart), and drops them for another session (a switch, a new
-  session, a fork, a clone).
-- **Command outcomes** are one item kind, `command`, whose result
-  is the outcome of a built-in: the copied length, the exported path,
-  the session's stats, or a compaction. A compaction's item is
-  running from `compaction_start`. A compaction that completes
-  replaces that item, at its seq, with the summary row of the
-  compaction entry, so a live session and a reload show the same row.
-  Otherwise the item ends as failed (pi's error, a refusal of
-  `compact`, or the session's failure during it) or cancelled (an
-  aborted `compaction_end`). A compaction does not rebuild: the
-  earlier items, their revisions and the epoch stay, so the reader's
-  anchor stays. Only a `!` command that completed during the
-  compaction rebuilds after it, as at `agent_settled`. A rebuild of the same session keeps the command items
-  as it keeps notifications.
-- **One text edge.** The user decided with `refine.html` that the
-  transcript, the user block, the composer, the dialogs and the failed
-  card share edges: the user block and the composer's field extend
-  `--pad` past the transcript's text edge, so the field's text starts
-  where the assistant's text starts, and every item's time ends on the
-  text edge (the user block's time on its own padding). A user message
-  The sides do not shrink in a narrow pane: `--side-pad` and `--pad`
-  are the same at every width, so the blocks keep 8pt from the pane's
-  edge; the narrow rule changes only the vertical padding. A user message
-  is a solid block of the accent colour; its quotes, code and time
-  derive from its ink, not from the accent.
-- **Every notice is one row.** The user decided with `lines.html`
-  (2026-11-12) that notifications, command outcomes, koa's own notes,
-  the reply's error, a custom message without agent details and a
-  summary from the history look like a run line: one prose line in
-  the muted colour, the time at the text edge, no chevron and no
-  terminal text except a path or a session file. The item kinds stay
-  separate, because a rebuild keeps or drops them by kind; only the
-  page's renderer (`noticeRow` in `page/page.ts`) is one. A warning's
-  text is in the warning colour and an error's text in the error
-  colour; the time stays faint. A row opens on a click of the whole
-  line when it has more than its line: a body (the session's
-  statistics, the compaction summary), a text of more than one line,
-  or a line that does not fit, which opens to its whole text. A
-  summary from the history shows its kind ("compacted", "branch") and
-  the start of its text, and keeps only the kind when open. The reply's
-  error is a row after the reply's blocks, with the reply's time, so it
-  groups with the rows after it. The texts are the user's, family by
-  family, in the mockup's notes. A notice that follows a step of an
-  open run, with no prose between, is a step of that run instead
-  (the user, 2026-11-20): the same muted line with its level's
-  colour, opening to the same body, and the folded summary names it
-  by its family (`noticeOf` in `page/steps.ts` is the one mapper of
-  the kinds). It never opens a run, so a notice never changes a row
-  above it.
-- **A rebuild** (at start, after `new_session`, `switch_session`,
-  `fork` and `clone`) mints a new epoch.
-
-## Delivery
-
-A long session must not cost its whole size on each page load, and a
-stream of tokens must not cost the square of its size.
-
-- **`/events` is server-sent events,** one JSON record for each
-  event. A page with the current epoch gives its last final item and
-  gets only the items after it. Any other page gets `reset`: the
-  newest items under the window caps, and whether older items exist.
-  A page that loses the stream opens it again with its epoch and last
-  final item, never with `Last-Event-ID`: a patch changes an
-  unfinished item many times, so the item, not the event, is the
-  cursor. The feed is SSE and not a `fetch` body because of WebKit
-  bug 322545 (design-webview.md, "The live channel"): under eight
-  streaming pages a fetch body hid up to 116 KB of an answer's tail.
-- **`/items?before=N`** gives older items under the same caps when the
-  page's top comes into view; the scroll stays anchored.
-- **Flushes.** While an item streams, the module keeps only the newest
-  raw message and converts it once for each flush (`FLUSH_MS` in
-  `koa.ts`). A flush sends `patch` records: for each changed block its
-  new suffix when the block only grew, else the block whole.
-- **Revisions order a snapshot and the stream.** `/items` is a
-  separate request, so a patch can reach the page before or after a
-  snapshot that already holds it, and an item outside the loaded
-  window can still stream; arrival order says nothing, and the epoch
-  only separates rebuilds. Each item has a revision that each
-  published change raises by one; a patch names the revision it
-  applies to and the one it makes. `/items` flushes first, so a
-  snapshot holds only published state at its revision. The page
-  applies a patch only on its own revision, skips an older one, and
-  on a gap reconnects without its epoch, which gets a `reset`: a gap
-  is recoverable, unlike a record that the page cannot apply. While a
-  history request is outstanding, the page keeps the patches for the
-  items that it lacks and applies them after the snapshot by the same
-  rule; otherwise such a patch is for an item that a later snapshot
-  gives whole. A reset invalidates the outstanding request, whatever
-  epoch its answer names.
-- **A slow page.** A `write` that returns false is ordinary buffering.
-  Only an event response whose buffered output passes its cap is
-  ended; that page reconnects with its epoch and gets what it lacks,
-  and the other pages continue.
-
-**Streaming Markdown.** `page/markdown.ts` is a block memoization
-after Streamdown's design, in plain DOM. marked's lexer splits the
-source into top-level blocks; every block before the first that
-changed keeps its node; the last block is the streaming tail, which
-`remend` heals (an open emphasis, code span, link or fence) before
-marked parses it. Thus a token costs the size of its paragraph, not of
-the message. The lexer also sees only the end of the message: the
-caller passes the offset from which the source may differ (the old
-length for an append, 0 otherwise), and the memo lexes again from two
-tokens before the token that contains it, because the containing
-token can grow and the one before it can absorb it (a lazy
-continuation, a list's next item, a setext underline). The kept
-tokens are trusted only if the first token lexed again has the raw
-text of the kept one and the tokens cover the source; else, and when
-a reference definition is in the lexed part or the definitions
-change, the memo lexes the whole source, because marked keeps the
-first definition of a label and an old, half-streamed one would win. The memo keeps the latest raw text apart from the blocks:
-a kept block that held a slice of the message kept every old version
-of a streaming answer alive (117 MB of JS heap after 20 000 tokens,
-16 MB after the fix). marked passes raw HTML through, so the page
-renders every `html` token as escaped text and parses marked's output
-into a detached document; no model text reaches `innerHTML`
-unescaped. A link is a link only when it is an absolute `http`,
-`https` or `mailto` URL, so model text cannot point at koa's routes.
-A click on it opens as every webview page's link does
-(design-webview.md, "The sandbox"): the app opens
-`http` and `https`, and refuses `mailto` with a notice.
-The user's text renders through the same renderer.
-
-**The working mark.** The typing dots are the page's one working
-mark (app/design/koa/NOTES.md, "Running: one indicator"); there is
-no spinner. A working turn has one indicator, which belongs to the
-turn and not to a text block: `page/page.ts` keeps it in one record
-for the view and the turn's start (`State.since`), and no rebuilt
-content holds it. While no tool call runs, it is a bare run row, the
-last row of the items, with a tool row's height, indent and baseline;
-while a call runs, the same node stands after the tool's name, on a
-folded run's summary or on the running step of an opened run.
-Its placement is a bare row or a run (app/design/koa/NOTES.md, "The
-bare dots row never leaves mid-turn"): once a turn shows the bare
-row, nothing before the turn's end removes its height. Reply text
-goes in before the bare row. The first step after the bare row takes
-that row and its line as its run's row, in one frame, so a run never
-appears beside a bare row. Text after a run appends below it with a
-new bare row below the text. A step's end, a parallel step, an agent
-message or a job event moves the mark inside the run only. The
-turn's end and an abort are the only removals: of the bare row, or
-of only the mark when it stands in a run. A rebuild of the same turn
-keeps the placement.
-Parallel calls add one mark for each running step, never only inside
-a closed run. Each page update places the indicator after the items
-and runs change, so no frame shows neither or both; the turn's end,
-an abort, compaction and the job view remove it. A stream, a reveal
-step or a rebuilt run does not recreate it. The dots use a CSS
-animation in `page/page.css`; its phase can restart when the mark
-moves or a hidden ancestor opens. This is the user's decision:
-phase continuity is not required. Compaction, a running `!` command,
-a pending completion and a pending attachment use the same dots
-and box (`page/working.ts`). A CSS Reduce Motion media query keeps
-the dots static.
-
-The bounce is a `transform` animation, which WebKit
-runs in the compositor while the main thread is busy. A detached
-node loses its layer, and its bounce then advances only when a frame
-of the page runs, so the mark stutters. So nothing but a move of its
-spot detaches the mark. A run view is built once and patched in
-place: its summary, its time and each step's label, outcome and
-detail change in their own nodes, and a new step appends a row. The
-mark moves by one insertion when its spot changes, as when a call
-starts or ends, and before a host that goes is removed. A new item
-row goes in before the indicator row, so a new assistant message
-does not move the mark either.
-
-**The reveal.** An answer grows by blocks and by slices of whole
-lines, not by the chunk (app/design/koa/NOTES.md, item 9; `REVEAL`
-in `page/page.ts` holds its parameters). It is presentation only:
-the page applies every patch to its model at once, by the revision
-rule above, and the reveal only chooses how much of the assistant
-text to show.
-
-- **What it covers.** Only assistant text that the page first sees
-  unfinished. History, the user block, agent bodies, thinking,
-  images and annotations render whole at once; marks apply to final
-  text only, which is never cut. A text block is complete when its
-  item is final or a later block of the same item began (a tool
-  or agent step).
-- **Blocks.** A top-level block of the lexer appears when it is
-  complete, that is when the next block began, and grows in. The
-  reveal holds no working mark: the turn's indicator row stands
-  under the arriving block ("The working mark").
-- **Slices.** The tail block renders whole, healed by `remend`,
-  inside a wrapper that clips it (`.reveal`) at the bottom of the
-  last revealed unit, so a slice is never a half line: a code fence
-  by lines, a table by rows, a list by items, a paragraph by its
-  wrapped lines. The units are the block's real line boxes
-  (`page/reveal.ts`): a paragraph's or a fence's text rects grouped
-  by line, a list's items, a table's rows; a fence's line and a
-  table's row are complete when their source line ended, and the
-  last line of a paragraph and the last item of a list are never
-  complete. A quote, a heading and a list with a fence or a quote at
-  any depth have no units; they appear whole. A slice is revealed
-  when the hidden part reaches the height cap, a share of the
-  viewport, or when nothing was revealed for the time cap and whole
-  units wait. A new width or new text that rewraps the block moves
-  the clip to the nearest unit bottom under it, never through a
-  line. The clip stays while the tail keeps its start and starts at
-  zero for a new tail. A wrapper clipped to zero is out of the flow
-  (`.dormant`): an empty clipped box would add the tail's margins
-  to the gap above the working mark, and a block that shows nothing
-  must take no space. The cost of this design is that the hidden
-  text is in the page for at most one time cap, where find-in-page
-  and a drag selection can reach it.
-- **The fold.** A code fence of assistant prose, history included,
-  longer than the fold limit shows its first lines and a bar "Show N
-  more lines". A click expands it for good, also while it streams;
-  until then a streaming fence stays folded and the count grows, so
-  a long fence costs a fixed height during the stream.
-- **Frames.** A transcript record (`reset`, `item`, `patch`, an
-  Older answer) changes only the page's model when it arrives: the
-  items, their revisions, the cursor and the annotations, and the set
-  of items to render. The frame renders: it first reads the geometry
-  that it needs (the scroll), applies the measurements of the last
-  layout (the reveal's units, the heights of the held blocks, the
-  notices' fits), then renders each changed item once, in order,
-  with its runs, the reveal, the working mark and the grow, then
-  writes the scroll once. So many records between two frames cost one
-  render, and no read follows a write in a frame.
-- **The window.** The DOM holds only the rows near the viewport:
-  the cost of each style and layout pass grows with the retained
-  DOM, and WebKit lays out the whole document again after it
-  releases its caches under memory pressure. `items` is the model
-  of every loaded item; `views` holds only the mounted rows. The
-  position table (`Table` in `page/page.ts`) gives each loaded item
-  its extent, the distance from its row's top to the next row's
-  top, so the rows' collapsed margins are inside it: a measured
-  extent from the `ResizeObserver` callback, else an estimate from
-  the item's data (`estimateExtent`, `page/extent.ts`). A row that
-  unmounts keeps its measured extent, so the scrollbar does not
-  move when a row scrolls out and in again; a new width or line
-  height drops every measurement. The divider's height is measured
-  the same way. A patch changes only its item's entry and the
-  positions after it, and an append extends the table; a reset, an
-  Older page or new metrics rebuild it.
-  The mounted set is the window (`windowOf`: the rows that touch the
-  viewport plus one viewport of overscan on each side, from the
-  scroll owner's position, not the raw scroll) and the live tail:
-  every row from the first item that is not final, animates, grows
-  or holds the working mark to the end. A live row is never
-  unmounted, so the dots and the reveal keep their nodes. A run
-  that continues over several assistant items and a job's stream
-  rows mount whole or not at all, because their DOM lives in the
-  first row. The mounted rows where a selection that is not
-  collapsed meets `#items` are pinned like the live tail, until the
-  selection collapses; so a drag that scrolls mounts the
-  rows ahead of it and keeps those behind it. `#items`'s top and
-  bottom padding stand for the absent rows above and below, and one
-  `.gap` box for the absent rows between two mounted ranges (the
-  window, a selection, the tail). A frame mounts for at most 8 ms,
-  nearest the viewport first, and continues in the next frame. An
-  unmounted row drops its prose memos and its observers; the open
-  folds and fences are keyed by item, so they survive a remount.
-- **Find.** WebKit's find sees only the mounted rows, so the page
-  finds in its model and WebKit shows the match (the rules:
-  app/design/koa/NOTES.md, "Find and selection on a virtualized
-  transcript"; Kido's side: design-app.md, "Find"). The hook
-  `window.__koFind(query, backwards)` exists only under Kido
-  (`window.ko`), and returns `null` in a job view, whose rows are
-  all in the DOM. The matches are over each item's find text
-  (`page/find.ts`): the rendered plain text of its Markdown
-  (`markdownPlain`), not its source, and the labels and details of
-  its steps, folded or not, from the same functions that render
-  them (`page/steps.ts`), so the find text is the displayed text. A
-  thinking step counts its body once, not again in its preview line.
-  No match crosses two segments, and the case folding keeps the
-  text's UTF-16 offsets. The segments and the current query's
-  matches are cached per item, rebuilt when the item or the one
-  before it changes, and dropped on a reset. Find follows the pane
-  find's whole-history rule: while older history remains, a call
-  loads it and answers `loading` with the count so far, and a call
-  with the same query meanwhile only asks again; a load that makes
-  no progress fails the find. When all is loaded the cursor moves
-  once (with wrap), the page opens the folds that hold the current
-  match and leaves them open, anchors the reader at a third of the
-  viewport, mounts the row and collapses the selection at the
-  match's start, or at its end for a backward find, so that WebKit's
-  find, which starts from the selection, lands on that occurrence.
-  The page locates a segment in the row's text nodes and maps the
-  match's ends across them, so a match over bold, code or a link
-  works. A find whose query, view or item changed while it waited
-  for a frame answers `cancelled` before it touches the selection,
-  and the bar ignores that answer; closing the bar cancels the
-  find (`window.__koFindCancel`).
-- **Quote Selection.** ⌘O quotes the transcript selection into the
-  composer of the view, or only focuses the composer; in a job view
-  it goes to the app's palette, with the job's owner preselected
-  through the job view's `record`, which koa names with the record
-  grammar of `koa-agents.ts` (the rules:
-  app/design/koa/NOTES.md, "⌘O in a koa pane"). One function,
-  `quoteSelection()`, does it: under Kido the app calls it as
-  `window.__koQuoteSelection()` from its Edit item, and the page
-  reports its state through `window.__koComposer` so the item's
-  title is right when the menu opens (design-app.md, "The composer
-  from a page"); in browser mode the page binds ⌘O, or ⌃O where ⌘
-  is not the modifier, itself, and a job view does nothing. The quote is `answers.ts`'s `quote()`
-  in `head()`'s format, the format of the reply annotations.
-- **Select All.** In Kido, ⌘A is the app's Select All, which
-  reaches WebKit and never the page as a key, so the page knows a
-  Select All only from the selection: at a copy, a selection that
-  covers all of `#items`, from the start of its first text to the
-  end of its last, is the whole transcript. Then the page's copy
-  writes every loaded item's text from the model, in order, with a
-  blank line between items: the Markdown source of a user message
-  and a text block, the find text of everything else (`exportText`
-  in `page/find.ts`). Any other selection gets WebKit's copy. A
-  Select All pins no rows, so it never mounts the rows between the
-  window and the tail. The job view keeps WebKit's selection and
-  copy.
-  A frame's reads
-  can still force a layout after a write outside a frame (a key, a
-  `state` record), so the measurements are read in the
-  `ResizeObserver` callback, which runs after layout, before any of
-  its writes, and the next frame uses them: the reveal and the grow
-  lag their write by one frame. The observer watches the tail's
-  unclipped content, each held block and each notice's text; a
-  newly observed element always gets a first notification. A block
-  that completes waits one frame at zero height (`.hold`) and grows
-  from the height that the observer read. Under Reduce Motion, a
-  completed block appears at full height and opacity in its first
-  frame, without the hold or grow. The chunking, height and time
-  caps, and fence folding stay unchanged; scroll travel and the
-  follow slide are disabled and the dots stay static. A `state` record and a job
-  view's records still render at once: they are rare and drive the
-  focus, the composer and the job output. The frame loop runs only
-  while work waits; the time cap is one timeout. A hidden page gets
-  no animation frames: it renders its records in one timer task at
-  koa's flush cadence, so its DOM is current when it shows. A
-  visibility change moves the waiting work to the other kind, and
-  `pagehide` cancels it.
-
-## The composer
-
-The composer is a CodeMirror 6 editor (`page/composer.ts`), so
-completion and Markdown use CodeMirror's own state, tooltip and
-keymaps. The page keeps every key rule: Return sends, Shift-Return
-inserts a newline, Option-Return queues a follow-up while pi works,
-Escape aborts and a second Escape clears, Control-D in an empty
-composer quits. Kido's Command keys never reach the page, so the page
-binds none. A send while pi works is a steer: koa always sends pi's
-`prompt` with a streaming behaviour, never `steer` or `follow_up`,
-because only `prompt` runs an extension command while pi streams.
-Escape first takes the queue back into the composer, then aborts, so
-no queued work runs after it. While a `!` command runs, Escape cancels
-the command first ("`!` commands" below).
-
-- **One owner of Enter.** The composer's highest-precedence keymap
-  owns every Enter variant; `standardKeymap`'s Enter binding is
-  filtered out, because it would run during an input method's
-  composition and indent a Shift-Return newline. Each Enter binding
-  returns false while a composition has started, so the Enter that
-  commits a candidate never sends.
-- **Prompt history** follows pi's editor: Up on the first visual
-  line browses when the field is empty, already browsing, or the
-  cursor is at its start, else it moves the cursor to the start;
-  Down on the last visual line goes forward while browsing, and past
-  the newest entry it restores the draft and its selection. An edit
-  ends browsing. Completion and an input method's composition keep
-  their arrows. The entries are the newest 100 user messages and `!`
-  commands of the session, trimmed, without empty entries and
-  consecutive repeats, so a resumed session has its history. They
-  come from koa's transcript (`GET /history`) when browsing starts;
-  the page stores none (`page/history.ts`). A built-in command never
-  reaches the transcript and is not in the history.
-- **Option-Up** takes the whole queue back into the composer, with no
-  abort.
-- **The cursor** is CodeMirror's `drawSelection()` in the pane's
-  cursor and selection colours. WebKit's native caret lagged visibly
-  when the Markdown highlighting rebuilt the spans around it.
-- **Focus.** Outside dialogs, pickers and the lightbox, Tab and
-  Shift-Tab keep keyboard focus in the composer. Tab keeps its completion
-  behaviour; without a completion it does nothing. Shift-Tab does nothing.
-  The composer takes the focus at start, when pi's
-  readiness makes it available, and when the pane gets focus, each
-  only while the document has focus and no dialog, picker or control
-  of the page holds it. The pane gets focus when its page's window
-  gets the `focus` event, which WebKit sends when Kido.app makes
-  the web view first responder of the key window; every native path
-  that focuses the pane does that (design-app.md, "Focus and keys"),
-  so the return from a popup, a palette or another pane refocuses the
-  composer. A printable key typed outside a field goes to
-  the composer; a selection in the transcript stays.
-- **The focus border.** The composer's focus border shows where keys
-  go, not the DOM focus: it is on while the document has focus, the
-  composer is enabled, no dialog or lightbox is open and no other
-  text input of the page holds the focus. One predicate decides it
-  and the routing of printable keys, so a click in the transcript
-  keeps the border. The model and thinking picker keeps the border
-  but takes the keys while it is open, because it is a menu over the
-  composer.
-- **Markdown.** The composer parses GFM through
-  `@codemirror/lang-markdown`'s named exports, never its `markdown()`,
-  which bundles the HTML, CSS and JavaScript parsers (about 345 KB).
-  The markup is muted and code is in the terminal font, after the
-  user's plain rule, with no colours of its own. Shift-Return
-  continues a list or a quote and ends an empty item; Backspace at an
-  item's start deletes its marker; Return stays send. Fences get no
-  language parsers.
-- **The glass.** The composer floats over the transcript on a CSS
-  `backdrop-filter`; a `ResizeObserver` keeps the transcript's bottom
-  padding at the dock's height. WebKit's private system glass needs a
-  private preference, and WebKit's snapshot does not show it, so no
-  test could check it.
-- **Bottom-following.** One owner decides the scroll, for the
-  transcript and the job view alike: the state machine of
-  `page/scroll.ts` (`scrollUpdate`). It reads no DOM. `page.ts`
-  turns the page's events into its events, measures the geometry in
-  one function after layout (from the `ResizeObserver` delivery and
-  from the frame), passes the events and the measurement in, and
-  applies the decision that comes back: the scroll to write, the
-  slide's offset, the divider, the capsule, the window's target and
-  a row to mount or a page to load. Each rule below is a sequence of
-  events in `koa-scroll.test.ts`. Its state is
-  `following`, `reader` with an anchor (an item, a message's
-  sequence number or a job row's byte offset, and the item's top
-  relative to the viewport), or `restoring` a saved view. While the
-  pane is focused and the state is `following`, the page writes the
-  bottom on every layout change, at once and before the paint: one
-  `ResizeObserver` on the scroller, the items, the job output, the
-  dock and each mounted row and content block calls the correction,
-  on every delivery. A row mounted at its estimate gets its real
-  height in that delivery. While following, each delivery also asks
-  for one correction in the next frame, which measures before the
-  frame's writes: a change that the depth rule defers still reaches
-  the bottom, at most one frame late. A frame that only animates
-  (the slide, the travel) measures nothing: it reuses the last
-  measured geometry with the frame's time. A layout that a frame
-  writes is measured by the observer's delivery, so no read follows
-  a write in a frame. A `ResizeObserver` callback runs
-  after layout and before paint, so the painted position is always
-  the bottom of the painted layout and streaming never steps back.
-  In `reader`, only a layout change or an instant cause corrects,
-  never the reader's own scroll: the correction keeps the anchor item at its offset,
-  after it adds the reader's move since the last decision to the
-  offset, so content above it (older history, a fold, an image, a
-  reveal) moves the scroll by its delta and a move made between the
-  measurement and the write is kept. A correction under 1 px writes
-  nothing; when the item is gone the anchor
-  moves to the next item below, or the page goes to the bottom. An
-  anchor whose item is loaded but not mounted asks the window step
-  to mount it. The window step asks the owner for its target
-  (`scrollWindow`) in the table's coordinates, from the state and
-  the current table, before it mounts, so an anchor that an Older
-  page moved is mounted where it now is; the anchor's correction
-  uses the mounted rows' rects. A scroll that lands in the padding (a scrollbar jump)
-  takes its anchor from the table, and the window mounts the rows
-  there; as they measure, the anchor holds and the scrollbar's
-  thumb moves by the estimate's error.
-  The reveal and the grow are rendering only: no scroll animates
-  toward them, and the working mark goes in one frame. The one
-  animated scroll is "↓ Latest": about 250 ms, ease-out, re-targeted
-  each frame to the moving bottom; the state stays `reader` until
-  it arrives, and reader input, a view switch or a hidden page
-  cancels it at the position that it reached. Under Reduce Motion the click follows at once.
-- **The follow slide.** The glide that a following reader sees is a
-  transform, not a scroll (app/design/koa/NOTES.md, "The follow
-  slide"). The scroll stays exact at the bottom in every frame; the
-  owner moves `#transcript` (the items, the job output and the
-  bottom padding; the dock is outside it) by `translateY` and eases
-  it back to 0. An animated scroll and a streaming layout fight each
-  other; a transform on one element costs no layout and cannot lose
-  the follow. The owner takes the bottom's change from the geometry
-  that each correction already reads, against the last geometry
-  that a correction consumed, not from the scroll distance, so a
-  repeated delivery adds nothing and every cause (a slice, the grow's
-  frames, the dots, an image, the dock's padding) is one path. Each
-  change adds its height to the offset from where the content is
-  now, clamps it to one viewport and restarts a 180 ms curve, CSS's
-  `ease-out`, which the owner evaluates at each frame from the
-  measurement's time. The frame loop writes the offset after its
-  reads; the owner keeps the value that it wrote, so an anchor read
-  subtracts it from a row's rect without reading styles.
-  `#transcript-clip` around it clips the overflow, because a
-  transformed box adds to the scroller's scrollable overflow, which
-  would feed the offset back into the measured bottom.
-  A layout change has a cause, carried from the render through the
-  observer delivery to the one correction that measures it: an
-  ordinary change slides; an instant one (a reset, a view or session
-  switch, a restored view, older history, a job's reset, a change of
-  the scroller's own size) only moves the baseline; the user's send
-  slides by the bottom's change when the reader followed, and by the
-  sent row's height after an instant jump when the reader was up.
-  An instant cause holds for its whole render: the observer can
-  deliver its layout in several callbacks, and none of them slides,
-  until a frame finds the layout settled. The first measurement is
-  a baseline. A toggle (a click or Enter/Space on the header of a
-  fold: a step, a run, a
-  notice, a command's output, a folded fence) is its own cause with
-  an anchor: the page reads the header's top, applies the change,
-  measures, and gives the reducer the anchor that keeps that header
-  at the same screen position, so only the content below it moves.
-  The anchor is exact, with no 1 px dead band. A toggle ends the
-  slide, a travel and a pending forced item, and sets `reader` at
-  the anchor; it resumes `following` only when the held position is
-  the bottom. A position past the top or the bottom clamps. A toggle
-  adds no unread item, so it places no divider. A find's open of a
-  fold is not a toggle. Reader input, `reader`,
-  travel, a blur, a hidden page and Reduce Motion end the slide at
-  0. A change of the dock's height slides; a resize of the window
-  does not.
-- **Reader input and clamps.** Only the reader leaves following.
-  The page turns input into a direction: an upward wheel, a downward
-  touch drag and the keys Up, Page Up, Home and Shift-Space outside
-  a control are up; the opposite ones are down. Up sets `reader` with
-  the current anchor, but only when the transcript can scroll (its
-  maximum exceeds 1 px): a short transcript has no position to
-  read, and a reader there would mark the next reply unread with
-  no way back to following. Any input cancels a travel. A find navigation
-  sets `reader` at its match. Every scroll event is the reader's
-  position, at any size, except two: the echo of the page's own
-  write (the owner keeps the value that it read back after the
-  write, and ignores the next scroll event at exactly that value)
-  and a clamp (the position is within 1 px of a maximum that shrank
-  below the previous position: a reveal that rebuilds its blocks, a cleared
-  composer). While following, a scroll event below both the last
-  written position and the previous maximum is the reader, which a
-  scrollbar drag is, and sets `reader`; a clamp stays following. In
-  `reader`, a scroll event only takes the anchor from the current
-  position and never writes, so a slow trackpad's sub-pixel moves add
-  up and momentum is not interrupted; in a batch with a layout
-  change it takes no anchor, and the correction keeps its move. A
-  move down to within 1 px of
-  the bottom resumes following. A scroll event below the last frame
-  of a travel cancels it. Nothing else resumes following except the
-  user's send and "↓ Latest".
-  `overflow-anchor: none` keeps the browser's scroll anchoring out:
-  it selects no anchor at offset zero (older history loads there),
-  the dock's padding change suppresses it, and it does not follow
-  the bottom, so a second owner would only conflict with the page.
-- **The user's send** sets `following`, clears the divider and the
-  count and writes the bottom at the submit, focused or not, and
-  again when pi answers `started` or `queued`. The owner remembers
-  the pending send, and the first user item that then appends in
-  the same view sets `following` from any state and writes the
-  bottom, also in an unfocused pane, so the sent block is visible
-  in the frame that it appears. pi's answer names no item, so the
-  first user item is the match. A failed send, a command that the
-  page handles and a view switch forget it; an answer that arrives
-  after a view switch is dropped. Another user item (a delivered steer, a
-  queued follow-up) is a new item under the normal rule. Restoring
-  a view shows its items without entry animations.
-- **Focus, new items and "↓ Latest".** The look and the rules are in
-  app/design/koa/NOTES.md, "Auto-scroll, the "new messages" divider
-  and "↓ Latest"". The pane is focused when the document has the
-  focus and is visible; the page reads both at each decision and
-  re-checks on focus, blur, `visibilitychange` and scroll, so no
-  native message is necessary and browser mode behaves the same.
-  While the pane is not focused, a `following` page does not write
-  the bottom; a layout change that moves the bottom away, or the
-  first new item, sets `reader` at the current anchor, and a new
-  item places the divider, so the view stays where it was and the
-  button shows on the return. Focus alone never scrolls
-  and never resumes following. A reset, a view change and a job's
-  reset still open at the bottom when the page follows, focused or
-  not, so a page that loads in a background pane does not open at
-  its top. A view switch saves a `reader` view's anchor and the last
-  sequence number it had; the return loads older pages (or job
-  output) until the anchor's item exists, applies the anchor once
-  and marks what arrived meanwhile as new. A `following` view
-  returns at the end with no divider. An item is new at its
-  first append only: a revision or a patch of the same sequence
-  number is growth. The units that are new are assistant text with
-  visible content and runs, and the page decides them from the
-  item's data, never from its DOM: a nonblank text block, or a run
-  with at least one shown step. A run belongs to the source of its
-  first step, so a step that joins it, from the same item or a later
-  one, an agent message or a job event included, adds no count and
-  moves no divider; a report while idle that starts a new run is one
-  new unit. One item can hold several units (a text, then a run), so
-  a unit's address is page-local: the item's sequence number and the
-  unit's row in it; the feed's addresses do not change. An appended
-  item stays a candidate until its data qualifies, so an empty
-  message that gains text later is new then; history that a reset or
-  Older brings is never a candidate. The user's message, an error
-  notice, a command, a summary and a `!` row never count and never
-  place the divider. The divider stands before the new item
-  with the lowest sequence number.
-  The count is of new items whose top is below the dock's top,
-  because the dock covers the bottom of the transcript. It comes
-  from the position table, so it counts new items that are not
-  mounted, a jump past them also counts, and the count reads no
-  geometry of its own. The page's lookup of a unit's position reads
-  only the measurement that the frame took before its writes (the
-  feed wrappers and the units' rows inside them); a node that the
-  frame rendered after that measurement is not mounted for it, so a
-  forced item stays forced until its new height is measured. The capsule
-  shows exactly while the state is `reader`. The divider and the count clear
-  together, on a send and on a reset of the transcript, which a
-  session switch, `/new`, `/reload` and `/restart` all cause.
-
-**Completion.** pi's session offers only its command list
-(`commandList` in `koa-agents.ts`: extension commands, prompt
-templates and skills, no argument completions) and has no file
-search. koa cannot import pi's provider: `pi-tui` is not
-reachable from pi's package exports, and pi's bun binary has no
-modules. So koa copies pi's rules (`koa-complete.ts`), behind its own
-`POST /complete`:
-
-- `/` at the start of the first line: koa's supported built-ins,
-  then the session's commands, read at each request so that an extension's
-  new command shows at once, with pi's fuzzy filter over both. `@token`: the agents of the session first, then files from
-  `fd` with pi's arguments and scoring. No forced Tab completion and
-  no plain-path completion in a prompt (the user's decision).
-- In `!` mode, `/` and `@` offer nothing, and nothing completes as
-  the user types: only Tab completes, from bash ("Shell completion").
-- The token rules are one copy in `koa/token.ts`, which koa
-  and the page import, so the page asks only in a context and the
-  two sides agree on where a token starts. koa computes the prefix,
-  the options, their insert text and the matched letters; the page
-  decides nothing.
-- The user's pattern follows `--` in `fd`'s argv, so a query such as
-  `@"--help` is a pattern, never an option. Each search has a
-  deadline and caps. A request that the page aborts ends its `fd`.
-- `@name` agents are the viewed agent's scope from the tree
-  (design-subagents.md, "The tools, and what they call"), with the
-  shared rules in `koa/agents.ts`; only the pane peers come from
-  `ko api GET /layout`. A completed `@name (session <prefix>)` reaches
-  the model as typed, and the extension's tools resolve it.
-- No completion inside a code span or a fence: the source checks the
-  Markdown tree.
-- The popup is CodeMirror's tooltip, mounted in a layer at the page's
-  root (inside the field, the field's own backdrop filter made it a
-  backdrop root, so the popup's blur saw only the field), pinned above
-  the field.
-
-**Shell completion.** In `!` and `!!` mode, Tab asks bash for the
-word at the caret where the command would run (the user's decision;
-the mockup is `app/design/koa/`, NOTES.md "Tab completes, from
-bash"). `/complete` answers a `shell` result (`koa-records.ts`) for a
-`!` text and a `prompt` result otherwise, so the page has one
-completion source for each mode.
-
-- **Where.** koa cannot know the extension's resolved runtime: the
-  extension starts
-  and checks a routed runtime itself, and a pane variable cannot say
-  that a runtime is still starting or was refused. So koa asks the
-  extension (`host.extension.completionContext`), which answers
-  through the resolver of its current session (`koa/completion-context.ts` holds the
-  type): the host with the session's
-  cwd, a runtime with the cwd that `user_bash` would give the routed
-  command, or `unavailable`. A refused or unready runtime, or no
-  resolver, is `unavailable`, never the host. A session end or a
-  switch aborts the requests in flight, and a reply for a session
-  that is no longer current is a 409.
-- **How.** One exec of `koa-shell.sh` for each Tab, never pi's
-  `executeBash` (it would enter the transcript) and no persistent shell. On
-  the host it runs in koa's environment; in a runtime it runs through
-  the runtime's exec route (`koa/runtime-exec.ts`, the
-  extension's client) with no environment from the host, in the login
-  shell that the extension's routed commands use (`bash -lc`, else `sh -lc`), and then
-  changes to the resolved cwd, because a profile can change it. The
-  script prefers a bash of version 4 or later from that environment's
-  PATH and the usual prefixes, starts it without profile or rc files,
-  and sources only an installed bash-completion of that environment.
-  A registered completion function decides the matches, its
-  `compopt` options and its fallbacks (`default`, `bashdefault`,
-  `dirnames`, `plusdirs`; a loader's 124 retries at most three times);
-  without one, command names in command position, else files and
-  directories. `-W` and `-C` specs are not evaluated: they fall back
-  to files.
-- **Never the typed text.** The line and the caret's byte offset are
-  arguments. The script splits the line with its own lexer (quotes,
-  escapes, separators, assignments and redirections) and returns no
-  matches for a line with a substitution, a heredoc, a process
-  substitution or a parenthesis, so nothing that the user typed runs.
-- **Bounds.** Each request has a deadline of 2 s and 1 MiB of output;
-  the page's abort kills the process group. The script sends the
-  replacement span in bytes, the common prefix over every match
-  (shortened to a whole UTF-8 character), the count and at most 200
-  NUL-separated matches with their quoted insert text; koa checks the
-  framing and converts the span to the page's UTF-16 offsets.
-- **The page.** A pending Tab waits (no second request) and shows
-  the working dots after 150 ms: as the popup's last row, which is
-  not an option, when the popup is open, else in the field after the
-  caret. An answer with no matches shows "no completions" in the
-  popup's place for 1.5 s. The completion module owns this feedback;
-  typing or a caret move cancels it, and a late answer does not
-  restore it. A
-  stale answer (another text, caret, session or child) is dropped.
-  Tab and ↓ move in the list and ↩ accepts, as its hints line says:
-  the spec's "Tab accepts" conflicted with its hints, and the hints
-  won. Measured: 28 ms on the host, 311 ms for a cold command runtime.
-
-## The external editor
-
-Control-G in the composer opens the draft in the user's editor, as
-pi's external-editor key does (`koa-editor.ts`). The editor runs in a
-ko pane, so it gets a real terminal, and its result replaces the
-composer's text; koa never sends it.
-
-- **The command** is pi's, in pi's order: `externalEditor` of the
-  project's `.pi/settings.json`, then of the agent directory's
-  `settings.json`, then `$VISUAL`, `$EDITOR` and `nano`, split on
-  spaces as pi splits it. The draft's path is the last argument.
-- **The login environment.** The float runs the command under `ko
-  shell --`, like a spawned agent, so the editor gets what the user's
-  dotfiles set, such as `NVIM_APPNAME` (docs/design.md, "The login
-  environment", names the shells whose dotfiles `ko shell` reads).
-- **The draft** is `koa-draft-<pane>.md` in a new private directory
-  under the temporary directory, so the editor highlights Markdown;
-  the file is `0600` and is created, never reused. koa removes the
-  directory on every end: a result, a failure, a session change and
-  koa's own exit.
-- **The float** (`koa-float.ts`). koa
-  adds the editor as a bordered float over its
-  own pane, not the whole window, because the editor belongs to that
-  pane's draft and must not hide a terminal beside it: centred on
-  koa's pane, 80% of it, at least 60 columns by 16 rows, moved to stay
-  inside the window; only a pane below that minimum gets the float
-  centred on the window, clipped to it.
-  koa writes the float through `PUT /layout` with the
-  revision it read, and reads the layout again on a `409`, three
-  times at most. The float is a child pane: `parent` is koa's pane
-  and `close` is `on_exit`, so the sweep removes it with koa, and a
-  child float may share only its parent's window (protocol.md,
-  section 7). Its `fixed_title` is "Draft for @<koa's name>", so the
-  sidebar, the tab and a close alert name the draft and not the
-  editor's temporary file, and its `close_confirm` is `never`: the
-  draft is safe in the composer, so the user closes the float
-  without a question. The editor runs on the host also when pi's tools are
-  routed to a runtime, because koa and the draft are on the host; a
-  koa inside a runtime refuses Control-G.
-- **The end.** A `/client` connection that does not size or focus
-  anything, opened before the float, gives the float's `dead` event
-  with its cause. Exit 0 with a text that
-  differs from the draft (without a leading BOM and the final newline,
-  as pi compares) replaces the composer's text through the same
-  `editor` record as `set_editor_text`, only while the session is
-  the one that opened it. Any other end keeps the draft with a
-  notice, such as "Editor exited 1; draft kept": a non-zero exit, a
-  signal, a failed start and the loss of the `/client` connection.
-  A float that leaves the layout alive (the user closed it) is a
-  cancelled edit: the composer keeps the draft that it held, with
-  the one info notice "editor closed · the draft is as before". The
-  end claims the edit before it reads the result file, so a removal
-  during the read cannot cancel and then replace the draft. A
-  session change or koa's exit during the opening or the edit cancels
-  it and removes a float that the opening already made. koa then removes the
-  float itself and the server gives the window's focus back to koa's
-  pane, the removed pane's parent.
-- **Focus.** The page focuses the new float at once through
-  `window.ko.focus` (Kido.app, "Focus from a page" in
-  design-app.md); a second Control-G while the editor is open
-  focuses it again and opens nothing. When the edit ends, the page
-  focuses the composer. The terminal client has no `window.ko`, and
-  no koa page, so the float stays unfocused there.
-- **While the editor is open**, from the Control-G on, the draft is
-  locked; once the float exists, the state record's `edit` names the
-  float and the editor. The draft stays visible and read-only, the
-  composer's tooltip is "Editing in <editor>", sending, the take-back
-  and the pickers are off, and Escape and Return do nothing; the queue and
-  the transcript stay live. While `edit` is set, the field is `inert`
-  and has the class `editing` (design: `app/design/floats/NOTES.md`):
-  the composer is dimmed to 45%; the dim is the editing state. The dim is on
-  the children of the field and on the chips and the queue, not on
-  the field itself, because a child cannot be more opaque than its
-  parent. Nothing in the composer takes a pointer event. A click
-  anywhere on the composer focuses the editor's float through
-  `window.ko.focus`, and its press does not move the page's focus. A page without a ko pane (`--browser`) shows
-  "C-g needs a ko pane" for 4 s.
-
-## Paths in the transcript
-
-A path in an inline code span of an assistant block, a user block or
-the opened body of an agent step opens in the user's editor, in a new
-float of koa's pane (design: `app/design/koa/NOTES.md`, "Paths in the
-transcript open in the editor").
-
-- **The token** (`path-token.ts`, shared by the page and koa): the
-  span's whole text is one path, with an optional `:LINE[:COL]`, and
-  has a `/` or a file extension. Prose is never a path. The page
-  decides nothing beyond the token: koa parses the span's text again
-  for `POST /editor/path` (`page/http.ts`), a koa page route, not a
-  ko route.
-- **Where.** The page links spans only while the state's
-  `pathEditor` is set: koa runs in a ko pane, not in a runtime and not
-  in browser mode, because only there can it add a float. The route
-  refuses on the same fact, and on it the agent extension adds a
-  prompt guideline: the model writes each path as one code span,
-  relative to the working directory or absolute, never a bare file
-  name under a heading that names its directory, because a span
-  resolves against the session's cwd alone.
-- **Resolution and the check** follow `completionContext`, as `!`
-  completion does. On the host, a relative path resolves against the
-  session's cwd, `~` against the home, and koa stats it. A routed
-  session resolves and tests the path in the runtime by one exec,
-  which also reads the runtime's `$EDITOR` (else `vi`); the path is
-  an argv word, never script text. A missing path, an unready runtime
-  or a refusal answers a warning, which the page shows under the
-  span's row, page-local and not in the transcript record. A
-  directory opens.
-- **The float.** Each click adds one new float through the same
-  placement as Control-G's (`placeFloat` in `koa-float.ts`): a child
-  of koa's pane with the default `close: exit`, `fixed_title` the
-  span's text and `close_confirm: never`. Nothing observes it and koa
-  reads nothing back: the editor saves to the real file. The server
-  removes the float when the editor exits cleanly, because no one
-  reads its lingering screen (Control-G's float keeps `on_exit` for
-  its ending notice), and with koa's pane. A failure stays, so the
-  user reads its error: a start failure of `ko-pane` (cause `failed`)
-  by the sweep's rule, and an editor that exits non-zero (a missing
-  editor is 127) by a `sh` wrapper around it, which sets its own pane
-  to `close: keep` with `ko api -X PATCH /panes/$KO_PANE` before it
-  exits with the editor's status, as ko's own wrappers do (design.md,
-  "Window lifecycle"). The wrapper is the same on the host and in a
-  runtime, where the float's own identity may send the patch. An
-  editor killed by a signal (status above 128) closes its float: the
-  user or a removal ended it, it did not fail. There is no limit of one float
-  and no check for unsaved changes (the user's decision); the
-  Control-G draft float is separate. On the host the command is
-  Control-G's editor command under `ko shell --`; in a routed session
-  the float is a pane born in the runtime (`runtime` of the pane
-  body), so the editor has a real pty there, which the exec session
-  has not. Its command changes to the routed cwd itself, because the
-  server reads a host caller's `cwd` as a host path. `+LINE` comes
-  before the path only for vi, vim, nvim, nano, emacs and micro.
-
-## The job view
-
-A background job is a view of the page, as a subagent is ("Views").
-The look is the spec of app/design/koa/NOTES.md, "The job page". The
-job's log is the content: no float, no second pane. The selection is
-one `Selection` of `koa-agents.ts`, with three cases: an agent, a
-live job of the registry and a job whose record is gone. A job case
-holds its owner, the agent whose registry started it, which the bar's
-back and Clear return to. A job's view id is the job id, scoped by the
-owner's `sessionId`.
-
-- **Opening.** A `select` of the job's row, or the "open" link of a
-  job step (the `async_bash` result, a `bash` call that went to the
-  background, a stream batch or an end) through `POST /view`. `/view`
-  resolves the live registry first, then the job facts that the
-  owner's transcript holds in its items. It takes an id, never a
-  path, so the page reads only a log that koa's own registry or
-  session named. A step has no link when its log file does not
-  exist; the host decides that when it projects the item.
-- **A gone record.** A job pruned from the registry, or a record
-  cleared while viewed, shows the file read-only: the foot's state is
-  "cleared" with no button. A log deleted by then shows "the log is
-  gone" (`job-gone`).
-- **One gate.** Each page route of `koa.ts` names its scope: the
-  view, the job or the agent. While a job is viewed, a route of the
-  agent's scope, `/abort` too, is refused, so no action reaches the
-  owner by accident. Escape does nothing.
-- **The content.** `koa-job-view.ts` streams raw log bytes, never
-  transcript items: a `job-reset` with the in-memory tail (the last
-  64 KiB) at the open, then `job-append` records, each with its
-  absolute byte offset in the log file. The offsets are of the file,
-  not of the program's output, because a `bash` call that moved
-  writes a header into its log. `POST /job/earlier` reads the file
-  backward in 256 KiB ranges (`koa-job-log.ts`), after the log writer
-  has flushed what the tail holds. A page that reconnects under the
-  same epoch sends its byte cursor; koa catches it up from the file,
-  then from the tail, and sends the state only after that output, so
-  an end never appears before its last bytes. Another epoch gets a
-  new reset. The transcript and the job view share one SSE transport
-  (`koa-feed.ts`) and its queue cap.
-- **Rendering.** `page/job-output.ts` decodes the bytes incrementally
-  to styled lines: SGR bold, dim and the 16 colours; every other
-  escape and control removed; a carriage return replaces the line
-  that it ends, so a progress bar shows its last state. A range that
-  does not start the file drops its partial first line and starts in
-  the default style. The page builds text nodes, never HTML, from
-  the log. The job view's follow, anchor and "Latest" are the
-  transcript's own scroll owner: a job row carries its byte offset
-  as its item id, and a return to a job restores its saved anchor
-  or opens at its end.
-- **Stop and Clear.** `POST /job/stop` stops the job as
-  `stop_async_bash` does, a service too; the view stays and shows the
-  end. `POST /job/clear` removes the record and switches to the
-  owner. `GET /job/log` serves the viewed job's log file, for the
-  path's preview.
-
-## The composer's foot
-
-The user decided with the mockup that koa has no status bar: the
-foot of the field holds the model and thinking-level buttons, the
-context, the extensions' statuses (`setStatus`) and the working
-directory at the right. The foot has no state cell (user,
-2026-11-15; app/design/koa/NOTES.md, "The foot without the status
-cell"): each state shows on the element that it is about. The
-transcript's working dots are the turn, without a clock; the
-compaction row, the dialog card and the failed card are their states;
-the field's placeholder reads "Starting pi…" or "Loading…" while it
-is inert; a `!` draft is the field's own look; a live command's row
-has its dots and its time; a completion shows its own feedback in the
-popup or the field; the editing look is the external editor's. The
-dots have the spoken name "working". The job view's foot keeps its
-own state ("The job view"). The row has no send or stop button and
-says nothing about Return and Escape.
-
-- **Narrow widths.** The foot drops cells by its own width, a
-  container query on the field, not the window's: the field is what
-  the cells must fit, whatever the pane and the sidebar do. The
-  extensions' statuses go first. Under 540px the level, the cwd's
-  leading directories and the context numbers go; the model picker
-  then offers the levels. Under 340px the model and the cwd go, and
-  the context moves to the right. Under 200px the context goes, and
-  the empty foot keeps its 20px height, so the field's bottom padding
-  does not change.
-  The cwd and the model's name ellipsize at every width, so a deep
-  directory or a long model never pushes the other cells, and the
-  foot never overflows the field. What a step hides stays reachable:
-  `/model` and `/thinking` open the pickers, above the field when the
-  model cell is hidden; `/session` lists the model and the context
-  numbers, and the cwd is the pane's title.
-
-- **Pickers.** The model and level buttons open pickers above the
-  foot; an open picker is placed again when the window or the dock
-  resizes, so it stays on its anchor. A pick goes through `set_model` or `set_thinking_level`. No
-  key inside the field opens them: Control letters are Cocoa text
-  bindings.
-- **Dialogs.** An extension's `select`, `confirm`, `input` or `editor`
-  is a card above the field. The open dialogs are part of the `state`
-  record, the one record that a page gets again when it loads, so a
-  reload during a dialog shows it again. One card at a time; a
-  dialog's timeout is koa's, which removes it as pi does. An editor
-  field submits with Control-Return, because Return and Shift-Return
-  are newlines there and every Command key goes to Kido first.
-- **The queue.** pi's `queue_update` carries the whole queue, so the
-  page shows the steering messages, then the follow-ups, in the dock
-  above the field. The user decided with `lines.html` (2026-11-12):
-  each entry is a dimmed user block of one line, the first line of
-  its text with the Markdown syntax removed, its attachments as a
-  count, its kind where a sent message has its time, and a × that
-  removes only that entry. The transcript's bottom padding is the
-  dock's height, so the bottom that the view follows is the top of
-  the queue: a block that arrives or goes keeps a view at the bottom
-  there and keeps the scroll position of a view scrolled up.
-  Taking it back (Option-Up, Escape) calls `clear_queue` and puts the
-  texts, with their attachments, into the composer.
-- **Removing one entry.** pi has no removal of one entry, only
-  `clear_queue`. So `POST /queue/remove` names the entry by kind,
-  index and text; koa refuses it when its queue view differs there,
-  clears the queue, and sends the other entries again in their order,
-  with their kinds and attachments. If the cleared queue no longer has
-  that text at that place, koa sends every entry again and refuses.
-  The user accepted that pi can take an entry or end the turn between
-  the clear and the resend, as with a take-back. A send that waits in
-  the queue, a take-back and a removal go one at a time through one
-  chain in koa, so Escape's take-back waits for a removal and then
-  aborts. When a resend fails, koa stops and returns the entries that
-  it did not send, and the page puts them into the composer as a
-  take-back does, so no queued work is lost.
-- **Context and model facts** come from the session (its model,
-  thinking level, name and file), the pickers' results,
-  `thinking_level_changed`, and `getSessionStats` after each turn,
-  settle and compaction. koa runs no git: the user removed
-  the branch and dirty mark.
-- `setEditorText` replaces the composer's text; `setWidget`,
-  `setTitle` and the other fire-and-forget methods are ignored.
-
-## `!` commands
-
-A message that starts with `!` runs a shell command as pi's TUI does:
-`!cmd` puts the command and its output into the model's context,
-`!!cmd` keeps them out. koa runs it as pi's RPC mode does (`runBash`
-in `koa-agents.ts`), never as a prompt and never through the queue:
-it emits `user_bash` to the extensions first and records their
-result, else calls the session's `executeBash` with the operations
-that they returned. So the extension runs a routed pi's command in
-its runtime (design-runtimes.md, "Agents in a
-runtime") with no work in koa. The mockup is `app/design/koa/`,
-NOTES.md "`!` runs a command".
-
-- **One running command.** koa refuses a second command while one
-  runs: pi's `abortBash` cancels every running command, so with one
-  a cancel reaches only the command that the user sees. A completed
-  command does not block the next. koa also refuses `!` with
-  attachments, because their paths would become shell text, and `!`
-  with no command. The page refuses Return first: while a `!` draft
-  has attachments, its chips take the refused border, with their
-  detail muted, and the notice beside them in the chip row says "a
-  command takes no attachments".
-- **While pi works** the command runs at once, beside the turn, as in
-  pi. pi stores its `bashExecution` message only after the turn
-  settles.
-- **No deadline.** A command runs as long as it runs, and ends by
-  its exit, a cancel or the session's end. koa answers the page's
-  `/prompt` at once and waits for the result in the background.
-- **A live command is state, not an item.** `State.bash` holds the
-  running command, with the output of pi's `bash_execution_update`
-  deltas for the id that koa gave the command, published once for each
-  flush, and the completed commands that pi has not stored yet. The
-  live output keeps its tail under the cap of a tool result
-  (`koa-transcript.ts`), with the count of the bytes that it dropped,
-  because a running command's newest line is the one to see; pi's
-  stored output also drops its start. The page shows each command
-  where it ran. At most 16 completed commands wait for their record,
-  so the state stays bounded through a long turn; koa refuses the
-  next `!` until the turn ends. pi stores a completed command's
-  message at once while it is idle, and at `agent_settled` while it
-  streams. So every rebuild that starts while pi is idle (the
-  reconcile after a command, at `agent_settled`)
-  takes the completed commands of that moment, and one rebuild runs
-  at a time; a `!` sent during a rebuild starts after it. A rebuild
-  while pi streams keeps them, and a running command stays in every
-  case. The rebuild publishes the state without the
-  completed commands of its snapshot before it sends its reset, and
-  puts them back when the conversion fails, so no command shows
-  twice, even when the page paints between two records. The stored
-  message is the one source of the item, and a resumed session shows
-  the same item. koa adds no item of its own and matches nothing.
-- **Duration.** pi stores only the time of a command, so the duration
-  shows only while koa measured it: during the run and until the
-  rebuild.
-- **Cancel.** While a command runs, Escape and the abort route send
-  `abortBash` once; pi returns before the command ends, so the next
-  Escape aborts the turn. pi keeps the output that the command wrote
-  before the cancel.
-
-## Images
-
-pi stores images as base64 inside its messages: a user message's
-images, and a tool result's (`read` of an image, any tool's image
-blocks). The bytes never go through the feed: one screenshot is
-megabytes, a record that carried it would end the response of every
-slow page, and the page's items would hold it for the life of the
-document. So koa writes each image to its own file in its private
-directory and the records carry a reference (`ImageRef` in
-`koa-records.ts`). The user decided that every image is kept, with no cap
-and no eviction, as pi keeps them; koa's heap stays flat, and the cost
-is disk under the temporary directory, rewritten at each rebuild.
-
-- **Ids and revisions.** An image's id comes from its item, its block
-  and its ordinal, so a rebuild gives the same ids to the same images.
-  A changed partial result under the same id increments the
-  revision. The page's URL `/images/{id}` carries the epoch and the
-  revision, because WebKit keeps a decoded image for a URL whatever
-  `Cache-Control` says: without them a rebuilt id showed old pixels.
-- **The type** comes only from the sniffed header (`koa-image.ts`:
-  pi's set of image types and its exclusions, with the dimensions),
-  never from pi's claimed `mimeType`; an image that matches no header
-  is served as bytes with no type.
-- **A served file is never a document.** Every file response of koa
-  (`koa-http.ts`) carries `nosniff`, a `sandbox` CSP of its own and the
-  file's name in `Content-Disposition`, so a payload that only claims
-  an image type never runs on koa's origin. The page never uses
-  `blob:` URLs, which the server's CSP forbids.
-- **Lazy loads.** A step's images are created at the step's first
-  open, because a hidden `<img>` still loads; a user message's
-  thumbnails load at once. Each `<img>` reuses its node and carries
-  its size, so the bottom-following scroll does not jump.
-
-## Attachments
-
-A file that the user drops or pastes reaches pi as a copy of its
-bytes: the page uploads them in chunks below the bridge's body cap
-into koa's private directory, so the file exists where pi runs, and
-pi gets the copy's path. This is the one kind, for a local session,
-a remote session, a runtime and a browser alike.
-
-**No attachment names a host path.** koa reads no file that the page
-names, so no page can read a host file that the user did not drop.
-A local session does not attach the original path either: koa runs
-under the ko server's launchd job, so macOS TCC attributes its reads
-to `ko`, which has no grant for the Desktop, Downloads or Documents.
-WebKit reads a dropped file with Kido.app's grant of the user's drop,
-and the page uploads the bytes.
-
-- **Folders are not attached** (the user's decision), local or not,
-  as the terminal's upload refuses them; the files of the same drop
-  still attach, and the chip row says so.
-- **The kind** (image or file) comes from the sniffed header, never
-  from the browser's type or the extension.
-- **Limits** are one record, `ATTACHMENT_LIMITS` in `koa-records.ts`, which
-  koa and the page read; the per-file limit equals Kido's upload
-  limit. An upload that is aborted, or that stalls between chunks for
-  `KOA_UPLOAD_IDLE_MS`, is removed with its file and its share of the
-  limits.
-- **Sending.** An image goes to pi as an image of the `prompt`
-  command, in every mode; any other file as a path line after the
-  typed text, as pi's TUI pastes copied files. An image goes only as
-  an image, because pi's `read` of the path would send the same
-  pixels again. pi accepts an empty message with images.
-  The page does not resize: pi resizes to the model's limits, and a
-  resize in the page would change what the session keeps.
-- **States.** An attachment is ready, queued (in a prompt that pi
-  has not delivered) or used (in a delivered message). A used
-  attachment cannot be deleted, a take-back returns only queued ones,
-  and a late acknowledgement never moves a used one back.
-- **Chips of a sent message.** The page never guesses attachments
-  from the text. koa keeps a record of each send (`koa-queue.ts`) and
-  matches a delivered user message to it with pi's own bookkeeping:
-  pi removes a delivered text from its steering queue first, then
-  from the follow-up queue, and emits `queue_update` before the
-  message, so the text that left a queue names the mode and the text
-  of the next message. koa then strips the path lines that it
-  appended, so the item shows the typed text with its chips. pi never
-  removes an empty text (an images-only prompt) from its queue lists,
-  so koa counts the delivered empty texts of each mode and drops that
-  many from the queue view and the take-back. A rebuilt item has no
-  such record: it shows pi's text, path lines included, and its
-  thumbnails.
-
-## Quick Look and the lightbox
-
-A click on a thumbnail or a chip, Space or Enter on a focused one, and
-⇧⌘-click on the label of a `read`, `edit` or `write` step with a path,
-call `window.ko.preview(url, rect)` (design-app.md, "Quick Look from a
-page"). The user chose ⇧⌘-click to match the terminal's gesture for a
-kitty image; a plain click still folds, and the label shows a link's
-underline only while both keys are held. Quick Look shows any type
-that it can; the app limits only the size.
-
-The URL is always on the pane's own origin, so one mechanism serves a
-local and a remote session and the app fetches no Mac path itself.
-koa serves a step's file at `/steps/{seq}/{block}/file`: the page
-names a step, never a path, because a route that took a path would
-let the page read any file of pi's host, and in browser mode that
-route sits on a localhost port. koa takes the path from its own record
-of the step, resolves it as pi's tools do (against the session's
-directory, `~` expanded, a leading `@` removed), and streams a regular
-file from the descriptor that it checked.
-
-In a browser, `window.ko` does not exist: an image opens in a lightbox
-inside the page, which Escape closes before it aborts anything, and a
-file opens in a new tab.
-
-## Agent and job steps
-
-The agent extension is the only writer of agent messages and job
-notices, and it ships with koa, so it writes the facts that the page
-needs
-into each message's `details` (and into the `details` of the
-`spawn_agent`, `message_agent` and `async_bash` results), typed by
-`koa/records.ts`. The transcript reads `details` only, never the
-header lines, which stay in the text for the model.
-`details` is also in the session file, so a rebuild shows the same
-lines. A custom message without these details (another extension's,
-or a session written before them) stays a plain notice.
-
-The user decided the look with the mockups `agents.html` and
-`refine.html`, then made agent messages and jobs steps of the run
-(app/design/koa/NOTES.md, "Agent messages and jobs are steps of the
-run"); the separate agent and job rows are gone:
-
-- `spawn_agent`, `message_agent` and every inbound agent message are
-  steps of the run they arrive in ("Runs are the page's" under "The
-  transcript"). A folded step's name is the message's phrase, in the
-  prose font: `<kind> to|from @<name> <relation>` ("steer from
-  @kido-app parent"). The relation is one word, `subagent`, `peer`
-  or `parent`, that folds the extension's five relations; its own
-  notices have none. Then comes the first line of the text, in the
-  foreground colour where a tool shows its command, ellipsized before
-  the time. The first line is plain text with its Markdown syntax
-  removed (the first code line when the text starts with a fence). A
-  failure shows only as the error colour of the name, in the kind's
-  place ("refused to @name", "not reported from @name subagent"); the
-  page takes it from the typed details and never parses the text. An
-  open step shows the whole text as Markdown rendered as final text
-  by the reply's renderer, in the foreground colour, with no height
-  cap. A step shows no delivery status and no meta lines. A custom
-  message without agent details is not an agent step: it is a notice
-  row ("Every notice is one row" under "The transcript") of its first
-  line with the same syntax removed, and it opens to the rest as
-  Markdown when it has more lines.
-- A job is not an agent (design-subagents.md, "A job"). Each job
-  item is its own step, named "job <name>": a successful
-  `async_bash` start shows "started" and does not open; a stream
-  batch shows its line count; an end shows its outcome, muted for
-  exit 0 and in the error colour for a failure, with no end text. An
-  `async_bash` call that failed stays a failed tool step. An open
-  batch or end shows its output in a step's well (260px, scrollable)
-  with the "open" link to the job's view at its head ("The job
-  view"). The page has no live list of jobs; the sidebar shows them.
-- **The folded run's summary** names its steps in the order of their
-  first occurrence: tools and thinking as before, an agent step as
-  "to @name" or "from @name" (a report is "from"), a job step as "job
-  <name>", a notice step by its family; a repeated name gets "xN". The name of a failed step is
-  red. An agent's identity is its session id, and a job's its id, so
-  two agents of one name do not merge.
-- **Times.** Tools, thinking and outgoing agent calls are timed:
-  their line shows the call's duration, and the run's time is the
-  duration of its timed steps, which grows with the clock while one
-  runs. Inbound agent steps and job events are moments: their line
-  shows the clock time, and they add nothing to the duration. A run
-  with no timed step shows the clock time of its last step.
-- **Run lines and notice rows are one look.** None has a chevron;
-  the whole line folds it. Tool names, step names and the agent
-  phrase are prose at the row's size; only a command or path inside
-  a step is terminal text. Times are prose at .8em with tabular
-  digits. A running tool shows its name and then the working mark,
-  not its command.
-  Rows indent by `--pad` from the text edge and their times end on it;
-  an opened body, a run's steps or a step's text, indents from that
-  point. Consecutive run and notice rows sit 2pt apart; the last of
-  a group and an opened row keep 14pt.
-- **Find and copy** read a step's body from the model, as a tool's
-  details: a folded body counts, the current match opens the run and
-  the step, and a selection or a copy takes it. A step that joined a
-  run from a later item lives in the DOM of the run's owner, so find
-  resolves a match to that owner and its step.
-- **Threads.** A run has one thread: the first known thread of its
-  steps in order (a block's own or its late label, an agent or job
-  item's `thread`; a notice has none). Under a filter the runs are
-  those of the unfiltered transcript, so prose that the filter hides
-  still ends a run, and each run shows or hides whole. A run with no
-  known thread shows only unfiltered. Only assistant text shows a
-  thread, on its pill ("Threads", "The look"); a run, its steps
-  and a notice show none.
-- **`@name` goes to the agent.** An agent's name in an agent step,
-  and an `@name` in the prose of a reply or a user message, is a link
-  while the name is in koa's list of live agents. A click on an agent
-  of this process switches the view ("Views"); one of another pane
-  calls `window.ko.focus(pane)` (design-app.md, "Focus from a page"),
-  as a click on the agent's sidebar row does. The list is the state's
-  `agents` (`koa-records.ts`): the live agents of the viewed agent's
-  scope, the same set as `@` completion. koa reads it at start, at
-  each change of the tree and after each
-  `spawn_agent`, `message_agent`, `stop_agent` and `list_agents`
-  result and each displayed custom message, not on a timer, and
-  publishes the state only when the list changed. A change elsewhere
-  (another pane starts or ends an agent) shows at the next of these
-  events; a stale pane id is harmless, because the app refuses a pane
-  that is not in its layout. Prose links a name only when it renders
-  (never inside code or an existing link), so a name in an older reply
-  does not follow later changes; an agent step renders again when its
-  agent joins or leaves the list, and a name that left it is muted,
-  with no link ("ended"). In a browser, a click does nothing.
-- **An `@name` that matches no agent** gets one warning note after
-  the user's item, "@a matches no agent" ("@a, @b match no agent"),
-  when the submitted prompt has a token that is neither a name of the
-  list nor an existing path relative to the agent's cwd
-  (`unknownMentions` in `token.ts`). koa decides at submit and posts
-  the note at the user message's end, because pi adds the user item
-  after the submit returns. Nothing warns before the submit, because
-  `@path` is legal, and the prompt goes to the model unchanged.
-- `stop_agent`, `list_agents`, `read_report`, `list_async_bash` and
-  `stop_async_bash` stay tool steps: they are the caller's own
-  actions, not messages.
-
-## Reply annotations
-
-Any pi extension can mark spans of a final reply with a type and its
-data, in a custom session entry; reply-annotations.md is the contract.
-koa does not depend on a producer: the first is pi-infer-questions,
-which finds the questions of a reply, and the page renders the
-`question` type. The user decided:
-
-- **An annotation is an item of its own kind,** placed by time, not a
-  field of the assistant item. A final item never changes, and the
-  page's cursor is its last final item, so a later change of a final
-  reply would not reach a page that reconnects after it. As an item,
-  an annotation enters the window and the `/items?before` page as a
-  job notice does.
-- **The transcript checks the entry at its edge.** Live, koa gives it
-  each `entry_appended`; on a rebuild, the session manager's entries
-  (a custom entry is not a message) that are on the parent chain of
-  pi's leaf, placed by time among the messages, which keep their
-  branch order. koa reads the messages, the entries and the leaf in
-  one synchronous step, so no event falls between them.
-  The transcript resolves the reply key to the assistant item and its
-  block, and applies the contract's drop rules. The page never sees
-  an unknown type, a stale entry or a bad span. A second entry for the
-  same block is a new item; the page uses the newest.
-- **The page hides the item** and renders the reply's text block
-  again with the annotations; a reply that arrives after its
-  annotation (a window cut, an older page) reads the page's map of
-  annotations when it renders.
-- **Markers, not a second parser.** `page/annotations.ts` converts the
-  code points to UTF-16 offsets once and makes the marks: an option's
-  start and end, and a question's end. `page/markdown.ts` inserts each
-  mark into the raw source of the top-level token that owns it before
-  marked parses that token. A closing mark at a token boundary belongs
-  to the token before it, an opening mark to the token after it, so a
-  question's controls stay in its list item. marked passes the
-  private-use marker characters through as text, and a walk over the
-  text nodes of the parsed HTML replaces them with the options and
-  the controls. An option is an inline span with the button role, not
-  a `<button>`: WebKit lays out a button as an atomic inline block that
-  centres its text, so a long option in a list item would not wrap as
-  prose. The controls after a question are buttons. This is the TUI's technique on the DOM, so both
-  renderers share one rule for where a marker can fall: the
-  producer's guarantee that a boundary is never inside Markdown syntax.
-  A marker character in the reply's own text is replaced before the
-  marks go in, so a reply cannot forge a control.
-- **The labels and the click are the TUI's**, except for the blank
-  line below (pi-infer-questions'
-  `extension.ts`): `page/answers.ts` is its quote and answer rule, a
-  pure function. A click sends nothing: it sets the composer's text
-  and puts the cursor at the end, and the user edits and sends. A
-  control is selected while its answer is the answer of its
-  question's block in the composer; the composer's input refreshes
-  the selection.
-- **The answer follows its quote with no blank line.** The user
-  decided against the TUI's empty line: a block is the quote's `> `
-  lines and then the answer on the next line, and blank lines
-  separate the blocks. In CommonMark that answer is a lazy
-  continuation of the quote, so the composer and the render of a user
-  message have no lazy continuation: a quote is only its consecutive
-  `>` lines, and the line after it starts a new block. The composer
-  thus shows the answer as plain text, and the sent message shows the
-  quote and then the answer as its own paragraph. The rule is in the
-  parsers' blockquote rule, so fences, indented code and list items
-  keep their own rules. An assistant reply keeps CommonMark, and the
-  model gets the raw text.
-- **The look** is the mockup `questions.html`, chips version
-  (app/design/koa/NOTES.md, "Question controls in a reply").
-
-Without the producer in koa's pi (not installed, an unsupported
-platform, models that fail to load) there is no entry and the reply
-shows as before. A routed runtime's pi runs on the host with the
-host's extensions; only a `koa: runtime` runtime and a remote host need
-the producer where pi runs, and koa does not supply it.
-
-## Threads
-
-A thread is a named workstream of one root session. One orchestrator
-agent works on several workstreams at once; threads let the user tell
-which line of the transcript belongs to which, and filter the
-transcript to one. The user decided (2026-11-18): the agent knows the
-threads and labels its own text, a reply about several threads is
-split by section, a thread has no status, and the sidebar does not
-group by thread.
-
-**Only the root has threads.** A subagent has one task. Its extension
-installs no thread rule, tool parameter or handler, its transcript
-keeps a marker line as text, its state has no `threads`, and its view
-refuses a `thread` in a request. Each side selects this once: the
-extension at its construction, from its host's parent, and koa where
-it creates the agent's view. The wire says it in its types: `View` has
-the cases `root`, `subagent` and `job`, and only the root's `State`
-has `threads` (`koa-records.ts`).
-
-**The agent labels its own text, and the structure labels the rest.**
-No second model classifies anything. The label of a section is its
-marker in the message text, and nothing stores a label beside it, so a
-rebuild, a fork, a resume and a `/tree` change need no second store.
-
-**The marker** is a line of its own, `[thread: NAME]`. It starts a
-section that ends at the next marker or at the end of the message. A
-marker inside a code fence is text, and so is a line of the marker's
-form with an invalid name. `ThreadName` (`records.ts`) is the one
-parser of a name, and `threadSections` (`text.ts`) the one scanner of
-markers, for the extension and the transcript. The page never sees
-the syntax.
-
-**Where each label comes from:**
-
-| transcript line | its thread |
-|---|---|
-| A section of an assistant text | The marker above it |
-| A tool or thinking block | The last marker before it in the turn |
-| A spawn, a message to or from an agent, a report, a job notice, a stream batch | The `thread` in the line's `details` |
-| A user message sent with a filter active | The marker that koa put at its start |
-| Any other user message | Each thread that the reply to it names |
-| Everything else | None |
-
-A turn starts in the thread of the event that started it: the
-`details.thread` of an agent message or a job notice, or the marker of
-a user message. The reply to a user message is the assistant text from
-that message to the next event that enters the turn (an agent
-message, a job notice or another user message), so a steer takes the
-text after it and a follow-up the next turn. The user message belongs
-to every thread that this text names and is not split. A line with no
-thread is a real case: it shows only in the unfiltered transcript.
-
-The tool block of a `spawn_agent`, `message_agent` or `async_bash`
-call without a `thread` in its details is a tool block as any other:
-it takes the last marker before it.
-
-**The extension** (design-subagents.md, "The registry"). The root's
-`spawn_agent` and `async_bash` take an optional `thread`. The root
-records it in its own `koa.agent` entry or job record and writes it
-into the `details` of each line that names that agent or job; the
-child never learns it, and no marker goes into a child's task. The
-root's system prompt has its own section, "Threads", with the rule:
-every reply starts with a marker, with no exception; an existing
-thread is reused for what relates to its subject; a part about the
-session as a whole goes into the thread `general`, which is a thread
-as any other. The user decided this after real sessions: as one
-guideline bullet that said the session "can hold" threads, the rule
-gave replies with no marker, and without the reuse rule the model
-named a new thread after each subagent. Because the rule has no
-exception, a turn that settles with assistant text and no marker is
-a fault that the extension sees: it gives the model one hidden
-message that starts no turn and says so, which arrives with the next
-run. At the end of
-each assistant message, and at each accepted `thread` parameter, the
-extension appends `koa.thread` for a name that has no entry on the
-branch. The entry is an index of names in order of first use; it never
-says which section belongs to which thread. It has no `owner` check,
-because a fork copies the transcript with its markers and so keeps
-its threads; in a subagent's session a copied entry is inert. After a
-compaction the extension gives the model the names in one hidden
-custom message that starts no turn, not in the system prompt, so a
-new thread does not invalidate the prompt cache. pi delivers that
-message with the next run, so the retry of an overflow compaction
-does not see it.
-
-**The transcript** splits an assistant text block at its markers into
-blocks without marker text, each with its thread. It keeps, for each
-assistant item, the map from pi's content index and code points to
-the projected blocks, and addresses images, step files, thinking
-times and reply annotations through it, so a producer still addresses
-pi's raw content. An annotation whose span crosses a section is
-dropped. While a reply streams, a last line that can still become a
-marker is held back, and a change of the block count sends the whole
-item, not a suffix.
-
-**A late label.** An implicit user message, and an assistant message
-of only tool and thinking blocks that ends before the turn's first
-marker, are final before their thread is known, and a final item
-never changes. Their label is an item of its own kind, `threads`,
-with the target's `seq`, as a reply annotation is; the page uses the
-newest one of a target. While a reply streams, each new thread that
-it names appends an item with the grown set. A rebuild emits one item
-for each target with the final set: the same labels, not the same
-items.
-
-**The state.** The root's `threads` is derived at each publication:
-the names of the `koa.thread` entries in their order, then the names
-of the current reply that have no entry yet, in marker order, which is
-the order in which the extension appends them. So a thread's position
-never changes. Each has its last assistant section as one optional
-record, the raw first line and the time of its message; a thread that
-only a `thread` parameter named has none. The page removes the
-Markdown syntax of the line, as for an agent step.
-
-**The colour** of a thread is not stored or sent: the page maps the
-thread's position to its palette, modulo the palette's size.
-
-**The look** is the mockup `threads.html` (app/design/koa/NOTES.md,
-"Threads: the widget, the marks and the filter"): the threads
-widget, a panel of all threads, and a pill on each assistant message, or on each section of a reply
-about two threads, with `# name` and the message's time
-(app/design/koa/NOTES.md, "The reply's pill"). A reply with no thread has a pill with only the time, so
-every assistant message shows its time in one place, on the text
-edge with the user message's time. Under a filter every pill has
-only the time, because the filter names the thread. No other row shows a thread: no
-mark line, no colour edge, nothing on a run, a step or a notice (the
-user, 2026-11-20); the item keeps its thread for the filter. The user
-decided against a status dot: `# name` in the thread's colour is the
-one sign of a thread.
-
-**The widget has two modes** (app/design/koa/NOTES.md, "Two
-modes"), because the transcript is aligned left on every koa page and
-a wide pane has room at its right. When at least 30 cells are free
-right of the transcript, after the gap and the pane's edge, the
-threads stand there as a block of rows; else they are a capsule
-outside the scroll, whose names filter at once and whose "…" opens
-the panel. The page decides the mode again on each resize; nothing stores it. The
-panel's order is the page's: newest first by the time of the last
-section, a thread with no section before them; the colour stays the
-position in the state.
-
-**The filter** is the page's own state for the root's view, as fold
-state is; a page load starts without one. The event stream is not
-filtered: the page hides the live items of other threads. A pending
-implicit user message shows under every filter, with nothing above
-it: it has no label yet, nothing entered the turn after it, and the
-agent still works. When the turn settles with
-no label, the message has no thread and is hidden. `/items?before` takes `thread`, because a thread can be
-sparse: koa filters the items first and then applies the window's
-limits, returns each match whole with its `threads` and `annotations`
-items, and `more` means that an older match exists. With a filter
-active, the prompt request carries the thread and koa puts the marker
-at the start of the text that pi gets, also for a steer, a follow-up
-and a requeued prompt. A prompt that starts with a slash gets none:
-pi expands a skill or a template only at the start of the text and
-has no hook after the expansion, so that message is implicit. A
-queued prompt shows without its marker, and a take-back puts the text
-without it into the composer.
-
-## Browser mode and its origin rule
-
-`koa --browser` uses the SDK's browser target: the same program and
-page on a localhost port, opened in the user's browser. A local port
-is open to every local process and to every web page. The SDK's
-forwarder refuses a foreign or null `Origin` and a foreign `Host`
-(design-webview.md, "The SDK"). A request without `Origin` passes the
-forwarder, so koa's typed-body rule makes a form post that arrives
-without one do nothing.
-The user decided that a local process may call koa's routes, so there
-is no token. A host path is never reachable from a browser page: an
-attachment is always an upload, and a step's file comes only from
-koa's own record.
-
-In the browser, the page applies its fallback theme (the mockup's
-`:root`, after `prefers-color-scheme`); in Kido.app the `--ko-*`
-properties win, and every tone of the page is a `color-mix` of them,
-so a theme change needs no code in the page.
-
-## Measurement
-
-`koa/stress/` runs scripted workloads (`workloads.ts`) through
-the scripted pi in headless Chrome (`run.sh`) and in off-screen Kido
-windows (`make -C app koa-stress`), and prints one report
-(`report.ts`), which fails a page above its memory budget. With
-`--metrics`, koa stamps each flush and the page reports when it
-applied it (Kido's off-screen windows run no `requestAnimationFrame`)
-or framed it (Chrome), with koa's byte, reconnect and cap counters.
-The streaming workload (`run.sh stream`) measures the page's frame
-while one long turn streams over a large history (short replies
-between tool calls, then one reply of 10 000 words), and the same
-turn alone, in headless Chrome and in visible Kido windows
-(`KoaStressTests/testStreamingHistory` and `testStreaming`,
-`KOA_STRESS_VISIBLE=1`). It loads the whole history through the
-page's own Older action before it measures, so the frames lay out a
-full document. It runs twice in each engine, because the counters
-that wrap the DOM cost time: in mode `frame` the page times only its
-frame task, the gap between chained frames, each record's apply, the
-lexer per record and per changed Markdown render (with the memo's
-full-lex fallbacks), and key-to-frame latency; each flush marker
-carries an id, and the page stamps its receipt and the request and
-the start of the frame that renders it, so the report splits
-flush-to-frame into write to receipt, receipt to request, request to
-`requestAnimationFrame` and the frame itself. In mode `probe` it also counts
-geometry reads made while the layout is dirty and removals of the
-working mark's node. The report takes the timings from the first
-pass and the counts from the second. The page's counters are
-`page/metrics.ts`, which the page installs only in metrics mode; the
-shape that the page posts to `/metrics` and its check are in
-`koa-records.ts`. A stray read is the page's view of a forced layout,
-an upper bound by design: Chrome's `Performance.getMetrics` layout
-count, sampled over the same window, is the check on it, and
-WebKit has no such counter. A write in the page's frame is followed
-by that frame's layout, so a frame starts clean unless something
-wrote outside a frame since the last one (a `state` record, the
-composer, an observer); each stray read is counted under the source
-of the write that made the layout dirty. The `ResizeObserver`
-callback starts clean, because layout ran just before it, and
-`Range` rects count as reads too. Each
-record's apply carries its record type, so a long task names its
-record. A dots removal is counted by where the
-mark was before and after it: a move at a tool call, a removal while
-text streams (which restarts the bounce's animations), or the end of
-the turn. The report also counts the request→rAF waits over 100 ms
-and the DOM's size, sampled once a second (Kido counts elements,
-Chrome's `Nodes` also counts text nodes, so the two do not compare).
-The streaming budgets (`streamBudgets` in `statistics.ts`) are
-limits; the memory one is relative, workload 13's page at most
-workload 14's of the same run plus 400 MiB, because Kido's measure
-is the WebContent process's footprint, which is about 1.2 GB even
-for a short session and drops when WebKit purges its caches under
-memory pressure.
-
-The working dots keep moving in WKWebView while the page's main
-thread is stalled: `KoaStressTests/testDotsUnderStall` captures the
-window every 50 ms during a 2 s spin and saw 30 distinct crops of
-the dots, as many as without the spin. So jumpy dots come from late
-rendering updates, which the request→rAF waits measure, not from
-the animation. A capture within about 2 s of the first paint shows
-a stale window.
-
-The runs are manual, never in `make verify`. What they found shaped
-the design: the SSE feed, the memo's raw-text rule, and no limit on
-the number of webviews in Kido, because eight visible streaming panes
-keep up.
-
-## Tests
-
-The TypeScript suite runs koa with the pinned real pi of
-`koa/package.json` and the fake ko. pi's session runs in koa's
-process, so no pi can be scripted; the suite scripts the model
-instead. `koa-fake-provider.ts` is a local HTTP server that speaks
-the OpenAI chat completions stream: each test gives its replies
-(text, thinking, tool calls with arguments in pieces, HTTP errors)
-and its gates, which the test releases and which end with the
-provider. It refuses an unexpected method, path, key, model or a
-request after the script ends, and records it, so a test cannot pass
-on a request that it did not expect. A private agent directory names
-it in `models.json` with a literal key, so pi asks for no
-credentials. `realFixture` in `koa-program-fixture.ts` starts koa
-with a private `HOME` and agent directory; facts that a model cannot
-make come from real pieces: a session file written with pi's
-`SessionManager` for history, a small test extension for dialogs,
-statuses, startup UI and extension errors, and pi's own tools for
-tool results. The suite covers the feed, the delivery, the routes,
-the attachments, the reload and the restart, the session switch, the
-project trust, the crash handler, the status bytes, the transcript
-module, completion, the queue's matching, the image sniffer, and the page's DOM rules over a
-fake document with the page's types stripped (`koa-dom.test.ts`);
-its reveal tests drive the frame loop, the observer and the clock by
-hand over a model of line rects. The
-Markdown memo is a pure module, tested under Node against a full
-render of every prefix, a fresh render after each step of every
-fixture streamed in random chunks with appends, replacements and
-resets, its annotation marks over each kind of block
-and the reveal's choice of a unit bottom over unit lists
-(`koa-page.test.ts`).
-
-Kido.app's `KoaWebviewTests` snapshot each state of the mockups in
-light and dark, windowed and narrow, and check the composer's keys,
-focus and popup, and the question controls' placement and clicks, in
-a real WebKit. They test the page, not the host: the page runs
-against `testdata/replay.ts`, not koa, so a host change moves no
-page snapshot. A snapshot moves only when the page's code or the
-page-record format changes. The replay server is a test program, not
-a mode of koa, so the product has no test path. It serves the page
-that `assemblePage` builds from the built `build/koa/share/koa/koa/` (the one
-source of the page and its `koa-instance` meta for koa and the
-replay), runs in a pane through the webview SDK as koa does, and
-loads no pi.
-
-A scenario is a typed script: the `PageRecord`s that the feed opens
-with, then a list of steps. A step either pushes records when the
-test posts `/replay/next`, or answers one page request with a canned
-reply of the page's own route type (`Routes` in `page/http.ts`) and
-pushes the records around it. A reply can be held until the test
-posts `/replay/release` with its name, so the page shows its waiting
-state. So a change of the record format or of a route's shape
-fails `tsc` in the scenarios, never silently. A request that is not
-the next step gets 409 and counts as a mismatch; every page test
-asserts at its end, through `/replay/status`, that the script ran to
-its end with no mismatch and no held reply. The attachments, the
-step files and the images do not fit a script, so the replay serves
-them with koa's own modules (`attachments()`, `stepFile`,
-`serveFile`) and koa's POST content-type rule. The scenarios were
-recorded once from the real chain; the recorder is gone, and a new
-state gets a step written by hand from the types, as
-`koa-dom.test.ts` writes its records. A frame that shows a path of
-the test's directory needs a fixed directory name, which the Swift
-test sets. The `reveal` scenario injects its own clock and pauses the
-grow at a fixed point, so a mid-reveal frame is deterministic.
-
-`KoaHostTests` keeps four tests on the real chain (koa, the pinned
-pi, the fake provider): the startup and the interrupt, the editor
-float, the feed's held tail, and one lifecycle from a prompt through
-the real feed to `/quit` and the pane back at the terminal. Every
-other host fact that the page tests checked on the way has its test
-in the TypeScript suite.
+# koa: design and development
+
+koa is Kido's pi harness. It runs pi sessions through pi's SDK in
+one Node process and shows one HTML page in a pane or a browser.
+This file owns the design of koa, its page, its agent extension, and
+its development and release procedures.
+
+The boundaries have their own contracts:
+
+- [protocol.md](protocol.md): ko's routes, pane identity and webview
+  transport. koa's page routes are not ko routes.
+- [design-webview.md](design-webview.md): ko's webview pane mode and
+  reverse transport.
+- [design-app.md](design-app.md#webview-panes): the native webview,
+  sandbox, keys, theme and preview bridge.
+- [design-runtimes.md](design-runtimes.md): runtime placement,
+  identity, path mapping and exec sessions.
+- [design-program-status.md](design-program-status.md): the server's
+  classification and reduction of program status.
+- [reply-annotations.md](reply-annotations.md): the contract between
+  annotation producers and consumers.
+
+`app/design/koa/NOTES.md` indexes the UI references. Use those
+references for visual decisions; use the source for constants,
+record shapes, command catalogs and tool schemas.
+
+## Overview and process model
+
+### Ownership
+
+`koa/koa.ts` connects the HTTP server, the agent tree and the page.
+`koa/koa-agents.ts` owns the tree. Each agent has a pi
+`AgentSessionRuntime`, its own services and extension instance, and
+one view from `koa/koa-view.ts`. The process shares one
+`ModelRuntime`, so credentials and model discovery have one owner.
+A subagent is not a pane or a child process. A background command is
+a job, not an agent. A top-level spawn is a separate koa pane.
+
+The host mediates inside the process. ko mediates between panes.
+Neither the extension nor the host reads ko's state directory or
+another live agent's private state. The extension uses `ko api`,
+with types from `webview/ko-api.d.ts`; the webview SDK uses
+`ko webview`. ko does not read pi session files.
+
+This shared process gives one extension-loading path and one event
+path. The accepted cost is a shared failure domain: an uncaught
+exception can end every agent in the pane. koa has no terminal UI.
+A client without webviews gets a terminal notice while koa continues
+to serve. Outside a ko pane, use browser mode. A plain `pi` is not
+this harness; its classification belongs to the status model.
+
+### Startup and the SDK boundary
+
+`koa/bin/koa` checks Node and pi before it starts the program.
+The host needs Node 24 or later and an installed pi. The client that
+shows the page needs neither. `koa/koa-child.ts` finds pi's package
+from its executable, including Homebrew's wrapper layout.
+`koa/koa-sdk.ts` loads that package, not a second installed copy.
+Its resolve hook applies only to imports from koa's own directory,
+so a user's extension keeps its own module resolution.
+
+The installed program has no `node_modules`. It uses the selected
+pi's SDK and supporting modules; the page's dependencies are bundled
+at build time. Node's compile cache is enabled before the SDK loads.
+The SDK boundary also imports pi modules that its public index does
+not export. A pi update must check these imports and the copied shell
+and session-directory rules, not only TypeScript types.
+
+`koa/koa-args.ts` is the accepted option table. koa parses strictly,
+then gives pi the reconstructed arguments. Options that bypass an
+interactive session are not accepted. Values that start with `-`
+use `--option=value`. File expansion through a positional `@file`
+is refused; the page's attachments supply files. Positional messages
+run once after startup, in order, with each turn settled before the
+next message. A page connection never starts them again.
+
+The root's session manager is made before its services. At command-line
+startup the launch directory is authoritative, including when opening
+a saved root session. Resource paths resolve from that directory.
+A later page session switch uses pi's runtime and the selected
+session's directory. koa does not change the process working directory.
+A child's services use the child's directory and resources; the root's
+command-line extension and tool options are not inherited.
+
+The host adds pi's built-in extensions as well as the hidden inline
+`agentExtension(host)` factory. The SDK alone does not add the
+built-ins that pi's CLI adds. Project trust uses pi's RPC trust
+context, not the presence of a page. After trust resolution, the
+session gets koa's UI context.
+
+### Binding and readiness
+
+The HTTP server and the view exist before extensions bind. The host
+sets the new session as the owner, resets its view, subscribes to its
+events, and then binds extensions. A `session_start` handler can
+start a turn or ask a dialog; both must reach the page. The runtime's
+rebind hook is the only binding path. A second bind would emit a
+second `session_start`.
+
+`uiContext` in `koa/koa-agents.ts` maps dialogs, notices, statuses
+and editor text to the page. Terminal-only UI methods do not create
+terminal UI. Custom components reject, and theme switching reports
+that it is unsupported. The session binds in RPC mode. Loader and
+extension-handler errors become notices.
+
+Each page route declares its access and scope in `koa/koa.ts`.
+Session actions wait for readiness. Startup dialogs can be answered
+before readiness, and completion and uploads have their own access
+rules. Do not replace these declarations with a general ready check:
+a startup handler can wait for a page answer.
+
+The host receives whole pi message events. It does not use the RPC
+stream's deltas. pi owns argument parsing; koa treats pi's messages
+as read-only and converts the newest message at a feed flush.
+
+### Session changes
+
+The page's session picker and new-session action use pi's runtime.
+An extension can cancel a switch. A committed root replacement ends
+its children and resets session-owned state before the new
+extensions bind. Fire-and-forget UI updates during the switch are
+buffered and replayed in order. A cancelled switch keeps the session.
+A failed switch that has invalidated the old session leaves a failed
+view; it never reuses that session object.
+
+The page asks before it switches away from a running turn or user
+shell command. The picker lists top-level sessions only and searches
+names and first messages. Subagent files are outside pi's resume
+search tree. `koa/koa-session-dir.ts` supplies the directory rule to
+both pickers.
+
+`koa --resume` has a separate terminal picker before the webview
+starts. `koa/koa-resume.ts` runs as a pi extension in a child process
+that owns the terminal. `koa/koa-child.ts` bounds its readiness and
+exit, validates its reply, forwards signals and reports failures with
+pi's version. Cancellation exits without opening a page. This picker
+is not a second harness.
+
+### Reload, restart and failure
+
+`/reload` first reloads each live pi session, root first. The pane's
+inbox stays open but holds delivery. The tree, jobs, status records
+and event subscriptions survive replacement of the extension
+instances. koa refreshes each view and replays buffered UI updates.
+A reload requires every agent to be ready and idle, with no pending
+user queue, dialog, user shell command or external editor.
+
+After that reload, `koa/koa-identity.ts` compares the installed
+program, page and webview SDK with their startup content hash. A failed hash
+read does not trigger a restart. If files changed, koa restarts only
+with a saved root session, no running jobs, no child that owes a
+report, and no new busy state. Services also block this restart.
+Otherwise a notice explains the deferral, and a later reload can try
+again. Node's module cache makes a process replacement necessary for
+a change to koa's own extension factory.
+
+`/restart` bypasses the identity, idle and deferral checks. It ends
+running work and replaces koa on the root session file when one
+exists, or on the original startup arguments otherwise. Both commands
+are root-view commands. They are not an alternative HTTP access path
+for a session that is unavailable.
+
+A process replacement answers the request first, shuts down, drains
+stdout and stderr, then uses `process.execve`. The SDK closes without
+leaving webview mode. The pane remains while the app shows its
+not-serving state, and the new serve stream loads a new document.
+The new process starts only the root. Saved children can resume on a
+message. Composer attachments and page-local scroll state do not
+survive. Browser mode opens a new port and tab.
+
+A failed session start keeps the transcript and offers Start again.
+The root retries from its restart arguments; a child retries from its
+spawn plan. An uncaught exception writes to stderr, tries to set the
+pane's close policy to keep, and exits. Reported provider or extension
+errors do not take that crash path.
+
+Shutdown cancels dialogs and disposes runtimes deepest first before
+other teardown. The host-disposal wait is bounded so a stuck extension
+cannot keep koa alive. Each resource registers cleanup when created.
+The reply to a page quit is allowed to finish before shutdown.
+Signals to koa's own helper groups go through `signalChild` in
+`koa/koa-child.ts`; job signals have their separate owner below.
+Temporary image and upload stores are removed on normal shutdown.
+An uncatchable termination can leave them for host temporary-file
+cleanup.
+
+## Page and transport
+
+### The webview SDK
+
+`webview/index.ts` defines `@kido/webview`. It has no package
+runtime dependencies and is shipped with ko and with koa. It is not
+published to npm. A page program gives `webview(server)` an ordinary
+`node:http` server, not a special handler. The SDK owns listening and
+closing. It listens on a private Unix socket before it starts the
+bridge, so the app cannot load a document before its server is ready.
+HTTP stacks and WebSocket upgrades can use this same server.
+
+For the pane target, ko determines pane identity. The SDK does not
+infer it from environment variables. A missing ko executable or the
+bridge's no-identity exit returns no view. Support reports come from
+the bridge, and an unexpected bridge exit starts a reconnect. The
+program decides when to show. koa shows on support and otherwise
+prints a notice; it does not stop serving.
+
+Show and hide calls run in order. Pane show needs a TTY on stdout,
+because `ko webview enter` writes the escape there. The SDK's shown
+state records its own last action, not the app's current display.
+Close cancels listeners and queued work and removes the private
+socket directory. Close without leave supports process replacement.
+The deadlines and child escalation are defined in `webview/index.ts`.
+
+The browser target forwards a loopback listener to that same socket
+and needs no ko. It validates Host and Origin on each request and
+WebSocket upgrade, not only at connection creation. A foreign Host
+is refused, as is a foreign or null Origin. An absent Origin is
+allowed: local processes may call the routes. Host-owned request
+headers are removed before forwarding. This is not authentication
+against a local process.
+
+Browser show opens a URL with an absolute path. Repeating the current
+path does nothing; hide cannot close a browser tab. Close allows
+responses in progress to finish within its bound before it destroys
+remaining connections. Browser mode supplies neither Kido's sandbox
+nor its page bridge.
+
+### One document, one instance
+
+`koa/koa-assemble.ts` combines HTML, CSS and JavaScript into one
+response. Remote page loads otherwise pay a round trip for each
+asset. koa assembles the document at startup and serves that copy for
+its lifetime. It also reads the shell-completion script at startup.
+An install must not pair a running program with new page code.
+The development reload option is described below.
+
+The document carries koa's instance identity. Each event stream open
+sends it back. A different identity gets a reload record rather than
+new state for an old page. This also covers hidden pages and browser
+back/forward restoration. It is a reload boundary, not support for
+old record formats.
+
+### Requests and delivery
+
+koa uses finite HTTP requests and an `EventSource` stream, not a
+WebSocket. `koa/page/http.ts` defines the page's route types;
+`koa/koa.ts`, `koa/koa-attach.ts` and `koa/koa-transcript.ts` own the
+handlers. The records are in `koa/koa-records.ts`. Page records do
+not import pi types: pi's declarations would introduce Node globals
+into the DOM-only type check. Compile-time checks at the host boundary
+compare the shared pi value sets and statistics.
+
+POST bodies must have the required non-simple content type. This
+rejects cross-origin form submissions even if a browser omits Origin.
+Bodies are strings or bytes. WebKit does not give the scheme handler
+a Blob or FormData body. The app's tests pin that external constraint.
+The bridge requests identity encoding; compressed responses are not
+supported by the native scheme path.
+
+Use EventSource for an open-ended response. WebKit bug 322545 can
+hold bytes received while a fetch-body reader is busy until another
+chunk or EOF. A quiet stream can therefore hide its tail. EventSource
+uses a different loader. `WebviewPaneTests` pins the fault; finite
+fetch responses are not affected. The transport must not work around
+it with invented keepalive data in a model answer.
+
+A request that acts on a session carries its session identity. koa
+checks it after reading the body and again at asynchronous ownership
+boundaries. A switch must not send an old prompt to the new session.
+Uploads belong to the pane's shared attachment store; sending a prompt
+is the session gate for them.
+
+### Views
+
+Each agent has a feed. The pane selects one agent or job view.
+`switchView` in `koa/koa.ts` is the selection owner. Sidebar record
+actions, page links and the view bar use it. A stop of the viewed
+subtree selects the nearest surviving ancestor. A switch publishes
+state before transcript data, since links and image requests need the
+new identity. It cancels the external editor but does not rebuild an
+agent's feed or interrupt its work.
+
+The composer, abort, queue, dialogs, pickers, user shell commands and
+session-local commands act on the viewed agent. Process and root
+session commands remain root-only. A job view refuses agent actions;
+Escape does not abort the job owner's turn.
+
+The page keeps drafts and scroll positions by view, with session
+identity for a saved scroll position. A switch cancels uploads and
+pending completion/history requests and closes transient UI. Returning
+to a reader position loads older content until its anchor is present;
+a missing anchor opens at the end. A page load clears this local
+memory. Selection is not persistent session state.
+
+A client with its own navigation can name a view on each request.
+Named requests do not change the pane's selection. Only the selection
+change route does that. Selected event streams move on a switch;
+named streams stay with their feeds. A feed with subscribers keeps
+its epoch. A stopped agent sends named subscribers a gone-view record
+with the surviving parent, so clients can navigate back.
+`ViewAddress` in `koa/koa-feed.ts` defines this distinction.
+
+The external draft editor has one owner: the selected agent. A named
+request for another agent cannot open it. A named job clear does not
+move the pane's selection. Agent feeds live with their agents; job
+feeds live while selected or subscribed, and a new job feed gets a
+new epoch.
+
+### Transcript model
+
+`koa/koa-transcript.ts` projects the active session branch, not only
+the model's current context. A rebuild walks the branch and uses pi's
+entry-to-message conversion. Compaction keeps earlier turns visible
+and adds a summary at its branch position. Other branches are not
+shown. Live and rebuilt messages use the same conversion.
+
+Tool results belong to their call blocks. Partial messages are held
+until a flush; only the newest is converted. An assistant item becomes
+final when its message has ended and every call has a result or will
+not run. Tool and thinking times come from live events; replay cannot
+invent thinking durations that pi did not save.
+
+The module caps large arguments, results and agent text and reports
+truncation. It keeps the session's projected history in memory; the
+wire windows and the mounted DOM, not the whole session, are bounded.
+Image bytes are stored separately. Constants and the item vocabulary
+belong to the source, not a second table here.
+
+Notifications and command outcomes that pi does not store remain
+koa-owned items. Rebuilds of the same session keep them; another
+session drops them. A completed compaction replaces its running
+outcome at the same position with the saved summary. It does not
+rebuild the earlier transcript, so scroll anchors remain valid.
+
+Each rebuild makes a new epoch. Within an epoch, every published
+change increments an item's revision. A patch states the revision it
+needs. History snapshots flush first and contain published state only.
+The page ignores an older patch, applies a matching patch, and resets
+on a revision gap. It holds patches for missing items while a history
+request is pending. A reset invalidates that request even when an old
+answer later arrives.
+
+A reconnect sends the epoch and the last final item, not
+Last-Event-ID. Patches change unfinished items, so an event id would
+be the wrong cursor. A current cursor gets the missing items; another
+epoch gets a capped reset window. Older history uses the same window
+limits. A slow page whose output queue exceeds the feed cap is
+disconnected and can catch up; it does not block other pages.
+
+An exception while applying a record is different from a transport
+failure. The page closes the feed and asks for a reload. Automatic
+reconnect would apply the same bad record over partly changed state.
+Transport loss and revision gaps have their explicit recovery paths.
+
+### Runs, Markdown and rendering
+
+A run is page presentation, not a feed record. It groups consecutive
+thinking, tool, agent and job steps between visible prose or user
+messages. A notice joins an existing run but does not open one.
+Whitespace-only text and hidden metadata do not split a run. A gap of
+unloaded history does. `koa/page/extent.ts` assigns each run one owner
+for rendering, positioning, unread counts and find.
+
+The grouping is independent of turn boundaries. A report received
+while idle can join the last run. Thread filtering does not regroup
+runs: prose hidden by a filter still separates them. Fold state is
+page-local. `koa/page/steps.ts` supplies labels and detail text to
+both rendering and find; the page never parses model-facing message
+headers to recover agent or job facts.
+
+`koa/page/markdown.ts` memoizes top-level Markdown blocks. An append
+re-lexes the affected tail with enough preceding context for a token
+to absorb another token. Invalid boundaries or changed reference
+links cause a full lex. Unchanged blocks retain their nodes; remend
+repairs only the unfinished tail. Keep current source separate from
+cached blocks so slices do not retain old copies of a growing reply.
+
+Model HTML is escaped. Only permitted absolute links become links.
+A parsed detached document becomes DOM nodes; model text is not
+trusted HTML. User messages use the same renderer with the explicit
+quote rule used by question answers. Thinking renders as Markdown
+only when opened. A closed thinking step does no Markdown work.
+
+The reveal is presentation only. Records update the model at once;
+new unfinished assistant text becomes visible by complete blocks and
+whole line units. History and final text render whole. Paragraph line
+boxes, list items, table rows and fence lines determine the clip.
+A width change cannot leave a clip through a line. Content clipped
+to zero occupies no space. Long fences fold independently of the
+stream. `koa/page/reveal.ts` and the reveal settings in
+`koa/page/page.ts` define the units and limits.
+
+Record application schedules a frame rather than rebuilding DOM for
+every token. The frame reads needed geometry before its writes and
+renders each changed item once. ResizeObserver supplies measurements
+for later work. Hidden pages use a timer because WebKit pauses their
+animation frames. A visibility change transfers pending work between
+these mechanisms; pagehide cancels it.
+
+The working mark belongs to the turn, not a Markdown block. It moves
+between its own row and a running step without being rebuilt for each
+token. Run rows are patched in place. Keeping the node attached lets
+WebKit's compositor animate it while the main thread is busy. The
+bare row's height is not removed mid-turn merely because a tool
+starts. Reduced motion makes the dots static and disables grow and
+scroll travel; it does not disable chunking or fence folds.
+
+### Windowing, scrolling, find and copy
+
+The page retains loaded items in its model but mounts only rows near
+the viewport, the live tail, and rows needed by a drag selection.
+Runs that span items mount as a unit. A position table retains measured
+extents after rows unmount and estimates unseen extents. A width or
+line-height change invalidates measurements. Padding and gap boxes
+stand for absent rows. Mount work is time-bounded per frame.
+
+`koa/page/scroll.ts` is the one scroll owner for transcripts and job
+logs. It is a pure state machine. DOM code supplies events and
+measurements and applies its decisions. Browser scroll anchoring is
+disabled to avoid a second owner.
+
+Following keeps the bottom exact after layout while the pane has
+focus. Reader input establishes an item anchor. Layout changes above
+that anchor preserve its offset and any intervening reader movement.
+A scrollbar jump into unmounted space uses the position table to
+mount the destination. A fold toggle holds its header at the same
+screen position and ends scroll travel.
+
+The follow slide is a transform of the transcript, not an animated
+scroll. It smooths growth without competing with bottom correction.
+Instant causes, such as a reset, restore or resize, only update its
+baseline. A clipping wrapper prevents the transform from changing
+the scrollable extent and feeding back into the next measurement.
+
+A hidden or unfocused following page becomes a reader when new
+content or layout moves the bottom. Focus alone never resumes
+following. The user's send and Latest do; a reset opens a following
+view at the end even in the background. New-content counts use
+visible assistant prose and runs, not patches, metadata or each step
+that joins a run. `koa/page/extent.ts` and the scroll reducer share
+that unit of content.
+
+Native find cannot search unmounted DOM. Under Kido the page's find
+hook searches its model, loads older history, opens the required folds,
+mounts the match and places the selection for WebKit to highlight it.
+`koa/page/find.ts` uses displayed plain text, including folded details,
+not raw Markdown syntax. A changed query, view or item cancels stale
+work before it moves the selection.
+
+Select All copy uses the model when the selection covers the whole
+transcript. It exports all loaded items without mounting every row.
+Other selections use WebKit's copy. A quote-selection action changes
+the composer but sends nothing. In a job view, Kido's prompt palette
+receives the selection and preselects the job's owner. The native
+bridge contract stays in [design-app.md](design-app.md#webview-panes).
+
+### Composer, commands and queue
+
+`koa/page/composer.ts` owns the CodeMirror editor. Its keymap owns
+Enter variants, including during IME composition: committing a
+candidate must not send a prompt. Prompt Return sends; Shift-Return
+inserts a Markdown-aware newline; follow-up input queues while work
+runs. The source defines the complete keymap. Kido's Command keys
+belong to the app.
+
+Prompt history comes from the session transcript, including user
+shell commands, when browsing begins. It is not a second saved
+history. Completion and IME keep their arrow keys. Editing leaves
+history browsing; moving past its newest entry restores the draft.
+
+The composer takes focus only when the document has focus and no
+page control owns it. Printable keys outside a field route there.
+The border indicates where typing goes, not simply which DOM element
+has focus. The composer and its dock determine transcript bottom
+padding; queue and attachment growth must not cover the last item.
+The foot drops information by available field width, not window
+width. Hidden picker cells remain available through commands.
+
+`koa/koa-commands.ts` intercepts pi's built-ins before prompt
+submission. A known but unsupported built-in is refused, never sent
+to the model. Built-ins win over same-named extension commands and
+templates. The catalog is the source of the supported set and its
+completion order. Built-ins do not consume draft attachments.
+Clipboard export uses OSC 52 on koa's stdout, subject to the client's
+clipboard policy; a browser outside a terminal pane has no native
+clipboard guarantee from that path.
+
+A prompt sent while working uses pi's prompt method with streaming
+behavior. This still lets extension commands run. Escape takes back
+queued user text before aborting, so queued work cannot start after
+the abort. `koa/koa-agents.ts` patches pi's clearQueue once to retain
+custom agent messages that pi would otherwise discard with user text.
+Remove the patch only when pi supplies that guarantee.
+
+A single-entry removal must clear and resend pi's queue because pi
+has no single-entry removal API. koa verifies the displayed entry,
+serializes removals, take-backs and sends, and returns unsent entries
+to the composer after a failed resend. The accepted race is that pi
+can consume an entry or end a turn between clear and resend.
+`koa/koa-queue.ts` owns attachment matching, including images-only
+messages and pi's queue-update-before-message ordering.
+
+A leading `!` runs a user shell command, not a model prompt or a
+background job. The double form excludes it from model context.
+`runBash` in `koa/koa-agents.ts` emits user_bash first, so routed
+operations can handle it without a host fallback. Only one such
+command runs at a time; it has no product deadline. Escape cancels
+it before aborting the agent turn. Attachments are refused.
+
+Live command output is view state. The saved pi bash message becomes
+the transcript item. Completed commands can wait for pi to record
+them at turn settlement; reconciliation removes their temporary
+state before rebuilding, and restores it on failure. This prevents
+duplicate rows. Live output retains a bounded tail, not its start.
+
+### Completion and editors
+
+`koa/koa-complete.ts` completes supported commands and agent/file
+mentions. `koa/token.ts` is shared with the page. The host supplies
+match positions and insertion text; the page does not duplicate the
+matching rules. File queries follow `--` in fd's arguments and have
+cancellation, output bounds and deadlines. Prompt completion is not
+plain-path or forced Tab completion. Code spans and fences do not
+complete.
+
+In user shell mode, only Tab completes. The host asks the current
+extension for `CompletionContext`, because only that extension knows
+whether its runtime is ready or refused. Unavailable never means
+host. `koa/koa-shell.ts` runs `koa/koa-shell.sh` in that context,
+without adding a command to the transcript. The script uses the
+execution environment's bash-completion, not the host's when routed.
+It parses input as data and refuses constructs that could require
+execution. It converts the returned byte span to UTF-16 offsets once
+at the page boundary. Typing, selection and session changes cancel
+pending feedback; a late reply cannot restore it.
+
+Control-G opens a private draft through `koa/koa-editor.ts` and
+`koa/koa-float.ts`. The editor is a child float of the koa pane, with
+a terminal and the login environment. Its command follows pi's
+editor setting order. The draft stays visible but locked while the
+editor opens or runs. A repeated action focuses the same float.
+A successful changed result replaces text only in the session that
+opened it; it never sends. Failure, removal or loss of the observation
+link keeps the draft. The float uses on-exit retention because koa
+must observe its death before removing it. An inside-runtime koa
+cannot open this host draft editor.
+
+Inline code paths use `koa/path-token.ts`. Each span must contain a
+complete path, relative to the session directory or absolute, with
+an optional line location. The server parses it again before acting.
+A click opens a separate child float on the real file; it reads no
+draft back. Routed files open an editor in a runtime pane after a
+runtime path check. Each click can open another editor; there is no
+unsaved-change check. Path floats use the default exit policy, with
+an error wrapper that keeps an editor's failed exit readable.
+Browser mode and inside-runtime koa do not offer path-editor links.
+
+### Images, attachments and previews
+
+`koa/koa-image.ts` recognizes image bytes; a claimed MIME type is not
+trusted. Transcript images go to private files and the feed carries
+references, not base64. All session images are retained without an
+eviction budget; the cost is temporary disk. URLs include epoch and
+image revision because WebKit can retain decoded pixels for a URL
+despite cache headers. Closed tool steps do not create image elements
+until opened.
+
+`koa/koa-attach.ts` receives copied bytes in bounded chunks. The page
+cannot ask it to attach an arbitrary host path. This works for local,
+remote and browser pages and avoids requiring ko to have the app's
+macOS file-access grant. Folders are refused without discarding files
+from the same drop. Image attachments go to pi as images only; other
+files become path lines. pi, not the page, resizes images for a model.
+
+`ATTACHMENT_LIMITS` in `koa/koa-records.ts` is shared by both sides.
+Aborted or idle uploads release their files and quota. Used files
+cannot be deleted or moved back to queued by a late acknowledgement.
+Take-back restores queued files. Live sends keep typed text and chips
+separate; a rebuild without that send record shows pi's saved path
+lines and thumbnails.
+
+`koa/koa-http.ts` serves only checked regular files within its size
+bound, with nosniff, a restrictive file CSP and a disposition name.
+The page cannot turn a claimed image into a document on koa's origin.
+Step previews name a transcript step, never a free-form path. The
+host resolves the path from its own item. This lookup is host-side;
+it is not a general runtime file proxy. A routed path must be visible
+on the host for that preview to work.
+
+Kido previews use the native same-origin bridge. In a browser, images
+use the page lightbox and other files open in a tab. Preview and
+path-editor actions are distinct: the latter can create a runtime
+editor; the former reads the file available to koa.
+
+### Job views
+
+`koa/koa-job-view.ts` and `koa/koa-job-log.ts` stream raw log bytes,
+not transcript items. The initial tail and subsequent chunks have
+absolute file offsets; earlier reads walk the file backward. The
+writer flushes before a file read. Reconnect catches up from the file
+and tail before sending the ending state, so an end cannot precede
+its last output. A different epoch resets the view.
+
+A job can be found in its owner's live registry or in transcript job
+facts. The page supplies an id, not a log path. A cleared registry
+record can still have a read-only log view; a missing log reports that
+it is gone. Stop uses the job's stop path and keeps the view. Clear
+removes the record and, for a selected view, returns to its owner.
+
+`koa/page/job-output.ts` decodes incrementally, keeps supported SGR
+styles and strips other controls. Carriage returns replace a progress
+line. Earlier ranges drop an incomplete first line and start with
+default style. Text nodes, not log HTML, reach the page. Job rows use
+byte offsets as scroll anchors under the same scroll owner as the
+transcript.
+
+### Reply annotations and threads
+
+Annotations arrive as custom session entries. The transcript validates
+them against the active branch and projected reply, and drops invalid
+or stale spans. Annotations are separate final items: changing a
+final reply in place would be invisible to a reconnect cursor that
+had passed it. The page uses the newest annotation for a reply block.
+The producer contract remains in
+[reply-annotations.md](reply-annotations.md).
+
+`koa/page/annotations.ts` converts code-point offsets to UTF-16 once.
+The Markdown renderer inserts private markers before parsing and
+replaces them in text nodes afterward. Producer boundaries must not
+fall inside Markdown syntax. User-provided marker characters cannot
+forge controls. Question controls edit the composer; they do not send.
+`koa/page/answers.ts` owns quote/answer text. An answer follows its
+explicit quote lines without a blank line; user rendering therefore
+does not apply CommonMark lazy quote continuation. Assistant Markdown
+keeps its normal rule. koa supplies no annotation-producing model.
+
+Threads belong only to the root. `koa/text.ts` scans markers and
+`koa/records.ts` validates names. The agent labels its own text; no
+second model classifies it. Tool and thinking blocks follow the last
+label in the turn. Agent and job details carry the root's assignment.
+Children do not receive that label as a task marker.
+
+The root's prompt requires a marker and reuse of an existing thread
+for related work. Its branch stores a name index, not a second copy
+of each text label. Compaction sends the names in a hidden message
+for the next run rather than changing the system prompt cache.
+A missing marker produces a hidden correction for the next turn.
+
+The transcript projects sections without marker syntax and keeps the
+mapping back to pi's content indices. Images, tools and annotations
+use that mapping. An annotation that crosses sections is dropped.
+A partial last line that could become a marker is held until resolved.
+A label learned after an item became final is a separate metadata
+item, for the same cursor reason as annotations.
+
+The page derives thread colors from order and keeps filtering local.
+The live feed is not filtered. Older-history reads filter before
+window limits, so sparse threads can load useful history. A filtered
+prompt gets a marker at submission, except a slash command: pi needs
+the slash at the start to expand a template or skill. Take-back hides
+the inserted marker. Runs remain whole under filtering.
+
+## Agent extension, subagents and jobs
+
+### Extension boundary and identity
+
+`koa/koa-agent.ts` is an inline factory of koa sessions only. It has
+no terminal widgets, renderers, input handlers or autocomplete
+providers. It takes pane identity, ko, browser mode and runtime facts
+from `AgentHost` in `koa/koa-agents.ts`, not from pi's UI mode.
+Shared data and helpers live in the modules that both sides use;
+program modules are reached through the host interface, not imported
+into the extension for side effects.
+
+The extension has no state directory of its own and does not read
+ko's socket or state directory. It imports shared data modules and
+host types, not koa's program modules. Its settings use the `KO_*`
+prefix; host launch controls are separate.
+
+The host owns everything that must outlive one factory invocation:
+the tree, inbox, record writer and each agent's jobs. The extension
+owns tools and pi event handlers. Its ko calls are asynchronous,
+except synchronous process-exit cleanup. A blocking call would stop
+all agents and delay inbox acknowledgements.
+
+The root publishes session identity and name as pane variables and
+conditionally removes them only while the session still owns them.
+It removes the optional activity variable but does not write activity.
+The host writes root status and title from the root session, regardless
+of the selected view. Subagents use status records, not pane variables.
+Discovery trusts ko's classified koa-agent status, not a stale variable
+on a shell. Resume liveness also checks a live pane's held session id,
+since a starting root can be absent from status.
+
+The ko skill is discovered only where the extension's host tools can
+use it. A routed session does not advertise the host skill path.
+The skill adds guidance, not a new tool or server route.
+
+### Addressing and messages
+
+An agent address is a pane plus a pi session identity. The local tree
+supplies in-process relations. ko supplies the sender pane and pane
+relation for a cross-pane message. The harness carries an in-process
+sender or target in message data; the server does not interpret it.
+`koa/koa-inbox.ts` validates and dispatches the pane's one stream.
+
+Scope consists of own children, siblings, ancestors and their siblings,
+plus the root agents of peer panes in the ko session. Other panes'
+subagents do not list by name. An explicit pane/session address from
+a received message can reach one. Report reads are restricted to own
+children. `koa/agents.ts` supplies the shared discovery forms used
+by tools and page completion.
+
+Address resolution prefers an exact case-insensitive name, then an
+exact identity, then a unique sufficiently long session prefix. Each
+step prefers live agents and reports ambiguity. A full mention uses
+its parenthesized identity so a reused name cannot capture it. Name
+validation and prefix limits are in the extension and shared module.
+Registered child names are addresses; changing a session title does
+not rename its registration.
+
+A normal message queues for the next turn; a steer can interleave
+with current work. Interrupt-and-steer holds its text, aborts, then
+delivers at settlement. pi's abort call returns before the run ends,
+so sending the new work immediately could lose it in an aborted queue.
+An idle receiver starts a turn. Notices and job batches steer. Only
+user prompts enter as the user's own words; agent messages identify
+their sender and relation.
+
+In-process delivery is a host call with no retry transport. A
+cross-pane send keeps one id for one intent across retries. The inbox
+acknowledges only after handing the message to its target, and retains
+a bounded ring of accepted ids across stream reconnects. A repeated
+id is acknowledged without a second delivery. Invalid or unavailable
+targets are refused. Reload holds messages without closing the stream.
+The extension never pastes model text into another pane.
+
+The host dispatches user prompts by status-record address. User
+selection and close actions control views and subagents; a pane-sent
+selection or close is ignored. Closing a child from the sidebar stops
+its subtree and informs its parent. Closing an unknown agent record
+clears that record. A stop message for the pane shuts down the root.
+
+### The registry and reporting
+
+The extension stores durable child, peer, work and report facts as
+custom entries in its own pi session. `koa/koa-agent.ts` defines the
+entry codecs. Reads use the active branch and check the owner session,
+so a fork does not inherit another session's children and reports.
+The child's edge is written before extensions bind. The repository's
+git-write guard reads that owned edge.
+
+Report state is derived from branch order: a child's last report must
+follow its last work, or it must have no work. The child reads this
+fact through its parent; there is no duplicate child-side store.
+Work includes text sent by the user in the child's page view.
+
+A settled child reports its last assistant message when it has work
+to report, no non-service job running and no live own child that owes
+a report. Aborted or interrupted turns do not report. Provider errors
+send an error notice instead. A later turn on the same work can send
+a further distinct result; empty or repeated text does not duplicate
+that result. A stopped job sends no notice, so job ending also checks
+whether a settled child can now report.
+
+The parent records the report before delivering its capped notice.
+`read_report` reads the stored text. Reporting does not end a child;
+it stays alive until explicitly stopped or its koa ends. A child that
+waits for a peer or other external event can report that wait, because
+the host cannot infer unfinished work outside its own tree and jobs.
+
+### Spawn, resume and peers
+
+A fresh child defaults to the caller's model and thinking level.
+An explicit model is resolved against pi's registry. A resumed or
+copied session defaults to the model and thinking level saved on its
+active branch, with the caller as fallback only when none is saved.
+The extension reads this without opening the file for writing.
+
+The host creates a child runtime and view before binding extensions,
+so startup dialogs can be answered. It then delivers the task without
+putting task text in argv. The tree enforces its depth limit. A child
+in the same trusted git common directory can receive a one-directory
+trust grant from its spawner; other directories use pi's trust rules.
+The grant is not saved and is not a security boundary against the
+agent that chose the directory.
+
+Child files live outside pi's top-level session search tree, under
+the agent directory's subagent area. `childSessionDir` in
+`koa/koa-agents.ts` defines the path. A copied file goes to the new
+role's directory; a continued file stays where it is. A session that
+has never saved a turn has no file to resume.
+
+Continue preserves identity, history and recorded directory. Copy
+uses pi's fork operation with a new identity and requires a task.
+Continue refuses a live session or a conflicting relative and keeps
+an own child's registered name. A per-session process lock protects
+check and creation. Two different koa processes can still race to
+resume the same saved file; there is no cross-process file lease.
+An empty task is allowed only for a continuation and starts no turn.
+
+A normal message to an ended own child resumes it with that message
+as its next work. This is also how children return after a koa
+process restart. Steer modes cannot resume an ended child. A stopped
+subtree is marked stopping before disposal, so it accepts no new
+message or spawn and sends no report. Disposal runs deepest first.
+Stopping an ancestor is deferred until the caller's tool returns.
+
+A top-level spawn creates a pane through ko's typed koa command.
+It has no parent edge, report obligation or subagent lifecycle. The
+initial task is a pane variable that the new root consumes and removes.
+It takes its spawner's browser mode. It cannot convert an existing
+own child into a peer. Server-side launch and placement rules stay in
+[design.md](design.md#starting-a-koa-agent).
+
+A root outside a runtime observes peers with a non-sizing, unfocused
+client stream. Changed peer facts append to its registry without
+notifying the model. A refused initial connection stops retrying;
+a transport disconnect reconnects. A peer that begins and ends while
+unobserved is not recorded. An inside-runtime root cannot open this
+client stream. A saved ended peer can restart as a new top-level pane
+through a normal message, on its saved model and recorded routed
+runtime. The starting-pane record prevents duplicate starts within
+one process, not between two roots.
+
+Stopping another pane requests shutdown through its inbox and then
+uses ko's pane-stop route. A target without an inbox needs explicit
+force. Force is not available for an in-process child. A stop's result
+is the only ending signal; it generates no child report.
+
+### Background jobs
+
+`koa/koa-agent.ts` owns the job registry, process handles, logs,
+stream batches and ending notices. `async_bash` starts a background
+job. The replacement for pi's built-in bash tool can move a long
+foreground call into the same registry. Another extension's bash and
+user `!` commands are not wrapped.
+
+Local jobs use pi's shell configuration and their own process groups.
+Routed jobs own a `ko api` exec child. The foreground form also has a
+registry record, so stop and abort use the same signal owner. A move
+returns a successful handoff, not a timeout failure. An explicit
+short timeout stays a foreground timeout; a longer timeout follows
+the job as its deadline. A foreground call that crosses extension
+reload is handed off because its old instance cannot finish it.
+
+Both pipes write one private log in arrival order, with no size cap.
+The in-memory tail is bounded. A moved call begins its log with the
+retained tail and marks any missing earlier output. Logs remain after
+the job ends; the temporary host storage policy removes them, not
+registry pruning. Pipe back-pressure follows the log writer.
+
+An ordinary end delivers one notice through the current extension,
+with the ending and a bounded cleaned tail. A stop suppresses that
+notice. Every running job and every unannounced end remains listed;
+only announced ends are pruned to the retained history limit. Names
+can be reused after a job ends; name lookup prefers a running job,
+then the newest ended one.
+
+A service is intended to keep running. It does not hold a child's
+report and its status is idle, not working. It still has logs, stop,
+ending notices and restart-deferral behavior. A moved bash call is
+not a service.
+
+Streaming sends cleaned lines in bounded batches. During work, a due
+batch goes at a tool boundary; while idle, a timer can deliver it.
+A failed delivery keeps the held text for retry. The final partial
+line and held lines go before the ending notice, without the normal
+throttle. Escape stripping is not a terminal emulator; raw bytes
+remain in the log.
+
+Jobs survive extension reload because pipe listeners write plain
+registry data and only the current extension calls pi. A new instance
+delivers the output and endings held in the gap. Session replacement
+and shutdown stop jobs instead. Do not keep a stale extension context
+in a child-process callback.
+
+### Status records and signals
+
+The tree's ordered record queue is shared by agents and jobs.
+Subagent records are selectable, closeable and promptable; job records
+are selectable and closeable. Paths encode tree nesting, but only the
+harness interprets their agent/job meaning. Root status continues to
+name the root while the user views a child or log.
+
+Finished job records linger only while not watched. An event-stream
+subscriber, selected or named, keeps the viewed record; selection
+without a subscriber does not. A keepalive detects a lost subscriber.
+The per-agent admission cap can omit a new row when all slots are
+occupied by running or watched records. Omitting a row does not stop
+the job. Starting a tree clears its agent and job record subtrees
+before publishing new records, so a process restart does not leave
+live-looking rows from its predecessor.
+
+`signalJob` accepts only a registry job, never a pid supplied by a
+tool or message. It signals a local group only while its owned child
+has not been reaped. A routed stop signals its own ko child, whose
+connection end cancels the remote exec. The harness does not send a
+remote signal frame or search for escaped descendants.
+
+Stop first requests termination, then escalates at its deadline.
+Readers stay open long enough to drain the child's final output.
+After escalation, pipes held by an escaped process can be closed so
+the job can finish. The result distinguishes a completed stop from a
+request that is still pending. A process that leaves its group can
+survive, and an uncatchable kill of koa can orphan a detached local
+job because exit cleanup cannot run. These are accepted limits, not
+reasons to signal unverified pids.
+
+## Host and runtime execution
+
+Runtime placement and the exec security boundary belong to
+[design-runtimes.md](design-runtimes.md#agents-in-a-runtime). The
+extension implements the harness side in `koa/koa-agent.ts` and
+`koa/runtime-exec.ts`.
+
+A routed koa remains on the host. Its pi session, credentials,
+extensions, skills and prompt templates remain there. The routed-tool
+set in `koa/koa-agent.ts`, user shell commands and background jobs
+execute in the runtime. Other extension tools, MCP and codemode stay
+on the host; the runtime prompt names that boundary instead of
+pretending all tools moved.
+
+Routed tools preserve pi's tool contracts over runtime operations.
+Grep has its own implementation because pi's implementation otherwise
+starts the host's search program. Paths are argv values and writes
+use stdin. Execs do not inherit host credentials or the host
+operations' environment. The runtime's login environment and request
+policy decide the command environment.
+
+The runtime cwd comes from the longest host path mapping, then the
+runtime's configured directory, then a runtime probe. Absolute paths
+under a mapped host prefix translate; other absolute paths belong to
+the runtime. Relative paths resolve from the runtime cwd. The mapping
+must agree with the server's path rule.
+
+Runtime context loading begins at session start and reload. The first
+prompt and routed operation wait for it. The context keeps global
+host instructions and reads the runtime's directory instructions in
+pi's order. An exec can start a down runtime; a runtime information
+read does not. A missing runtime or a runtime configured for inside
+koa leaves the session available but refuses routed operations. A
+failed runtime can retry on the next exec. Refusal never falls back
+to executing a command on the host.
+
+The root publishes routed placement for clients under koa's identity
+trust rule. The extension also writes the generic runtime variable;
+clients do not use that untrusted generic variable for placement.
+Messages can identify a routed sender's runtime. The server does not
+interpret that message data.
+
+An inside koa runs with pi and its files in the runtime. Its image
+needs koa, Node and pi; ko's static layout supplies no harness.
+Its children are sessions of that same process. It cannot select
+another runtime for a child. A host koa can make a routed child but
+cannot make an inside child in another process: that would be a pane,
+not a subagent. A top-level spawn can use either placement.
+
+Host file completion remains host-side in a routed session. Shell
+completion uses the resolved execution context. Job logs, uploaded
+non-image attachment paths and step-preview reads are also on the
+koa host; a routed tool can read such a file only through a suitable
+mapping. The page's byte upload does not transfer a file into a second
+runtime filesystem.
+
+## Kido.app and browser embedding
+
+Kido.app embeds the page, not the Node program or pi. It does not
+bundle koa. New Agent asks ko for a typed koa command; the server's
+login shell resolves the installed executable. Native pane layout,
+focus, Command keys, theme injection, navigation policy, Quick Look
+and hidden-view retention remain app behavior in
+[design-app.md](design-app.md#webview-panes).
+
+The app's webview sandbox treats every page as untrusted, including a
+local koa. koa must not depend on general network or host file access
+from the page. The page calls its own HTTP origin. `window.ko`
+supplies only the app bridge and theme facts defined by
+`app/App/WebviewPaneView.swift`. It is not a route to ko's API.
+
+The page uses the app's theme properties when present and its own
+light/dark fallback otherwise. The native app owns menu key routing.
+The page's find and quote hooks let native actions work with a
+virtualized transcript without giving the app a second transcript
+model. A background page cannot use the focus bridge to select a pane.
+
+A released hidden webview reloads from koa. Durable session and job
+state therefore belongs to the host, not the page. Folds, drafts,
+filters and scroll memories can be page-local only where losing them
+on a page reload is part of the design. A live hidden page uses its
+timer path to keep rendering state current without animation frames.
+
+Browser mode runs the same server and page but has no `window.ko`,
+native theme or native sandbox. Agent links within the process still
+switch views; links to another pane have no native focus action.
+The page supplies browser quote keys, a lightbox and fallback colors.
+Passing a browser test does not prove the native bridge works: body
+transport, focus, keys, clipboard and previews need native tests.
+
+## Development
+
+### Source layout and types
+
+Start at these owners rather than duplicating their contracts:
+
+- `koa/koa.ts`: program startup, HTTP dispatch and view selection.
+- `koa/koa-agents.ts`, `koa/koa-view.ts`, `koa/koa-inbox.ts`: agent
+  lifetime, session projection and pane message delivery.
+- `koa/koa-agent.ts`: tools, registry, routed operations and jobs.
+- `koa/koa-records.ts`, `koa/records.ts`: page records and extension
+  details. `webview/ko-api.d.ts` is generated from ko's schema.
+- `koa/page/`: page composition, editor, Markdown and pure rendering
+  models. `koa/page/page.html` is the real DOM structure used by tests.
+- `webview/index.ts`: pane and browser transports.
+- `koa/testdata/`: fixtures, replay, scenarios, fake ko and prompt
+  snapshot. `koa/stress/` contains manual measurement workloads.
+- `app/KoaSnapshots/`: shared WebKit state driver and image comparison.
+  `app/KoaHost/` is its host command-line runner;
+  `app/VisualTests/` supplies native integration tests.
+
+`koa/package.json` and its lockfile pin the build and test dependencies,
+including the real pi used by tests. TypeScript checks the Node side
+with `koa/tsconfig.json` and the page with `koa/page/tsconfig.json`.
+The page check has DOM globals only. Keep type-only ko imports at the
+boundary; do not hand-copy API shapes.
+
+### Build, install and run
+
+Install the released harness with Homebrew:
+
+```sh
+brew install andreypopp/tap/koa
+```
+
+For a checkout, koa builds independently of cargo and git:
+
+```sh
+make -C koa
+build/koa/bin/koa --help
+build/koa/bin/koa --browser
+make -C koa install PREFIX=/path/to/prefix
+```
+
+`koa/Makefile` is the installed-file manifest. Its output in
+`build/koa/` has a launcher and a share tree with the program, built
+page, extension, skill and webview SDK. The program and SDK remain
+TypeScript; only the page is bundled. The bundle is unminified for
+WebKit inspection and is not committed. The checkout and installed
+share tree keep koa and webview as siblings so relative imports agree.
+
+Run the built launcher in a pane for the native page. Outside a pane,
+use browser mode. Select a different pi executable with koa's pi
+option. The program loads that executable's package, so a development
+pi and the test pin need not be the same installation.
+
+For page-only iteration:
+
+```sh
+make -C koa watch
+```
+
+In another terminal, start the built launcher with
+`KOA_PAGE_RELOAD=1`. Reload Page then assembles from the rebuilt
+assets. The watcher updates page assets, not a running Node module
+cache. Program or extension changes need a build and process restart.
+For an installed preview, put the preview prefix's bin directory
+before Homebrew in the login shell's PATH. New Agent resolves that
+PATH at each start; changing only the server's old environment is not
+the selection mechanism.
+
+Use a private ko server under `/tmp` for integration work. Do not
+stop or change the live server that runs the developer's pane.
+Native app test prerequisites and the VM are in
+[build.md](build.md#the-visual-test-vm).
+
+### Choose the test boundary
+
+Use the narrowest test that observes the rule:
+
+- Pure parsers, queue matching, scrolling, Markdown, extents and
+  annotation conversion belong in the corresponding
+  `koa/koa-*.test.ts` files.
+- DOM presence, order and event handling belong in
+  `koa/koa-dom.test.ts`. Its fake document uses the real page HTML
+  but does not implement CSS layout. Drive its frame, observer and
+  clock seams for reveal behavior; do not assert browser geometry.
+- Extension tools and registry behavior use
+  `koa/koa-agent-fixture.ts`. These tests have a fake pi and host,
+  plus the typed fake ko. They do not need a real model session just
+  to inspect tool registration.
+- Session, startup, reload, switch, route and feed behavior use
+  `koa/koa-program-fixture.ts`: real pinned pi in koa and a scripted
+  model. This catches SDK event-order assumptions that a fake pi
+  cannot establish.
+- Page appearance and browser-computed geometry use the replay-driven
+  WebKit cases. Host-state changes alone should not rewrite page
+  snapshots.
+- Native focus, menus, editor floats and the real serve path use
+  app integration tests in the VM. Browser mode is not their substitute.
+
+`scripts/test-ts.sh` installs pinned dependencies when needed, builds
+fake ko and koa, checks types, and runs the Node suite. With no file
+arguments, `koa/testdata/run-tests.mjs` schedules the suite with long
+files first. With file arguments it runs only those files after the
+build and type checks:
+
+```sh
+scripts/test-ts.sh koa-scroll.test.ts
+scripts/test-ts.sh koa-program-session.test.ts
+scripts/test-ts.sh koa-webview-sdk.test.ts
+```
+
+The script scrubs pane identity from the test environment. Fixture
+children get private home and agent directories. A gate waits for a
+test action, not elapsed time. Follow the repository's bounded-wait
+and no-repeat rules in `AGENTS.md`. Final unit verification uses
+`make checks`; inspect its plan with `make checks DRY=1` and narrow
+the visual selection to the affected tests.
+
+### Fake ko and fake model
+
+`koa/testdata/fake_ko/` is a Rust workspace member built by
+`make build-fake-ko`. It decodes and encodes real ko protocol types,
+so wire changes fail its build. Files drive message arrival and gates;
+stdin receives acknowledgements. Deliberately malformed messages use
+the fixture's raw-feed path. Runtime exec tests run the requested argv
+with only the requested environment. A separate integration case
+checks the same exec client against a real command runtime.
+
+`koa/koa-fake-provider.ts` is an HTTP model provider, not a fake pi
+process. It speaks the OpenAI completions stream and scripts text,
+thinking, tool argument chunks, errors and held replies. It rejects
+unexpected request methods, paths, authorization, models and script
+exhaustion and records violations. Tests release named gates and check
+requests. Private model settings use a literal test key, so no real
+credentials or model service is needed.
+
+Use real session files for saved history and small test extensions
+for dialogs, startup UI and extension errors. Do not enlarge a fake
+model to invent host facts. `koa/testdata/visual-ext.ts` and
+`koa/testdata/stress-ext.ts` supply the app fixtures' model setup.
+`koa/testdata/ko-prompts.txt` snapshots extension prompt text;
+`make prompts` regenerates it when that text intentionally changes.
+
+### Replay scenarios and snapshots
+
+`koa/testdata/replay.ts` is a test server, not a product mode. It
+serves the built page through `assemblePage` and the SDK without
+loading pi. `koa/testdata/scenario.ts` types scenario steps against
+PageRecord and `koa/page/http.ts`. Shared scenario data belongs in
+`koa/testdata/scenario-parts.ts` only when several scenarios use it.
+
+A script opens with records, then expects either an explicit advance
+or one page request. A request step can send records before and after
+its typed reply, and hold that reply until released. Unexpected method,
+path or checked body produces a mismatch, not a successful default.
+The test must finish with every step consumed, no mismatch and no
+held reply. File and attachment requests use the product's serving
+modules rather than a permissive mock. `koa/koa-replay.test.ts`
+checks this harness.
+
+Add new states as typed steps under `koa/testdata/scenarios/`.
+Stable path names and explicit clock seams make captures deterministic.
+A new state does not require a model recording or a product test flag.
+Use one fixture with multiple phases for related states and resize it
+for width changes instead of restarting the whole chain.
+
+`app/KoaSnapshots/Cases.swift` assigns capture policy;
+`app/KoaSnapshots/Capture.swift` crops the union of matched selectors
+at the image's backing scale. Missing or out-of-page rectangles fail,
+not clamp. Insets include borders and shadows. Most images cover a
+component; composition anchors cover the whole page, and native
+focus-border cases cover the pane. Geometry-only states keep their
+assertions without a redundant image. Capture stable states, not an
+uncontrolled animation frame.
+
+`KoaWebviewTests` runs these states through a real pane bridge in the
+VM. Native-only behavior stays there. `KoaHostTests` uses real koa,
+pinned pi and the fake provider for interrupt/input recovery, the
+external editor, held feed output and prompt-to-quit lifecycle.
+`KoaFocusTests` covers native window and composer focus routing.
+`WebviewPaneTests` checks the generic sandbox and WebKit constraints.
+The test files, not a duplicated method list, define coverage.
+
+### Host iteration versus the VM
+
+`make -C app koa-host` runs the shared state driver in an off-screen
+WKWebView without an XCTest host or an app window on the screen.
+`app/KoaHost/main.swift` uses prohibited activation and fails if the
+run changes the active application. It starts headless replay without
+opening a browser. It is permitted on the developer's Mac for iteration.
+
+Its references are local to the host macOS build under
+`app/build/koa-host/`, not committed references. Record them with
+`RECORD=1`; select a fixture or capture with ONLY. All phases of a
+selected fixture still run. A geometry-only fixture must be named
+explicitly. COMPARE can additionally report differences from guest
+references, but those differences are informational. Native-only
+states are reported as skipped. Host and guest share the color-space
+conversion in `app/KoaSnapshots/Pixels.swift`.
+
+The final visual check and committed snapshots belong to the pinned
+VM. A passing host run does not replace it. Focused commands are:
+
+```sh
+make -C app koa-host ONLY=Fixture
+make -C app visual ONLY="KoaWebviewTests/testName"
+make -C app visual ONLY="KoaWebviewTests/testName" RECORD=1
+```
+
+Use actual names from the driver and test file. Record affected images
+once after the last implementation and review change, inspect them,
+then run final checks. Never record guest references on the host or
+set GUEST=0 locally. The VM serializes native test runs across units;
+avoid whole-class runs during iteration. `AGENTS.md` owns the complete
+verification and snapshot-review policy.
+
+### Measurement
+
+Manual workloads live in `koa/stress/`. The Chrome runner is
+`koa/stress/run.sh`; `make -C app koa-stress` runs the native cases
+through the app's guest runner. `KoaStressTests` skips without its
+manual opt-in. Visible streaming and compositor measurements require
+the visible mode in the guest. They are not ordinary verification.
+
+`koa/page/metrics.ts` instruments only metrics mode. The report
+separates receipt, frame scheduling and frame work; a frame timestamp
+is not proof of completed paint. Timing and probe passes are separate
+because DOM instrumentation changes cost. The probe counts geometry
+reads after writes and working-mark detachments. Chrome heap and
+WebContent physical footprint are different measures and must not be
+compared as the same quantity.
+
+`koa/stress/statistics.ts`, `koa/stress/workloads.ts` and
+`koa/stress/report.ts` define budgets and reported-only cases. The
+streaming-history comparison has a relative native memory budget;
+there is no general visible-page physical-footprint budget. Loaded
+history remains in the model while DOM windowing limits mounted rows.
+Measurement must distinguish those two costs.
+
+## Release
+
+koa has its own Homebrew formula and release cadence. ko, ko-bin and
+Kido.app do not include it. The formula installs the architecture-free
+built launcher/share tarball and depends on Node and pi, not ko:
+Kido.app or a ko installation supplies the latter. A remote host or
+runtime can unpack the same tarball into a prefix on its PATH.
+
+After the commit is on origin/main with green CI, the top-level
+release session runs `scripts/release.sh koa VERSION`. The script
+checks the packed paths, compares the prompt snapshot's tool names
+with the formula's release, rebuilds `build/koa/`, packs the tarball,
+creates the tag and GitHub release, and updates the tap formula.
+A removed or renamed tool requires a minor version increase.
+The script never upgrades the user's installation.
+
+`--dry-run` does not publish, but still builds and packs. Do not use
+it as a no-build inspection command. The release workflow and its
+approval rules are in `.pi/prompts/release.md` and
+[release.md](release.md). When the generated ko API changed since
+koa's last release, release the matching koa with ko or Kido.app and
+tell users to upgrade both. koa has no version gate or compatibility
+fallback for a mismatched API.
+
+New panes resolve koa from the login PATH. Existing panes can reload
+extensions in place and replace their process when the installed koa
+files changed, subject to the reload rules above. An explicit restart
+also reloads the installed pi SDK. A pi-only upgrade does not change
+koa's content hash and therefore does not itself trigger automatic
+process replacement on reload.
+
+Undone work is tracked in `plans/koa.md`. It is not a description of
+current behavior.

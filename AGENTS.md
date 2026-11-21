@@ -11,13 +11,12 @@ repeat them.
 - [docs/protocol.md](docs/protocol.md): the protocol's behaviour.
 - [docs/design.md](docs/design.md): the agent features and the
   boundary between ko and its pi extension.
-- [docs/design-subagents.md](docs/design-subagents.md): subagents.
 - [docs/design-program-status.md](docs/design-program-status.md):
   pane classification and status.
 - [docs/design-runtimes.md](docs/design-runtimes.md): runtimes.
 - [docs/design-webview.md](docs/design-webview.md): webview panes.
-- [docs/design-koa.md](docs/design-koa.md): koa, the pi harness that
-  renders through a page.
+- [docs/design-koa.md](docs/design-koa.md): koa, its page, agent
+  extension, subagents, jobs, development and release.
 - [docs/design-app.md](docs/design-app.md): Kido.app.
 - [docs/kow.md](docs/kow.md): kow, the deployment of one remote ko
   server.
@@ -184,7 +183,7 @@ platforms and the installed layout. These requirements are fixed:
   generates `--help` and the usage errors: the doc comment on each
   command and argument is its help text. A usage error exits 124.
   `ko api`'s flags, exit codes and output are the contract with the
-  agent extension (docs/design.md, "The harness extension").
+  agent extension (docs/design-koa.md, "Extension boundary and identity").
 
 Conventions:
 
@@ -299,8 +298,8 @@ Conventions:
   groups of the jobs it spawned, through `signalJob`, which takes a
   record of its registry; koa only the children it spawned, through
   `signalChild` in `koa/koa-child.ts`; lint refuses
-  `process.kill(` elsewhere in `koa/` and `webview/` (docs/design-subagents.md,
-  "Stopping a job"). Elsewhere a child gets a signal only through its
+  `process.kill(` elsewhere in `koa/` and `webview/` (docs/design-koa.md,
+  "Status records and signals"). Elsewhere a child gets a signal only through its
   own `ChildProcess.kill`. `ko_e2e` signals a process that it spawned
   through its `Pid`, and any other only through
   `ko_sys::pid::signal_descendant`, which refuses a pid that does not
@@ -363,30 +362,8 @@ Conventions:
   `fuzz/Cargo.toml` enables. A model in a target never reuses the
   formula of the code under test. Only `fuzz/` reads `KO_FUZZ_*`.
 
-**koa is the one harness.** koa (`koa/`) is Kido's one pi
-harness, and no other program loads its agent extension: there is no
-terminal harness. A plain `pi` is not Kido's
-harness. The agent extension, `koa/koa-agent.ts`, runs as an
-inline extension of the pi sessions that koa runs in its own process
-through pi's SDK, and holds every agent tool. Nothing
-in it exists only for pi's terminal UI: no widgets, renderers,
-terminal input or autocomplete providers. It takes browser mode, its
-pane and its ko executable from its host (`AgentHost` in
-`koa-agents.ts`), which koa fills at its edge, never from pi's mode
-or the environment. It calls only `ko api` (docs/design.md,
-"The harness extension", lists the routes). Of `koa/` it
-imports only the modules that koa also uses: `text.ts`, `agents.ts`,
-`records.ts`, `completion-context.ts` and `runtime-exec.ts`, and,
-with `import type`, its host (`AgentHost` and the types it names) from
-`koa-agents.ts`, never koa's program modules. Every agent of a koa
-pane, its subagents included, is a session of that one process, and a
-subagent is no pane: it reaches the tree only through its host
-(docs/design-subagents.md, "The tree").
-Its background commands are jobs, child processes of koa. It never opens ko's socket,
-never reads ko's state directory or another agent's files, and has no
-state directory of its own: its registry and reports are custom
-entries in its own pi session. ko never reads the extension's files.
-Its knobs are `KO_*`.
+**koa.** Follow [docs/design-koa.md](docs/design-koa.md) for the
+harness boundary, page, extension, subagents, jobs and development.
 
 ## The server
 
@@ -519,10 +496,8 @@ windows and take focus. The app's test targets (`test`, `ko-test`,
 tests in the visual-test VM through `app/scripts/guest-test.sh`
 (docs/build.md, "The visual-test VM"). Only CI passes `GUEST=0`; an
 agent never does. A new target that launches the app uses the same
-runner. `make -C app koa-host` runs on the host because it opens no
-window on the screen and fails if it takes focus; it is for iteration,
-and the guest's visual stage stays the check (docs/verification.md,
-"CI").
+runner. For koa's off-screen host iteration exception, see
+[docs/design-koa.md](docs/design-koa.md#host-iteration-versus-the-vm).
 
 **Visual snapshots belong to the guest.** `make -C app visual` builds
 on the host and runs in the visual-test VM on one pinned macOS build
@@ -568,11 +543,8 @@ PASS/FAIL line. A change that makes a stage slower needs a reason.
   its tests at once, so each server start costs the whole suite: put
   cases that need the same setup in one test, on one server.
 - Test pure logic in a unit test, not through a server.
-- In the TypeScript suite, the fake `ko` is the Rust binary
-  `koa/testdata/fake_ko`. A Node process start costs about
-  70 ms. A fake delay is a `KO_FAKE_*` gate that the test releases,
-  not a delay that the test waits out. A test that reads only the
-  registered tools needs no fixture.
+- For TypeScript fixtures and event gates, follow
+  [docs/design-koa.md](docs/design-koa.md#fake-ko-and-fake-model).
 - A test earns its time. Do not keep a test that repeats another
   test, the prompt snapshot or the compiler, or that only repeats a
   constant or a one-line function.

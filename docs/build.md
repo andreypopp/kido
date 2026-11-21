@@ -57,11 +57,8 @@ directory, with the underscore.
   runs it.
 - `ko_e2e/` is the e2e suite, a workspace member outside
   `default-members` (verification.md, "The e2e suite").
-- `koa/testdata/fake_ko/` is the crate `fake_ko`, the fake `ko`
-  of the TypeScript suite, a workspace member outside
-  `default-members` that `make build-fake-ko` builds for
-  `scripts/test-ts.sh`. It reads and writes ko's wire only through
-  `ko_wire::protocol`'s types.
+- `koa/testdata/fake_ko/` is the workspace's test-only fake ko;
+  see [design-koa.md](design-koa.md#fake-ko-and-fake-model).
 - `ko_bench/` is the binary `ko-bench`, the benchmark modes, which
   `make build-bench` builds into `target/release` and never installs.
 
@@ -221,7 +218,7 @@ make, which would rebuild `ko_wire` and every crate above it.
 of `LINUX_ARCHS` (`aarch64`, `x86_64`; by default the host's alone)
 into `build/ko/share/ko/linux/<arch>/`: `bin/ko`, `bin/ko-pane` and
 `share/ko` with the shims, `shim.sh`, the webview SDK and the
-terminfo; no koa (design-runtimes.md, "Inside"). A runtime uses only `ko`; `ko-pane` is there
+terminfo; no koa (design-koa.md, "Host and runtime execution"). A runtime uses only `ko`; `ko-pane` is there
 for a ko server on a Linux host, such as a droplet that gets the
 layout whole. Linux CI runs the e2e suite against the glibc build,
 not the musl build; the musl server passed the suite once, in the `ci-like` container on
@@ -400,17 +397,9 @@ configuration.
       shim.sh           their shared helper
       bash/, zsh/       the OSC 133 integrations every primed shell sources
       openapi.json, client-model.json, config-schema.json   the generated schemas (make schemas)
-    koa/                koa, the pi harness that renders through a
-                        webview, and koa-agent.ts, the agent extension that
-                        koa loads into its pi; their suites, the fake ko of
-                        testdata/fake_ko/, the prompt snapshot, the ko skill
-                        and the shared modules (design-koa.md, "Where koa
-                        lives", names each file); its own Makefile and
-                        shim bin/koa build it into build/koa
-    webview/            @kido/webview, the Node SDK for webview pages
-                        (index.ts, README.md) and ko-api.d.ts (generated
-                        from openapi.json), installed as share/ko/webview
-                        and copied by koa's build as share/koa/webview
+    koa/                the harness and its development tools (design-koa.md, "Development")
+    webview/            the webview SDK (design-koa.md, "The webview SDK")
+                        and generated ko-api.d.ts, also installed with ko
     .pi/prompts/        gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed;
                         release.md, /release: Kido.app first, then ko and koa
     .pi/extensions/     no-git-writes, the spawned agent's bash-tool guard

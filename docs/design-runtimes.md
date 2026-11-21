@@ -1106,132 +1106,7 @@ no master outlives a down.
 
 ## Agents in a runtime
 
-An agent works in a runtime in one of two modes, by the runtime's
-`koa`. The harness side is `koa/koa-agent.ts`; ko's part of either
-mode is the configuration's `koa`, the `cwd` and `koa` of `GET
-/runtimes/NAME`, the exec session, the `runtime` body field and the
-placement of a `koa` command ("A koa command in a runtime", below). The
-harness sends a runtime's name with its pane identity, so the name
-resolves in the pane's session ("The model"), and an ad-hoc runtime
-works in both modes as a configured one, with no branch in the
-harness; a subagent shares its spawner's pane and resolves the same
-name. An ad-hoc runtime that is down starts at the first
-exec from its stored definition.
-
-**Routed** (`koa: "host"`, the default). koa and its pi run on the host in a host
-pane, as `koa --runtime NAME` or as a routed subagent of a host koa:
-its session file, extensions,
-skills, prompt templates and credentials are the host's. Its seven
-built-in tools (`bash`, `read`, `write`, `edit`, `ls`, `find`,
-`grep`), its `!` commands and its `async_bash` run in the runtime.
-The pane is a host pane in every row field.
-
-- **The tools** keep pi's names and schemas. The harness registers
-  them only for a routed agent (koa's `--runtime`, or a subagent's
-  `--runtime` flag value), at `session_start`, so a host pi runs
-  pi's own tools with the user's settings. `bash`, `read`, `write`, `edit`, `ls` and `find` are
-  pi's tools over operations of the harness; `grep` is the
-  harness's own tool with pi's schema and output form, because pi's
-  grep runs the host's `rg` whatever its operations say. Each
-  operation is one exec session through `ko api --stream
-  /runtimes/NAME/exec`. A path is always an argv word, never text in
-  a shell script; a write sends the content as `stdin`. `read` keeps
-  a file's bytes; `write` and `edit` are text, as pi's are on the
-  host. A path that starts with `~` means the runtime's home. A shell command runs
-  as `bash -lc`, else `sh -lc` when a first probe of the runtime
-  finds no bash; the same probe finds `fd` and `rg`, else `find` and
-  `grep` run. An exec carries no environment: pi offers the host's
-  to its bash operations, and the harness drops it, so the runtime's
-  login environment and its `env` apply (the credential boundary of
-  "The exec session"). A signal exit reads as 128 plus the signal's
-  Linux number, as pi's bash contract asks.
-- **`!`** goes through pi's `user_bash` event with the same
-  operations. A routed pi that cannot route throws there, so a `!`
-  command never falls back to the host.
-- **The cwd** inside the runtime is the longest `paths` match of the
-  host cwd, else the runtime's `cwd`, else the `pwd` of one exec. The
-  harness keeps its own copy of the server's mapping (`map_cwd` in
-  `ko_server/src/runtime/pane.rs`), because it maps every path
-  argument of a tool; the two must agree. A
-  relative path from the model resolves there. An absolute path
-  under a `paths` host prefix maps before the exec, so a host path
-  that the user typed through `@` on a mounted project works; any
-  other absolute path is a runtime path.
-- **The prompt.** `before_agent_start` sets pi's cwd line to the
-  runtime cwd and replaces the context files with the host's global
-  `AGENTS.md`, then the runtime's, from the root down to the cwd
-  (pi's order and pi's candidate names, the nearest last), read by one
-  exec at `session_start` and after `/reload`. That read runs in the
-  background, so pi starts at once, and the first prompt and the
-  first tool wait for it. A read that fails is tried again at the
-  next prompt or tool when it was the only way to learn the cwd. It is also the exec that starts a runtime that is down: the
-  harness itself never starts one, and `GET /runtimes/NAME` starts
-  nothing. A prompt section `runtime` says that the built-in tools,
-  `async_bash` and `!` run in the runtime at its cwd and that every other tool runs
-  on the host at the host cwd, and names those tools; a notice at
-  `session_start` tells the user the same. Other extensions' tools,
-  MCP tools and codemode stay on the host: the harness cannot know
-  which of them touch files, and a refusal would break the user's
-  setup. Skills, prompt templates, project `.pi/` resources and `@`
-  completion stay the host's; on a mounted project they are the same
-  files, and on an ssh project they are absent.
-- **What refuses.** At `session_start` the harness reads `GET
-  /runtimes/NAME`. A missing runtime or one whose `koa` is `"runtime"`
-  leaves pi running with every routed tool, `!`, `async_bash` and a
-  `spawn_agent` without `runtime` refusing with the reason, and a
-  notice. A `Failed` runtime does not
-  refuse: the next exec starts it again, and a failed start reaches
-  the tool as the exec's `error`.
-- **Jobs.** `async_bash` and a moved `bash` call are jobs of the
-  harness (design-subagents.md, "A job") over the same operations:
-  the job's process is the `ko api --stream /runtimes/NAME/exec`
-  child of koa, in the agent's registry beside its local jobs. A stop kills
-  that child, so ko closes the session and the ko inside ends the
-  command's group ("Cancel"); the harness sends no `signal` frame.
-  The child's connection survives `/reload` as any child does. The
-  log is written on the host, so the routed `read`, which runs in the
-  runtime, reads it only where the runtime maps it. A job counts
-  against the 32 exec sessions and keeps the runtime from going idle.
-- **The variables.** The root of a routed koa writes `koa.runtime`
-  (`{ name, cwd }`, the runtime cwd) beside `koa.session`, believed under the same trust
-  rule, and `ko.runtime` (the name), and deletes both with the others
-  at shutdown. `ko.runtime` is a generic marker: any program that
-  sends its work into a runtime from a host pane may set it; no
-  client reads it, because nothing makes it trusted ("Clients"), and
-  ko itself reads neither.
-- **Messages.** A message from a routed agent carries `data.runtime`
-  (the host's tree passes the same fact to an agent of its process),
-  and the receiver's header adds `in runtime NAME`; the server never
-  reads a message's data.
-
-**Inside** (`koa: "runtime"`). koa and its pi run in a runtime pane,
-through `ko enter`, with `KO_RUNTIME` in their environment, and the
-harness routes nothing. The image therefore needs node 24 and pi,
-which koa's shim checks; koa's page reaches the client through the
-pane's webview serve stream (design-webview.md, "Remote servers and
-runtimes"). ko's static Linux layout brings no koa: the image or the
-host installs koa itself, as it installs node and pi, from koa's
-release tarball unpacked into a prefix on PATH (docs/release.md,
-"koa"). Its session is a file of the runtime, so a spawner
-refuses `resume_from` and `fork` into such a runtime.
-
-**Spawning.** A subagent is a session of its spawner's koa
-(design-subagents.md, "The tree"), so a runtime decides only where its
-tools run. `spawn_agent`'s `runtime` reads `GET /runtimes/NAME`; a
-host koa starts a routed child in its own process, with `--runtime
-NAME` as the child's flag value, and refuses a runtime whose `koa` is
-`"runtime"`: an inside subagent of a host koa would be a pane, and a
-subagent is not one. Without `runtime`, a routed spawner's child is
-routed in the same runtime. A koa inside a runtime runs its children
-in its own process, so they are inside that runtime by construction,
-and it refuses another runtime. `toplevel: true` is a pane and keeps
-both modes through one `koa` command with the request's `runtime`;
-the server picks the mode ("A koa command in a runtime"). An inside
-spawner sends its runtime cwd as a string, which passes unchanged
-because the caller is in the target runtime. The registry entry of a child records its runtime's name, so
-a resume through a message routes it the same way. `list_agents`
-shows `runtime` for an own child from its registry entry, and for a
-pane peer from the row's field, else from a trusted `koa.runtime`.
+See [design-koa.md](design-koa.md#host-and-runtime-execution) for routed tools, inside koa, context, jobs and subagent placement.
 
 **A koa command in a runtime.** `POST /panes` with a `koa` command
 (protocol.md, section 7) and a `runtime` places the pane by the
@@ -1371,14 +1246,8 @@ The configuration file, 2026-11-04:
   `/runtimes` routes are refused there.
 - A live exec session keeps a runtime from going idle, as a pane does.
 
-Agents in a runtime, 2026-11-04:
-
-- An agent in a runtime is routed unless the runtime says `koa:
-  "runtime"`; ko never copies pi into a runtime.
-- Other extensions' tools in a routed koa run on the host, with a
-  prompt section and a notice, not a refusal.
-- `@` completion in a routed koa lists host files.
-- A routed tool's cancel is ko's, not the harness's.
+For harness execution decisions, see
+[design-koa.md](design-koa.md#host-and-runtime-execution).
 
 Ad-hoc runtimes, 2026-11-06:
 
@@ -1457,22 +1326,8 @@ Later kinds and ideas that the model holds a place for, with the
 facts read or measured for them on 2026-11-03 and 2026-11-04. None is
 scheduled.
 
-- **pi shipped into a runtime.** An inside agent without an installed
-  pi. pi's GitHub releases (earendil-works/pi, read for v1.5.0) ship
-  standalone Bun builds for darwin, linux and windows on arm64 and
-  x64, with `SHA256SUMS`. `pi-linux-arm64.tar.gz` is 59 MB: one
-  123 MB ELF `pi` built with Bun v1.4.4, linked against glibc
-  (`/lib/ld-linux-aarch64.so.1`), so it runs on Debian-like images and
-  not on musl images such as Alpine; beside it `photon_rs_bg.wasm`, an
-  X11 clipboard addon that a headless runtime does not need, and pi's
-  docs, themes and examples. No Node is needed, so ko could copy the
-  archive into a runtime as it mounts the static ko. Not probed:
-  whether the harness extension loads in the standalone binary, the
-  59 MB copy for each runtime and pi version, and the credentials,
-  because a pi inside needs the model key in the runtime unless ko
-  proxies model requests on the host. koa itself runs on node 24, so
-  a pi without Node is not enough for an inside agent. The decision
-  stands: ko never copies pi.
+- **Inside harness prerequisites.** See
+  [design-koa.md](design-koa.md#host-and-runtime-execution).
 - **The bridge transport.** A kind whose runtime gives only a byte
   channel (a pty, a `virtio-serial` port, a vsock connection)
   delivers connections by frames instead of a listener: `exec` (host
@@ -1527,7 +1382,4 @@ scheduled.
   reverse-forward unix sockets. Apple Virtualization.framework exposes
   vsock only in the VM's owner process; Apple's `container` is that
   owner with a CLI, which is why it is the macOS kind.
-- **`@` completion from the runtime.** A routed koa's `@` lists host
-  files (`koa/koa-complete.ts` runs the host's `fd`). A later
-  change can run that walk as an exec of `fd` or `find` in the
-  runtime, at a round trip for each keystroke.
+- For possible runtime file completion, see [plans/koa.md](../plans/koa.md).

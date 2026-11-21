@@ -1504,7 +1504,7 @@ outline,dock,narrow}-{light,dark}.png`.
 
 ## The view bar: a subagent's transcript in koa's page (2026-11-13, spec)
 
-Subagents are sessions of koa's process (docs/design-subagents.md): a click on
+Subagents are sessions of koa's process (docs/design-koa.md, "Views"): a click on
 a subagent's sidebar record switches the page to that agent's view.
 The breadcrumb pill that Kido.app drew for descendant panes moved into
 the page, with its geometry (app/design/sidebar/NOTES.md, the

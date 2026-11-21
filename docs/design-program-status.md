@@ -25,7 +25,7 @@ no whole-second tie and no polling: a report is an event.
 ## Sources
 
 Two programs identify agent panes through OSC 7501 root records:
-`koa` (design.md, "The harness extension") and `claude-code`. koa
+`koa` (design-koa.md, "Extension boundary and identity") and `claude-code`. koa
 writes the `koa` root for its session. A plain pi's own interactive
 mode writes a root `app=pi`, which identifies no agent: the pane is a
 `Terminal`, and its records show as the report of a program. Claude
@@ -120,7 +120,7 @@ is present among the non-root records. Each child row shows the record's title, 
 its id, its raw state and its message. A visit does not acknowledge
 them. Claude Code reports each subagent this way, and koa's agent extension
 each job
-(design-subagents.md, "A job's row").
+(design-koa.md, "Status records and signals").
 
 ### Reduction
 
@@ -324,9 +324,7 @@ no runtime name: the row's `runtime` is the one source of it.
 - Row title: `koa.name` when set, else the pane title.
 - Status: as `SomeAgent`, from the koa root. A message that repeats the
   title is dropped; without a message, `koa.activity` supplies it.
-- Supports: everything in design.md and design-subagents.md: the
-  message stream for `ko prompt` and `message_agent`, name addressing,
-  `list_agents`, parent links.
+- Supports: see [design-koa.md](design-koa.md#agent-extension-subagents-and-jobs) for the harness's messaging and controls.
 
 ### `Ssh`
 
@@ -364,12 +362,8 @@ and the title; Kido.app shows the caption and the child rows too.
   non-final records.
 - For `KoaAgent`, `koa.session` and `koa.name` give identity and name.
   OSC 7501 gives status.
-- A pane's kind determines only its row and `ko prompt` scope. The
-  harness's messaging and control between panes use the message
-  stream, the `parent` edges and session ids under the same trust
-  rule (design.md, "The trust rule"). The agents of one koa pane
-  are in one process; their relations and reports are the host's
-  and read no pane row (design-subagents.md, "The tree").
+- A pane's kind determines only its row and `ko prompt` scope. See
+  [design-koa.md](design-koa.md#addressing-and-messages) for harness scope.
 
 ## Clients
 

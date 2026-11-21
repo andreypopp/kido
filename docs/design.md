@@ -1,41 +1,17 @@
 # Kido's agent features, as built
 
-This document describes how Kido's agent features work and the reasons
-for their design: the pi harness, messages, addressing, spawning,
-the window lifecycle and the sidebar tree. [design-ko.md](design-ko.md)
-describes the server that holds them, [protocol.md](protocol.md) its
-protocol, and [design-program-status.md](design-program-status.md)
-the status of a pane. Its companion,
-[design-subagents.md](design-subagents.md), follows one subagent from
-spawn to sweep. `AGENTS.md` describes constraints that Kido cannot
-change and problems that an apparently correct change can cause. This
-document does not repeat them.
+This document owns ko's agent-facing behavior: pane messages, launches,
+window lifecycle and sidebar topology. [design-ko.md](design-ko.md)
+describes the server and [protocol.md](protocol.md) its contract.
+[design-program-status.md](design-program-status.md) owns pane
+classification. For the harness, see [design-koa.md](design-koa.md).
 
-Kido has two parts. The `ko` server and CLI manage windows, the panes
-in them, their status, and the messages between panes. A subagent is
-a pi session inside koa's process, a status record of koa's pane; an
-agent's background command is a job of its harness, not a pane.
-
-The **harness** is everything that only an agent has: the pi session,
-the tools, the task, the report and the names. It is koa
-(design-koa.md), which runs pi's session in its own process through
-pi's SDK with one inline pi extension, the agent extension
-`koa/koa-agent.ts`, and renders the session through a webview
-page. The two
-parts talk only through `ko api` on ko's routes and streams, and
-the `@kido/webview` SDK (`ko webview serve`, `enter` and `leave`) for
-the harness's page. ko never
-reads the
-harness's files, and the harness reads no ko file. **ko is the
-mediator between panes**: every exchange between agents of two panes
-goes through ko, and koa's host mediates between the agents of its
-own process (design-subagents.md, "The tree"). The harness never
-reads another agent's files and never connects to another agent's
-socket.
+ko mediates between panes. It does not read harness files or own the
+agents inside a harness. `AGENTS.md` supplies repository constraints.
 
 ## Who is authoritative for what
 
-Three stores each hold information that no other store can hold:
+Each owner holds its own facts:
 
 **The layout document, for topology.** The server supplies these
 facts (protocol.md, section 7):
@@ -50,33 +26,7 @@ facts (protocol.md, section 7):
 Nothing caches these facts. A pane can move between windows and
 sessions while its process runs.
 
-**Pane variables, for the facts only an agent has.** The extension owns
-three pane variables, written with `ko api` (protocol.md, section 7):
-
-| variable | value | ko reads it for |
-|---|---|---|
-| `koa.session` | the koa session id | `KoaAgent`, the status identity, a message's `from` |
-| `koa.name` | the session name | the row title of a koa agent, a message's `from` |
-| `koa.activity` | the agent's activity text, one line | the caption fallback |
-
-A routed koa (design-runtimes.md, "Agents in a runtime") also writes
-`koa.runtime`, its runtime and the directory there, which only the
-harness reads, under the same trust rule, and the generic
-`ko.runtime`, the name of the runtime where the pane's program sends
-its work, which any program may set for clients.
-
-ko trusts them only while the pane has an OSC 7501 root with `app=koa`,
-as it trusts `ssh.dest` only while the foreground is `ssh`. The
-server drops the records on pane death, a shell prompt (non-final
-records) and RIS, so a crashed koa's variables are stale but not
-believed. Only the root agent of a koa pane writes them; a subagent
-has none. A `toplevel` spawn also sets `koa.task` on its new pane; the
-new koa deletes it after it delivers the task, and ko never reads it.
-
-**The pi session, for what a harness knows.** A harness keeps its
-registry of children, their work marks and their reports as custom
-entries in its own pi session (design-subagents.md, "The registry").
-ko keeps no record of an agent after its pane goes.
+**Harness identity and session state.** See [design-koa.md](design-koa.md#extension-boundary-and-identity) for koa's identity publication and registry; ko keeps only pane state.
 
 Only OSC 7501 root records supply status. OSC 0/2 supplies the pane
 title. design-program-status.md, "Pane kinds", gives the
@@ -88,226 +38,7 @@ There is no locking, because every writer is the server's loop thread.
 
 ## The harness extension
 
-koa is Kido's one pi harness: no other program loads the agent
-extension. koa gives each session it makes the factory
-`agentExtension(host)` as an inline extension (design-koa.md, "The
-host"), so the extension is koa's and takes its pane, its ko
-executable, browser mode and the state that outlives a reload from
-its host. koa writes the pane's OSC 7501 root with `app=koa` and its
-OSC 0 title, because pi reports neither outside its TUI
-(design-koa.md, "Status and title").
-
-A bare `pi` in a pane is plain pi, not Kido's harness. Its
-interactive mode natively emits OSC 7501 root records with `app=pi`
-after terminal feature detection (working, blocked, done, idle and
-error; `PI_PROGRAM_STATUS=0` disables them, `=1` forces them) and
-sets the title to "π - <session name> - <cwd basename>". Only the
-root apps `koa` and `claude-code` identify agents, so its pane is a
-`Terminal` (design-program-status.md): its records show as the report
-of a program, and `ko prompt` does not reach it.
-
-The extension uses only these interfaces of ko:
-
-- `ko api`: `GET /layout`; `POST /panes` for a top-level agent;
-  `POST /panes/pane_N/messages` and `POST /panes/pane_N/stop`; `PUT`
-  and `DELETE` on `/panes/$KO_PANE/vars`; `POST
-  /panes/$KO_PANE/status` for the rows of its jobs and subagents
-  (design-subagents.md, "In the sidebar").
-- `ko api --stream`, in a root of a host koa, for `/client` and its
-  peers (design-subagents.md, "Peers"). The pane's message stream,
-  `/panes/$KO_PANE/messages` (protocol.md, section 7), is the host's,
-  not the extension's (design-subagents.md, "The pane's queue").
-- In a routed pi, `GET /runtimes/NAME` and `ko api --stream
-  /runtimes/NAME/exec` for its tools and its jobs
-  (design-runtimes.md, "Agents in a runtime").
-
-`async_bash` and a moved `bash` call are jobs, child processes of koa (design-subagents.md, "A
-job").
-
-It never opens ko's socket itself and never reads ko's state
-directory. It has no state directory of its own: its registry is in
-its pi session.
-
-**Inside ko** is `$KO_SOCKET` set and `ko` on PATH. Its pane is
-`$KO_PANE`. A pi outside ko, a pi without a UI or a pi without a
-session id writes no variable and opens no message stream. A headless
-`pi --print` has its own session id, so it cannot act as the agent of
-the pane that it runs in.
-
-**The variables.** The root's extension writes `koa.session` and
-`koa.name` at `session_start`, and `koa.name` again on
-`session_info_changed`. It writes no `koa.activity` value,
-but ko reads that variable and the extension deletes it with the
-others. Without `$KO_PANE`, nothing is written. A routed koa writes
-`koa.runtime` and `ko.runtime` too. At shutdown it
-deletes them all with one conditional `DELETE` whose condition is
-`koa.session` equal to its own session, so it never removes another
-koa's variables: the pane can have a new owner before the old one
-cleans up. An uncaught crash exits through `process.exit`, so a
-synchronous `exit` handler sends the same delete. The handler stays
-across `/reload` until the next `session_start` replaces it. Only a
-process that ends without cleanup, such as with SIGKILL, leaves them;
-the trust rule makes them harmless for identity.
-
-**The trust rule.** The extension's own discovery uses ko's rule
-through the row's status: a pane is a koa agent only when its kind is
-a `koa_agent`, on the host or in a runtime, and the agent's id is that
-kind's `session`. Discovery and addressing apply it. `koa.runtime`
-places only a host koa agent; a runtime pane's row `runtime` and `cwd`
-win. A stale variable on a
-shell pane is no agent. Liveness of a known session is the exception,
-because the root can be absent while the agent's pane lives: a resume
-refuses a session that a live pane holds in `koa.session`, with or
-without a koa root. Thus, an agent without a root is not listed and
-cannot be addressed by name.
-
-**Project trust.** A subagent's host gives it as trusted the one
-directory that its spawner trusts and shares the spawner's git common
-directory; any other directory gets pi's own answer. Nothing saves
-the grant (design-subagents.md, "Spawning").
-
-**The ko skill.** Inside ko, the extension answers pi's
-`resources_discover` with the `skills` directory beside its own file,
-which holds the skill `ko` (`koa/skills/ko/SKILL.md`, installed
-as `share/koa/koa/skills/ko/SKILL.md` under koa's prefix). pi puts only the skill's name,
-description and path in the system prompt, and the model reads the
-file when a task needs it. Inside ko, `before_agent_start`
-also adds one guideline: the user runs ko, and the model reads the
-skill when the user talks about windows, tabs, panes, sessions,
-splits, floats or the sidebar. A routed pi gets neither: its `read`
-and `bash` run in the runtime, where the skill's host path does not
-exist and `ko` does not reach the user's server. The skill is text
-only: it adds no tool and no route. `make -C koa install PREFIX=DIR`
-installs it with `koa-agent.ts`.
-
-**One instance for each load.** pi runs the factory once for each
-session and again at `/reload` and on a switch. The state that must
-outlive one run (the pane's message stream and its id ring, each
-agent's jobs and records, the exit cleanup) belongs to koa's host
-(`koa-agents.ts`), never to an instance and never to `globalThis`.
-
-**Subprocesses.** The extension starts every ko process with
-asynchronous `spawn`, never `execFileSync`, except the synchronous
-cleanup at `exit`. A blocking call stops the whole process while ko
-runs, and the message stream's acks wait. A failed command returns
-its stderr line, which the model can act on. A timeout reads as a
-timeout, because ko can already have completed its work.
-
-## Identity
-
-**An agent is (pane, session).** Every pane gets `KO_PANE_TOKEN`, and
-every process inside a pane inherits it, so the server knows the pane
-that a request acts as (protocol.md, section 1); it stamps each
-message with its sender pane and the relation from the panes'
-`parent` edges. Every agent of a koa pane shares that pane, so the
-pane names the place and the pi session id names the agent. A pid is
-not an identity, because the OS reuses pids. Inside the process, the
-host's tree gives every relation; between panes, a message's `data`
-names the in-process sender and target (design-subagents.md, "The
-pane's queue").
-
-**Children belong to the session that spawned them.** A parent that
-restarts under its own session id finds its children again in its
-own session's registry and resumes each on a message. `/new`,
-`/resume` and `/fork` of the root stop its children first: a report
-to a session that nobody reads would be lost.
-
-**Two koas in one pane** cannot both receive: a pane has at most one
-message stream, and the server refuses a second upgrade (protocol.md,
-section 7). The second one's stream retries with its backoff and
-receives nothing while the first lives.
-
-## Messages
-
-Every message between agents, and `ko prompt`'s text, goes through
-ko: `POST /panes/pane_N/messages` enqueues it on the target pane, and
-the pane receives it on its one message stream (protocol.md, section
-7, "Messages"). The server does not read a message's kind or text; the
-kinds are the harness's vocabulary:
-
-| kind | the receiving extension |
-|---|---|
-| `user` | `sendUserMessage` as the user's own text (`ko prompt`), to the agent of its `record` |
-| `message` | a custom message with the sender header, `followUp`; `details.work` when the sender is the parent |
-| `steer` | a `ko-steer` custom message, `steer`; `details.work` when from the parent |
-| `interrupt` | holds the text, marks the turn ended by a control, calls `abort()`; delivers the text at the settle as a `message` |
-| `stop` | `shutdown()` through the one teardown, after the ack |
-| `notice` | a `ko-notice` custom message, `steer` |
-| `select` | the user's click on a record: koa switches its page's view (design-koa.md, "Views") |
-
-The extension takes the message's shape from `ko-api.d.ts`; a line
-without that shape is refused, not delivered.
-
-**The receiver.** koa's host runs `ko api --stream
-/panes/$KO_PANE/messages`: the command prints each message as one
-line and sends each line of its stdin as one text message. For each
-message, the host answers `{ type: "ack", id }` after it has handed
-the message to the target agent's extension, or `{ type: "refuse", id
-}` when that throws or the target is not live (design-subagents.md,
-"The pane's queue"). The stream process restarts with a backoff (from
-`KO_RECEIVER_BACKOFF_MS`, 200 ms, doubling up to 5 s) when it exits.
-The host keeps the ids of the last 4096 messages that it acked
-in a ring; a repeat of one is acked and not delivered. The server
-delivers each id once, but a stream that closes with unanswered
-messages gives them again to the next stream, so the ring makes that
-repeat safe.
-
-**A `/reload` does not take the stream down.** The stream is the
-host's, so a reload of any agent leaves it open; messages wait until
-the reload ends. A reload also keeps the pane variables, because the
-session continues. The jobs survive in their registry in the host
-(design-subagents.md, "Jobs across /reload").
-
-**The sender header.** A `message` from another agent reaches the
-model as a custom message with one header line that names the sender
-and the relation that the server stamped:
-`message from @<name> (your parent, who spawned you):`,
-`(your subagent):`, `(another agent in this session, not the user):`
-for a sibling, and a description for a descendant or a sibling's
-descendant. A message from a subagent of another pane also names its
-return address, `session <id> in pane_N`. A child's only user is its
-parent, so a parent's
-instruction has that authority. Only kind `user` is the user's own
-text, without a header.
-
-### Steer and followUp
-
-The extension uses `followUp` to queue work and `steer` to interleave
-work. The rule, one line:
-
-> Steer what is safe to interleave. Queue what waits for the turn to end.
-
-- **`message` queues.** It has no authority over the receiver's work.
-- **`steer` steers.** The agent that assigned the work sends a
-  correction. It has no value after that work ends.
-- **`interrupt` queues after the abort.** The receiver aborts the
-  turn first, so nothing remains to steer into.
-- **`notice` steers.** The parent needs this information to assign the
-  next work.
-- **A stream batch steers.** It is not a message: the harness reads
-  the job's pipes itself (design-subagents.md, "Streaming a job's
-  output").
-
-Escape and the dequeue key restore only queued user text to the
-editor. Custom messages remain in their steering and follow-up queues,
-in order. koa wraps `AgentSession.clearQueue` once in its process to
-preserve them while pi clears editor queues (design-koa.md, "The
-queue patch").
-
-### Waking an idle session
-
-The extension sends each arrival with
-`sendMessage(..., { deliverAs, triggerTurn: true })`. While a run is
-active, pi queues the message in that mode. While the session is idle,
-pi starts a run with the custom message as its first message. pi
-starts this run with the same setup as a prompt: `before_agent_start`
-runs with `messageType: "custom"`, and the extension's handler adds
-its prompt guidelines.
-
-**One run at a time.** pi counts the session as busy from the start of
-the run, also while `before_agent_start` handlers run. A second
-arrival during that time goes into the starting run's queue in its own
-mode.
+See [design-koa.md](design-koa.md#agent-extension-subagents-and-jobs) for the extension, identity, messages and delivery inside koa.
 
 ## Delivery, and when a paste is allowed
 
@@ -322,86 +53,15 @@ of kind `user` that names the target's record. The CLI
 sends once: a paste has no id, and a prompt that the user did not see
 arrive is the user's to send again.
 
-A paste and a separate Enter key go only to an agent without an
-open message stream: Claude Code has no stream and is reachable only
-through a paste, and so is a pi without the harness or a pi whose
-stream is down.
+A paste and a separate Enter key go only to a classified agent
+without an open message stream. A bare pi is not an agent target;
+see design-program-status.md.
 
-The extension never pastes. A target without an open stream gets
-the message queued: the server keeps it until the target's stream
-returns, and the tool says so. Model-authored text must not run as a
-command line in the target's pane. The extension refuses four sends
-before sending: a message to the caller itself, an empty message,
-text that is not valid UTF-8 and text over `MAX_MESSAGE_BYTES`
-(1 MB).
-
-## Addressing
-
-The tools that take an agent (`message_agent`, `stop_agent`,
-`read_report`) resolve it over the caller's scope, the set that
-`list_agents` and the `@` completion show: its own tree in its
-process and the pane peers of its root (design-subagents.md, "The
-tools, and what they call"); `read_report` over the caller's own
-children only. The server enforces the pane scope on every send and
-stop between panes. `message_agent` also takes `pane_N/<session id>`,
-which is not resolved: it reaches a subagent of another pane
-(design-subagents.md, "Addressing an agent of another pane").
-
-The tools show names, not ids, and still accept a session id or a
-unique id prefix: two top-level pis may share a name. Within scope, a
-target resolves by these rules in order:
-
-1. An exact case-insensitive name.
-2. An exact session id or pane id.
-3. A unique prefix of a session id, of at least eight
-   characters. A shorter prefix that matches an id is refused for its
-   length.
-
-Each rule prefers a live agent over an ended child or peer and reports its own
-ambiguity. A target in another ko session is reported as such, not as
-"not found". Unnamed pi sessions match only by id. Native-only panes
-have no addressable session.
-
-Every tool that takes an agent removes one leading `@`. It also
-accepts a whole mention from the prompt: `@reviewer (session
-01a0bfcf)` resolves by the id in the parentheses only, so another
-agent's name cannot capture it.
-
-In pi's prompt editor, `@` and a prefix complete the agent rows of
-`list_agents`: the live ones, and the ended peers that it lists, so a
-stopped peer can be mentioned and messaged back to life. Completion
-excludes ended children. For the same match, a live agent comes before
-an ended peer. Each row shows the name, status, activity and a
-subagent's parent; an ended peer shows that it ended. The extension wraps
-the completion provider to place agent matches first, and delegates
-tokens with no agent match. Completion inserts `@reviewer (session
-01a0bfcf)`, where the id is the shortest prefix, of at least eight
-characters, that no other row's id starts with. A keystroke uses the
-last list without waiting for discovery. If the list is older than
-`KO_AGENT_LIST_TTL_MS` (1 s), a background refresh starts.
+See [design-koa.md](design-koa.md#addressing-and-messages) for the extension's message-only delivery rule.
 
 ## Spawning
 
-`spawn_agent` starts a subagent inside koa's process
-(design-subagents.md, "Spawning"), or with `toplevel: true` a
-top-level agent with one `POST /panes` (design-subagents.md, "A
-top-level agent"). The top-level window goes after the caller's
-window; no client switches to it. The request's command is a `koa`
-command ("Starting a koa agent", below), with the caller's runtime
-as its `runtime`. The request carries the cwd, because a new pane
-gets the server's environment, not the caller's.
-
-The task is never a command-line argument. A model writes text of any
-form, and pi's parser reads an argument that starts with `@` as a
-file, even after `--`. A subagent gets its task as its first user
-message; a top-level agent as the pane variable `koa.task`, which it
-reads at `session_start` and then deletes.
-
-The model also writes the name. The extension refuses an empty name,
-one over 64 bytes, one with a control character or `/`, and `.` and
-`..`. For a top-level agent the server also refuses a window name
-over 64 bytes or with a control character. The name never reaches a
-shell.
+See [design-koa.md](design-koa.md#spawn-resume-and-peers) for tool addressing, subagent creation and top-level agent requests.
 
 ### Starting a koa agent
 
@@ -543,103 +203,9 @@ of an `exit` pane moves its clients by the same repair rules.
 No other guard applies: no debounce. Without grace under rule 3, a
 child already shutting down can lose its pane during exit.
 
-## Ending a child, and restarting it
+## Subagent lifecycle
 
-A child has no idle timer. After it reports, or after a turn settles
-with nothing to do, it keeps its session and model context. Only
-these end it: its parent or another agent of its scope, with
-`stop_agent`; a stop of an ancestor; koa's end. A stop takes the
-child's subtree (design-subagents.md, "A child's life").
-
-The parent decides, because only the parent knows whether it needs
-more work. The child's report is not an ending. The report notice that
-a parent receives says so: end the child with `stop_agent` when
-nothing more is needed, or continue it with `message_agent`.
-
-**An ended child resumes on a message.** `message_agent` to an ended
-own child opens its session again in koa's process under its
-registered name, with the message as its next turn; after an `execve`
-restart of koa this is how every child comes back. A reused name
-means "message it". design-subagents.md, "Restarting through a
-message", gives the rules. An ended peer that a root recorded
-restarts as a top-level agent in a pane (design-subagents.md,
-"Peers"). `spawn_agent` with `resume_from` continues any saved
-session that no live agent holds.
-
-## Steer, interrupt and stop
-
-These three verbs differ, in increasing order of force. `message_agent`
-in `steer` mode adds text to a running turn inside the loop ("Steer
-and followUp"). `interrupt-and-steer` mode aborts the current turn and
-then starts a new turn with the text. An interrupt always carries the
-next instruction, so a child is never left idle with work it did not
-finish and no report owed. Interrupt has no escalation: a target that
-cannot receive it cannot abort a turn, and no destructive fallback fits
-"redirect this, do not kill it". `stop` ends the session through the
-normal exit's shutdown path.
-
-**Scope.** All three reach every agent of the caller's scope. Inside
-koa's process the host delivers and stops directly; a stop of an
-ancestor ends the caller with it. Between panes the server checks the
-pane scope on every send and stop, from the `parent` edges of the
-rows (protocol.md, section 7); the receiver does not check again.
-
-**Escalation** applies to an agent of another pane. `stop_agent` sends the `stop` message to a target
-whose message stream is open, then sends `POST /panes/pane_N/stop`
-with `wait_ms: 5000` whatever the message returned: a healthy agent
-ends itself within the wait, and the stop removes the pane of one that
-does not. The removal hangs up the program, and the coordinator kills
-a pane that lives past `KO_STOP_ESCALATION_MS` ("Window lifecycle").
-The extension's deadline for the stop call is a constant, 11.5 s,
-above the wait and the server's default escalation, so that the kill
-and the removal run before the call times out. `force` sends
-`wait_ms: 0`.
-
-Stop removes the target's pane, not its window. The request names one
-agent; a window removal would also kill unrelated panes. Stop does not
-refuse a focused pane. This differs from the sweep, which acts
-automatically and must protect a screen that the user can be reading.
-
-**No stream means no quiet stop.** A pane without an open message
-stream cannot receive a request. The server would queue the `stop` for
-a stream that may never return, so `stop_agent` refuses unless
-`force`, which removes the pane at once. This is destructive and
-irreversible.
-
-## Notifying the parent
-
-Notification is automatic. When a subagent's turn settles idle after
-work from its parent, and it waits on nothing of its own, the host
-appends the last assistant message of that run to the parent's
-session as its report and gives the parent's model a notice
-(design-subagents.md, "A child's life", Reporting). An explicit tool
-would make each report depend on the model calling it at the right
-moment.
-
-The parent's model receives at most 4000 bytes, the guidance
-included, because the whole notice enters its context; the parent
-keeps the whole report in its session for `read_report`.
-
-**What this costs, and what covers it.** A child that never settles a
-turn supplies no report, and ko does not invent one. A child ends
-only through a stop or koa's end, so the one who ended it knows; the
-tool result is the only signal. A turn that stops on a provider error
-sends the error notice.
-
-**Telling a child this is its job.** `before_agent_start` appends a
-standing instruction to the subagent's system prompt on every turn,
-because a `/reload`, a resume or a later parent message can start
-work without the task's one-time first message.
-
-**The rendered side.** An inbound `notice` uses a custom message that
-can collapse to "@X notifies: <first line>...". The model receives the
-full text with one header: `notice from <from> (a subagent or
-background run's report, not the user):`. The text goes to
-`sendMessage` exactly once.
-
-Notices use `"steer"`, not `"followUp"`: a long parent turn would
-otherwise delay the report until that turn ends. The extension sends a
-steer, not an abort. The model decides whether to act now or continue.
+See [design-koa.md](design-koa.md#the-registry-and-reporting) for reports, stops and resumed work.
 
 ## The sidebar tree
 
@@ -647,7 +213,7 @@ Both clients build the tree from the layout document and the pane
 rows (`ko_client/src/model.rs`, with the walk of
 `ko_client/src/tree.rs`). A subagent of koa is no pane: it is a status
 record of koa's pane, and Kido.app draws it as a record row under the
-pane row (design-subagents.md, "In the sidebar"). A child pane
+pane row (design-koa.md, "Status records and signals"). A child pane
 follows the pane that created it, one level deeper, not after the
 whole parent window. The edge is the row's immutable `parent`, which
 the server sets at create. The tree nests a pane under its parent
@@ -867,7 +433,7 @@ Their source is `share/ko/bin`; the shared helper is
   directory (`look_path_past` in `ko_shell/src/bin_dir.rs`).
 
 `koa` is not ko's: it is its own package with its own shim
-(design-koa.md, "Where koa lives"), so `koa` in a pane is the first
+(design-koa.md, "Build, install and run"), so `koa` in a pane is the first
 `koa` of the user's PATH.
 
 A shim never embeds an installed path. It calculates every location
@@ -900,233 +466,24 @@ order.
 **Install layout.** `make build` lays out `build/ko/` as installed:
 `bin/ko`, `bin/ko-pane` and `share/ko` with `bin/`, `shim.sh`,
 `webview/` (the SDK and `ko-api.d.ts`) and the terminfo; koa has its
-own layout (design-koa.md, "Where koa lives"). `make
+own layout (design-koa.md, "Build, install and run"). `make
 install` copies it under
 `PREFIX`, default `~/.local`. This is Homebrew's `pkgshare` layout.
 
 ## Knobs
 
-Every duration that a test must shorten is an environment variable
-that the process under test reads when it uses it:
+`ko_server/src/config.rs` defines server test knobs. The e2e suite
+passes them in the server's environment. The linger grace and runtime
+idle are configuration keys, read at each use; tests change their
+private server's configuration file.
 
-- `KO_STOP_ESCALATION_MS`, `KO_CLIPBOARD_TIMEOUT_MS`, `KO_MESSAGE_ACK_MS` (a message's wait
-  for its ack),
-  `KO_VIEW_QUEUE_BYTES`, `KO_VIEW_SPILL_BYTES` and
-  `KO_RUNTIME_EXEC_WAIT_MS`, read by `ko server`
-  (`ko_server/src/config.rs`), beside `KO_RUNTIME_COMMAND_KIND=1`,
-  which admits the test-only runtime kind (design-runtimes.md),
-  `KO_LOG_BYTES`, the cap of `DIR/log` before its rotation, and
-  `KO_DEBUG_INPUT=1`, which adds a line for each input to the log
-  (design-ko.md, "Lifecycle and the command line");
-- `KO_SPAWN_TIMEOUT_MS`, `KO_RESEND_MS` (the
-  delay between the resends of one message), `KO_RECEIVER_BACKOFF_MS`
-  (the first restart delay of the message stream),
-  `KO_AGENT_LIST_TTL_MS`, `KO_STREAM_INTERVAL_MS` (the least time
-  between two batches of a streamed job), `KO_JOB_MOVE_MS`
-  (when a `bash` call becomes a job), `KO_JOB_KILL_MS` (a job's `SIGTERM` to
-  `SIGKILL`) and `KO_JOB_RECORD_LINGER_MS` (how long a finished job's
-  status record stays), read by the extension.
-
-The extension's tests set them in the environment of the process under
-test. The e2e suite sets the server's through its environment. The
-linger grace and the runtime idle are not knobs but `server:` keys of
-the configuration file (design-ko.md, "The configuration file"), which
-the server reads at each use, so a test writes them into its server's
-file.
+See [design-koa.md](design-koa.md#development) for harness test controls.
 
 ## Known limits
 
-- A job of a koa that ends with `SIGKILL`, as a pane's hangup does
-  250 ms after its `SIGHUP`, is an orphan in its own process group:
-  koa's exit handlers do not run (design-subagents.md, "Stopping a
-  job"). The user accepted this limit on 2026-11-05.
-- Every agent of a pane shares koa's process: a crash of koa ends
-  them all (design-koa.md, "The process").
-- A subagent cannot be stopped with `force`, and a host koa cannot
-  have a subagent whose pi runs inside a runtime
-  (design-runtimes.md, "Agents in a runtime").
-- After koa's `execve` restart its subagents are ended; each resumes
-  on a message.
-- pi asks its startup project trust question before it reports OSC
-  7501 status. A pi that ko did not spawn into a trusted repository
-  shows no blocked status while it waits for the answer.
-- A `ko ssh` session killed after ssh starts but before remote zsh
-  reads `.zshenv` leaves its temporary directory under remote
-  `$TMPDIR`.
-- The harness reaches ko only through `ko` and `KO_SOCKET`, so it
-  needs no filesystem in common with another agent, except that
-  `resume_from` reads the saved sessions of the caller's own
-  filesystem. A remote attach shows a remote server's agents; it does
-  not make them peers of local ones.
+A `ko ssh` session killed before remote zsh reads its bootstrap can
+leave its temporary directory on the remote host. A remote attach
+shows the remote server's agents; it does not make them peers of
+local agents.
 
-## Decisions
-
-Each decision names its date. The code states the rest.
-
-2026-11-20, the login shell finds koa:
-
-- The server does not look koa up on the host: `ko shell` resolves
-  `koa` on the login PATH at each start. This replaces the
-  2026-11-18 rules "the server runs the `koa` of its own PATH" and
-  "the screen names the path that the server tried", and drops the
-  fallback to a `koa` beside the ko executable. The server's PATH is
-  fixed at its start, and a restart ends every pane.
-- A missing koa keeps its pane with `close: keep`, as a wrapper's
-  failure before the program, not as an exit 127 of a shell.
-
-2026-11-18, koa is its own package:
-
-- koa has its own Homebrew formula and release cadence; ko, ko-bin
-  and Kido.app no longer ship it. The server runs the `koa` of its
-  own PATH, not a koa of its bin directory: this replaces the
-  2026-11-17 rule "the server runs only its own koa on the host". No
-  shim and no configuration key choose it.
-- A missing koa stays a failed start, and the pane's screen names the
-  path that the server tried; the server adds no install hint.
-
-2026-11-17, a typed koa command:
-
-- One typed way starts a koa agent through the API, the `koa` case of
-  `Command`; typing `koa` in a pane stays the other way, and both
-  give the same `koa_agent` row. A client builds no koa argv.
-- The agent kind, its evidence and its variables are koa's names:
-  `koa_agent`, the root `app=koa`, `koa.*` and the runtime setting
-  `koa`. Only `koa` and `claude-code` identify agents; a bare pi is
-  a terminal with a program's report.
-- A missing koa is a start failure with cause `failed`, not an
-  exit 127 of a shell.
-- The runtime is the request's `runtime` and the directory is the
-  request's `cwd`, not fields of the command, so a koa pane is placed
-  as any pane is, except that `koa: host` keeps it on the host.
-
-2026-11-13, in-process subagents:
-
-- Every agent of a koa pane, the root included, is an
-  `AgentSession` of koa's process through pi's SDK, not a pi in a
-  child pane. The shared crash domain is accepted: one model, one
-  event path and one extension loading path are smaller than an RPC
-  root with SDK children.
-- A subagent is a status record of koa's pane with a `selection`; a
-  click is a `select` message from the user, and koa switches its
-  page's view. The sidebar item API knows nothing of agents or jobs.
-- The way back to the root is the view bar of koa's page; keys for
-  the hierarchy come later as their own item.
-- Messaging reaches what it reached: an agent of another pane reaches
-  a subagent by its explicit address `pane_N/<session>`, which koa
-  demultiplexes from the pane's one queue by `data.to`. Listing and
-  `@name` show only the caller's tree and the pane peers' roots;
-  nothing publishes a pane's subagents.
-- `/restart` is an unconditional `execve` restart; the children list
-  as ended and resume on a message. The no-git-writes guard reads the
-  child's `koa.edge`, not the environment. An inside subagent of a
-  host koa goes.
-- The child-pane machinery goes with the child panes: the server's
-  `ended` message, the rule that a tiled child in another window is
-  alone there, the window switch that stepped over child windows,
-  and Kido.app's slots, breadcrumb and ⌘↑/⌘↓. A pane's `parent`
-  stays for the lifetime and the scope of the programs that make
-  helper panes; the tree nests only within a window.
-- This replaces older entries below: a subagent is no pane
-  (2026-11-04); a report is in-process, with no resend; a child's
-  project trust comes from its host, not `KO_AGENT_TRUSTED_CWD`; the
-  host, not a process-wide registry, keeps each agent's jobs across
-  `/reload` (2026-11-05).
-
-2026-11-12, koa is the one harness:
-
-- koa is Kido's one pi harness, and the agent extension is koa's
-  (`koa/koa-agent.ts`), loaded only into koa's own sessions. The
-  `ko-pi` command, pi's terminal UI with the harness and every code
-  path that exists only for that UI go. A plain `pi` is a
-  `Terminal`.
-- No terminal harness: `ko_tui` and a terminal view of a remote
-  server show a koa pane as a webview placeholder; the page needs
-  Kido.app or `koa --browser`. A terminal rendering of koa would be
-  the UI that this decision abandons.
-- Browser mode reaches the extension as a field of its host, not an
-  environment variable, which would leak into every job.
-- The inside runtime mode stays, as a `koa` command inside the
-  runtime, so its image needs Node 24 and pi.
-- `share/pi/` is dissolved into `koa/`: one package, one
-  lockfile, one tsconfig, one suite, one installed directory.
-- The names in session files and variables are `koa.*`, with no
-  migration: a session written before the rename loses its recorded
-  children, peers and reports, and a live child still lists through
-  its row.
-- `PI_IMAGE_PROTOCOL=kitty` goes with the shim.
-
-2026-11-05, jobs in place of async runs:
-
-- `async_bash` is a job of the harness, a child process of pi with
-  pipes and a temp log, not a ko run in a pane. The user never
-  watches an agent's command, so it gets no window and no sidebar
-  row, and a pipe gives the exact exit code, both streams and every
-  byte.
-- A `bash` call that runs past 60 s becomes a job instead of a
-  blocked turn. An explicit
-  timeout under 60 s keeps its meaning; a longer one becomes the
-  job's deadline, because the model asked for it.
-- One log holds both streams in arrival order, as a `bash` result
-  and a terminal show them. It has no size cap, because a cap cuts
-  the end, and it is never deleted, as pi's own temp output is not.
-- `async_bash` runs through pi's shell configuration, so the two
-  tools run a command the same way.
-- Jobs survive `/reload` through one process-wide registry, because
-  pi reloads an extension in the same process, its children live on,
-  and only the new instance can call pi.
-- A routed pi's jobs are exec sessions of its runtime, in the same
-  registry.
-- The agent extension signals only its own process groups, through
-  one function,
-  and a pi killed with `SIGKILL` can leave an orphan job: pi's own
-  detached `bash` commands already have that limit.
-- Runs leave ko with `async_bash`: the run commands, the `/runs`
-  routes, the run records, outcomes and screen captures, and the pane
-  output stream. After the jobs, only tests, demos and one tool script
-  started a run, and a pane with `parent` and `close: on_exit` does
-  what they need. The sweep stays, because it acts on pane rows.
-
-2026-11-04, agents without runs:
-
-- ko is the mediator. A subagent is a pane with a `parent`, not a
-  run; ko keeps no record of an agent after its pane goes, and a
-  harness's own data lives only in its own pi session. Thus, the same
-  harness works where `KO_SOCKET` is a runtime's socket and the
-  filesystem is not the host's (design-runtimes.md).
-- No new CLI command for agents: `ko api --stream` is the harness's
-  bridge to the message stream. `stop_agent`
-  and `stop_async_bash` take one target.
-- There is no `GET /panes/{id}/wait`: a human reads the row's
-  `dead`.
-- Message ids are the sender's and idempotent: a sender resends after
-  a timeout, an `io` error or a dropped connection and learns the
-  truth, and no receiver reads a message twice. The server keeps its
-  16-message window and its 2 s ack wait.
-- A report that is not acked is resent with the same id until it is;
-  the parent keeps the whole text in its session, and `read_report`
-  is the reference of a capped report notice.
-- The prompt routes take the scope pane as `from`, and the identity
-  headers stay identity only: Kido.app holds no pane token, and a
-  client identity for it would add a concept for no gain.
-- Trust is by the child's cwd, `KO_AGENT_TRUSTED_CWD`, not by a
-  repository root: it holds for the one directory that the parent
-  chose, and it compares paths of the child's own filesystem, so it
-  holds in a runtime.
-- `close` is `exit`, `keep` or `on_exit`. There is no `on_success`,
-  which would remove only a pane that exited 0.
-
-2026-11-05, panes close at exit:
-
-- `exit` is the default `close`, so every pane that a client creates
-  without `close` (a new tab, split or session, `POST /panes`, a new
-  pane of `PUT /layout`) goes when its program ends, with no linger
-  and no focus guard. A child whose parent reads the lingering screen
-  for the ending notice keeps `on_exit`.
-- A start failure keeps its pane, because the error is the one thing
-  that the user must read. ko's wrappers set their own pane to
-  `keep` before they exit with an error, because their exit is an
-  ordinary exit to `ko-pane`. The route is the generic `PATCH
-  /panes/{id}`, not a report of its own, so one route changes a
-  pane's properties; a shell's failure to run a command is the shell's exit and closes the
-  pane. The exit code does not decide: a shell's
-  Ctrl-D returns the last command's status.
+See [design-koa.md](design-koa.md#agent-extension-subagents-and-jobs) for the harness's lifecycle and signal limits.

@@ -1,23 +1,30 @@
-# koa: unfinished work
+# koa: open work
 
-koa is built; docs/design-koa.md gives its design. This plan holds
-only the work that is not done. The question controls in a reply
-have their own plan, plans/koa-questions.md.
+The implemented design is in
+[docs/design-koa.md](../docs/design-koa.md). Each item below needs its
+own unit and decision before implementation.
 
-1. **A visible page's memory.** The stress report has no budget for
-   the physical footprint of a visible page. Measure it, find what
-   WebKit keeps for a long transcript, and find whether windowing old
-   items (dropping their nodes and loading them again through
-   `/items`) lowers it. Off the screen, one page of eight in the
-   many-panes workload had a footprint of about 320 MiB, against
-   about 100 MiB for the others. The result is a budget in
-   `koa/stress/report.ts` and, if windowing helps, a page change.
-2. **Session trees.** `/tree`, forks and clones from the page. pi's
-   RPC has `fork`, `clone` and `switch_session`, which koa already
-   follows with a rebuild; the page has no view to start them. Needs a
-   mockup first.
-3. **More built-in slash commands.** koa handles `/model`,
-   `/thinking`, `/compact`, `/session`, `/copy`, `/export`, `/name`,
-   `/new`, `/resume` and `/quit` (design-koa.md, "Built-in commands
-   are koa's"); the others are refused. Each further built-in is a
-   decision for the user.
+1. **Visible-page memory.** DOM windowing and the streaming-history
+   relative budget are implemented. A general physical-footprint
+   budget for visible WebKit pages is not. Measure the reported-only
+   workloads and choose a budget in `koa/stress/report.ts`.
+2. **Session tree UI.** The page has no tree navigation, fork or clone
+   UI. Design a mockup before adding one. The existing SDK actions do
+   not supply the page interaction.
+3. **Additional built-ins.** `koa/koa-commands.ts` defines the supported
+   commands. Each addition to that set is a product decision.
+4. **View hierarchy keys.** The view bar, links and sidebar actions
+   select views. Keyboard navigation of the hierarchy needs a design.
+5. **Terminal resume picker.** Consider an in-process picker only
+   with a design that preserves terminal ownership before the page
+   starts and bounds cancellation and startup failure.
+6. **Queue patch.** Remove the clearQueue patch only when the selected
+   pi API preserves custom messages during user queue take-back.
+7. **Runtime file completion.** Consider querying files in the runtime
+   instead of on the host. This needs a latency and cancellation design;
+   it is not scheduled.
+
+The draft editor still observes a child pane's death under the
+on-exit close policy. Removing that policy is not a completed cleanup:
+it needs a replacement for that observation before the server's
+linger rule can be considered for removal.

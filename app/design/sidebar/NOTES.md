@@ -331,7 +331,7 @@ working session after one Split Right (a three-pane window).
   2026-11-09; the fixture's `preview` row). Before 2026-11-09 the
   title was the command and the message the name; the user asked for
   the swap. The change is in the extension's writer and
-  docs/design-subagents.md "A job's row", not in the app: the app
+  docs/design-koa.md "Status records and signals", not in the app: the app
   draws a record's title over its message as for every record. The
   "Claude Code + records" fixture shows both forms.
 - A single hidden child shows its name with its circle, in the small

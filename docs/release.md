@@ -50,49 +50,7 @@ never runs `brew upgrade`.
 
 ## koa
 
-koa has its own formula, `Formula/koa.rb` in the same tap, and its own
-versions, tagged `koa/X.Y.Z` in this repository. The formula installs
-a prebuilt tarball: koa is TypeScript and one bundled page, with no
-architecture. `scripts/release.sh koa VERSION`:
-
-- compares the tool list of `koa/testdata/ko-prompts.txt` with the
-  same file at the tag of the formula's version; a removed or renamed
-  tool requires a minor bump. A tap without `Formula/koa.rb` is the
-  first release, with no comparison.
-- builds `build/koa` again from nothing (`make -C koa`) and packs its
-  `bin/` and `share/` into `koa-X.Y.Z.tar.gz`.
-- tags the commit `koa/X.Y.Z`, pushes the tag, creates the GitHub
-  release of that tag with the tarball as its asset, and writes the
-  formula: the asset's URL and sha256, `depends_on "node"` and
-  `depends_on "andreypopp/tap/pi-coding-agent"` (koa loads pi's SDK
-  from the installed pi), `prefix.install "bin", "share"`, and a test
-  that runs `koa --help`. The formula does not depend on ko: Kido.app,
-  `ko` and `ko-bin` all supply it.
-
-A koa release needs no ko or Kido.app release: a pane runs the `koa`
-of the server's PATH, and `/reload` in a koa pane takes the new
-version. When `webview/ko-api.d.ts` changed between koa's last tag
-and the commit of a ko or Kido.app release, koa releases in the same
-run, and the notes say to upgrade both.
-
-koa has no compatibility check against ko. The surface between them is
-the `ko` command line (`ko api`, `ko webview serve`, `ko shell`), the
-route shapes, OSC 7501 and the `koa.*` variables, and a mismatch is
-already loud: `ko api` exits non-zero with the server's message. The
-protocol major of `ko version` is no usable signal, because it changes
-only by a manual rule at a release, not with each shape change. So the
-one rule is the coordinated release above.
-
-The first ko and Kido.app releases without koa run after `rm -rf
-build/ko`, because a checkout that built before keeps a stale
-`build/ko/share/ko/koa` that the app's bundle would copy. Their notes
-say: "koa is now a separate package. Run `brew install
-andreypopp/tap/koa` before you update, or New Agent and `koa` fail.
-Update koa with `brew upgrade koa`; `/reload` in a koa pane takes the
-new version."
-
-`brew audit`/`brew style` vendor gems into the Homebrew checkout
-itself. This can leave the checkout dirty.
+See [design-koa.md](design-koa.md#release) for koa's packaging, version rules and coordinated releases.
 
 ## kow
 
@@ -123,6 +81,4 @@ app's signing.
 
 ## Previewing koa
 
-`make -C koa install PREFIX=DIR` installs the checkout's koa; with
-`DIR/bin` before Homebrew's on the server's PATH, new koa panes run
-it.
+See [design-koa.md](design-koa.md#build-install-and-run) for an installed preview and login PATH selection.

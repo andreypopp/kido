@@ -23,11 +23,7 @@ Kido.app, the macOS client:
 brew install --cask andreypopp/tap/kido-app
 ```
 
-koa, the pi harness, is a separate package; it also installs pi:
-
-```sh
-brew install andreypopp/tap/koa
-```
+For koa installation and host requirements, see [docs/design-koa.md](docs/design-koa.md#build-install-and-run).
 
 Every shell that ko starts (a Kido.app pane, `ko shell`, a runtime
 pane, `ko ssh` to a host with ko) completes `ko` in zsh and bash, with
@@ -163,18 +159,7 @@ Claude Code runs unmodified, without a shim or settings.
 `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` also disables its native
 status.
 
-Kido's pi harness is `koa`. It starts pi under a page in Kido.app:
-its transcript, a prompt field with completion and attachments, its
-dialogs, its queue and its pickers. `koa --browser` shows the same
-page in your browser. Agent discovery, `list_agents`, `spawn_agent`
-and `message_agent` work in it, and a subagent starts as `koa` in
-its parent's mode. A terminal client, such as `ko` itself, shows a
-koa pane as a webview placeholder. A pi that you start as plain `pi`
-has none of this: it shows its status, as Claude Code does. koa runs where its pane's program runs, so that host
-(the Mac, a server of `ko HOST`, or a runtime) needs koa, Node 24 or
-newer and `pi` on PATH (docs/design-koa.md). New Agent and the `koa`
-command run the first `koa` of the server's PATH; without one, the
-pane shows the failed start with the path that ko tried.
+See [docs/design-koa.md](docs/design-koa.md) for koa's page, browser mode, agent tools and runtime requirements.
 
 `ko prompt` sends
 text from stdin to the one other agent in your window, over its
@@ -196,9 +181,8 @@ ko is a Rust cargo workspace. It needs:
   `rust-toolchain.toml`). The Makefile finds that cargo itself.
 - zig at the release of `scripts/install-zig.sh`, on PATH
 - make and `tic`; a C compiler only for `make build-bench`
-- Node 24 or newer and npm, only for koa (`make -C koa` bundles its
-  page with the esbuild of `koa/package.json`), the TypeScript tests
-  and lint
+- Node and npm for the TypeScript build, tests and lint; see
+  [docs/design-koa.md](docs/design-koa.md#development) for requirements
 
 ```sh
 git clone --recurse-submodules https://github.com/andreypopp/kido.git && cd kido
@@ -219,9 +203,6 @@ The other targets:
     make fmt     cargo fmt on the workspace
     make lint    cargo fmt --check, clippy and scripts/lint.sh
     make build-fake-ko  the fake ko of the TypeScript suite
-    make -C koa  koa's own build in build/koa/ (npm ci when the lockfile changed)
-    make -C koa watch  rebuild koa's page on each source change, for ⌘R in a webview pane of a koa started with KOA_PAGE_RELOAD=1
-    make -C koa install PREFIX=DIR  install koa as DIR/bin/koa and DIR/share/koa (default ~/.local)
     make bindgen  regenerate ko_vt_sys/src/bindings.rs
     make probe BYTES=N  ko-bench throughput: the server's ring reader under ko-pane, N bytes of bench/streams (default 1 GiB); not part of verify
     make build-bench  the C helpers of bench/ in build/bench/, after build

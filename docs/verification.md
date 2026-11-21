@@ -48,9 +48,7 @@ name selects every check. It sets `KO_FAIL_FAST=1`, so it stops at
 the first failing stage. `KO_CHECKS_VISUAL` (test names as
 `VISUAL_ONLY` takes them) replaces the computed visual selection.
 
-koa's stress runs are manual and never in verify:
-`koa/stress/run.sh` (headless Chrome) and `make -C app
-koa-stress` (off-screen Kido); no window shows on the screen.
+See [design-koa.md](design-koa.md#measurement) for koa's manual measurements.
 
 ## CI
 
@@ -69,60 +67,8 @@ the host's macOS build is not the reference. `make visual` prints one
 tests, the quit check and the total; `test` and `ko-test` print the
 same lines without the quit check.
 
-The koa webview snapshots (`app/VisualTests/KoaWebviewTests.swift`)
-crop the WebKit page image to the component under test, so that a
-page-wide CSS change re-records the images that show the changed
-component, not every koa state. `KoaCapture.snapshot` in
-`app/KoaSnapshots/Capture.swift` takes a CSS selector and insets
-in CSS pixels, crops the union of the matched elements at the image's
-own backing scale, and fails when the selector matches nothing, when a
-rectangle is empty, or when the padded rectangle leaves the page; it
-never clamps. The insets keep borders and shadows in the image. Only
-the stream and narrow-stream states, light and dark, compare the whole
-page, and the focus-border states the native pane: they keep the
-composition. A state is captured only when it is stable, never in an
-animation's intermediate phase. A fact of layout that the browser
-computes (fit, gaps, alignment) stays an assertion of the visual test,
-also in a state that records no image. A fact of structure, presence or order is a test
-of `koa/koa-dom.test.ts` against the real `koa/page/page.html`,
-because that suite's DOM models no CSS layout. One test method starts
-one fixture: it drives its states as phases of one replay (`sequence`
-in `koa/testdata/scenario.ts`) and both widths by resizing the page.
-`KoaFixture.captures` in `app/KoaSnapshots/Cases.swift` gives each
-state its images: light, dark, both, or none (`geometry`). An image
-records one visual treatment: a state that shows only other data, a
-second width or a theme of shared colours, gets no image, but the test
-still drives it. Dark images remain only for the six composition
-anchors and for the components whose dark colours `koa/page/page.css`
-defines on their own. A crop whose component can sit at the page's edge first
-scrolls or grows the page until the padded rectangle fits.
+See [design-koa.md](design-koa.md#development) for koa's snapshots, replay driver and host iteration.
 
-The states, their phases, waits, assertions and crops are one driver
-in `app/KoaSnapshots/`, which does not use XCTest. `KoaWebviewTests`
-runs it in the guest against the committed references. `make -C app
-koa-host` runs the same driver on the host, for iteration only: the
-command-line tool `KoaHost` (`app/KoaHost/main.swift`) renders the
-page in an off-screen WKWebView of a process with the activation
-policy `.prohibited`, against a headless `koa/testdata/replay.ts`
-that opens no browser. It fails when another application becomes
-active during the run, so it never takes the user's focus. Its
-references are local and not committed, in
-`app/build/koa-host/<macOS build>/__Snapshots__`, because the host's
-macOS build differs from the guest's. `RECORD=1` writes them;
-`ONLY=<Fixture>` or `ONLY=<Fixture>/<capture>` limits the images that
-it compares or writes, while every phase still runs, and a fixture
-without images (`ScrollbarJumpMountsHistory`) runs only when `ONLY`
-names it;
-`COMPARE=VisualTests/__Snapshots__/KoaWebviewTests` also reports the
-differences from the guest references, for information. The guest
-stays the reference and the final check: a host run that passes does
-not replace the visual stage. The states that need the app around the
-page (pane chrome, native focus and keys, the selection bridge, the
-pasteboard, native find, previews) run only in the guest, and the tool
-names each one that it skips. The host and the guest share the
-comparison of `app/KoaSnapshots/Pixels.swift`, which converts each
-image from its own colour space, because a host capture can carry
-Display P3.
 `scripts/main-watch.sh` watches main and reports each observed head's
 CI. `/gh-watch` starts it through streamed `async_bash`.
 
@@ -210,34 +156,7 @@ the pane's terminal. It runs 20 random cases under `cargo test`;
 
 ## The TypeScript suite
 
-`scripts/test-ts.sh` runs `koa-*.test.ts` and `agents.test.ts` of
-`koa/` and the `.pi/tests/` guard under Node's native TypeScript support,
-through `koa/testdata/run-tests.mjs`, which keeps the order of its
-arguments: the script names the longest files first, so that no
-worker idles at the end. koa's
-own tests run koa with the pinned real pi against the scripted model
-provider of `koa-fake-provider.ts` (design-koa.md, "Tests"). The
-agent extension's tests (`koa-agent-*.test.ts`, over
-`koa-agent-fixture.ts`) run it in a fake pi with a fake host on the
-fake `ko` of
-`koa/testdata/fake_ko/`, a Rust binary that `make
-build-fake-ko` builds. The fake answers the routes that the extension
-calls with the real server's shapes: it decodes and encodes every
-wire message through `ko_wire::protocol`'s types, so a change of a
-wire shape breaks its build. A test sends a deliberately malformed
-stream message through `feedRaw`, which the fake prints verbatim. The
-fake serves the message stream from files that a test writes and
-reads the acks on stdin. Local jobs run real shells, gated on files
-that a test writes. It serves a runtime's exec session by running the
-argv on the host with only the requested environment; one test drives
-the same exec client against a real `ko server` with a `command`
-runtime. A fake delay is a `KO_FAKE_*` gate that a test releases.
-`koa/testdata/ko-prompts.txt` is the snapshot of every prompt
-text that the extension registers (`make prompts` regenerates it).
-`koa-replay.test.ts` runs the replay server of the page tests
-(design-koa.md, "Tests") in browser mode on the scenarios of
-`testdata/scenarios/selftest.ts`; the stage's `tsc` checks every
-scenario against the record and route types.
+See [design-koa.md](design-koa.md#development) for the TypeScript suite, fake ko, fake model and replay fixtures.
 
 ## The e2e suite
 

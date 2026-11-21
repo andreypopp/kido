@@ -88,14 +88,5 @@ with the text of one alternative; `yes_no` is a question or a proposal
 that the user accepts or refuses; `open` asks for a fact or a text.
 `options` are ignored for a kind other than `choice`.
 
-koa renders a question with controls after it and lets a click put the
-quoted question and an answer into the composer. The labels follow
-pi-infer-questions' TUI: `open` gets `Answer`; `yes_no` gets `Yes`,
-`No` and `Other`; `choice` gets its options in place and `Other`, and
-`Yes` and `Other` when it has one option. The composer text is one
-block per question: each line of the question's text as a `> ` quote
-line, a blank line and the answer; a second click on the same question
-replaces its answer. The question text for the quote is the Markdown
-of `range` with links and images reduced to their text, `` ` ``, `*`,
-`__` and `~~` removed, spaces collapsed, lines trimmed and empty lines
-dropped.
+For koa's controls and composer behavior, see
+[design-koa.md](design-koa.md#reply-annotations-and-threads).

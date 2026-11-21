@@ -1918,7 +1918,7 @@ palette resolves to the job's owner (the rules: app/design/koa/NOTES.md,
 
 **Drops on a page.** The app does not take a Finder drop on a page:
 WebKit takes it, and the page receives the files as DOM `File`
-objects and uploads their bytes (design-koa.md, "Attachments"). The
+objects and uploads their bytes (design-koa.md, "Images, attachments and previews"). The
 app never gives a page's program a host path. A local koa could not
 read it: koa runs under the ko server's launchd job, so macOS TCC
 attributes its reads to `ko`, which has no grant for the Desktop,
@@ -3471,9 +3471,7 @@ A snapshot shows the component under its test, so that a change elsewhere does
 not re-record it. The notice states crop to the pane
 area or the notice host in backing pixels; a few full-window anchors in each
 appearance and window mode keep the composition with the sidebar and the
-header. The koa states compare the WebKit page image, cropped to the component
-(verification.md, "CI"); only the focus-border states take the native pane,
-whose frame is their check. States that reach the
+header. See [design-koa.md](design-koa.md#replay-scenarios-and-snapshots) for koa captures. States that reach the
 same pixels through different transitions compare against one baseline that
 the test names explicitly; each transition keeps its actions and assertions.
 
@@ -3545,22 +3543,7 @@ view. Geolocation answers only in an ordered window, so that check
 orders the window far off screen. The Command-key check drives
 `OwnerWindow.performKeyEquivalent` with the web view as first responder.
 
-`KoaWebviewTests` snapshots each state of koa's mockups in light and
-dark against the replay server of koa's page
-(`koa/testdata/replay.ts`), which pushes the recorded records
-of one scenario and answers the page's requests from its script
-(design-koa.md, "Tests"). The replay page is a real webview pane, so
-the scheme handler, `window.ko`, the theme properties,
-`visualInitialScript` and Quick Look run the same
-code as with koa. A test advances its script through `/replay/next`
-and `/replay/release`, and its teardown asserts `/replay/status`.
-`KoaHostTests` runs the checkout's koa with the pinned pi against the
-fake model provider (`koa/koa-fake-provider.ts`), so no model
-call happens. `KoaFixture.swift` starts the provider, and a test
-extension (`koa/testdata/visual-ext.ts`) registers its models.
-A page check in the visual
-suite waits with a `MutationObserver`, never with `requestAnimationFrame`:
-WebKit pauses animation frames for a page in the off-screen window.
+See [design-koa.md](design-koa.md#development) for koa's replay, native integration and focus tests.
 
 `make ko-test` runs the `Ko` scheme (`app/KoTests/`): the client, view,
 content bridge, layout editor, layout gesture, owner and owner-model
@@ -3687,8 +3670,7 @@ Each visual target runs one `xcodebuild test`, which builds the app, and then
   about 17 s of test time.
 - `make visual-slow` runs only those tests.
 - `ONLY='Class/testName ...'` limits any of the three to the named tests.
-- `make koa-host` runs the koa page states of `KoaWebviewTests` on the host,
-  against local references (verification.md, "CI"). It does not use the VM.
+- For `make koa-host`, see [design-koa.md](design-koa.md#host-iteration-versus-the-vm).
 
 `slow.txt` names one `Class/testName` per line, followed by
 `# inherent: <reason>` or `# fix: <cause>`. An `inherent` test needs its cost
