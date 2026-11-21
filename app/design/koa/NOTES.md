@@ -1948,7 +1948,12 @@ light and dark in the gallery.
   width) are free at the right of the transcript after a 20pt gap
   and the pane's 8pt edge; else in line mode. Re-decided on each
   resize. *Block mode*: the panel's rows stand at the right of the
-  transcript, 20pt from it, 8pt from the top, directly on the
+  transcript, 20pt from it, 48pt from the top (the pane's hover
+  toolbar is at y 8, 32pt high: toolbar bottom plus the 8pt gap,
+  the app's "below the toolbar" convention that the find bar
+  uses; the same 48pt in the browser, where no toolbar exists, so
+  the block does not jump between the two; user, 2026-11-22;
+  before: 8pt), directly on the
   pane's background with no card, no edge, no shadow, no capsule
   and no popup; the block takes the free room, at most 360pt. For
   each thread, newest first: "# name" in the colour (ellipsized at
