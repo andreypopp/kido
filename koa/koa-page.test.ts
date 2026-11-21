@@ -300,6 +300,12 @@ test('the composer foot keeps the optional thread before the model and has no ag
   assert.doesNotMatch(css, /\.foot \.(st|dot)\b/);
 });
 
+test('only the transcript permits elastic overscroll without scroll chaining', async () => {
+  const css = await readFile(new URL('page/page.css', import.meta.url), 'utf8');
+  assert.match(css, /html,body\{overscroll-behavior:none\}/);
+  assert.match(css, /#scroll\{[^}]*overscroll-behavior:contain[;}]/);
+});
+
 test('the page keeps no content-visibility rule and no estimate property', async () => {
   const css = await readFile(new URL('page/page.css', import.meta.url), 'utf8');
   assert.doesNotMatch(css, /content-visibility|--estimate/);

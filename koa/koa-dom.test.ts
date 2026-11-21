@@ -1650,9 +1650,9 @@ async function revealPage(clientHeight = 100) {
   let top = 0, height = 20, client = clientHeight, moved = false;
   const evaluate = app.repl();
   const box = app.context.document.getElementById('scroll');
-  const layout: { height?: () => number; flush: () => void } = { flush: () => {} };
+  const layout: { height?: () => number; elastic?: boolean; flush: () => void } = { flush: () => {} };
   const total = () => layout.height?.() ?? height;
-  layout.flush = () => { const next = Math.min(Math.max(0, total() - client), top); if (next !== top) { top = next; moved = true; } };
+  layout.flush = () => { if (layout.elastic) return; const next = Math.min(Math.max(0, total() - client), top); if (next !== top) { top = next; moved = true; } };
   Object.defineProperties(box, {
     scrollTop: { get: () => (hooks.read?.('scrollTop', box), layout.flush(), top), set: (value: number) => { layout.flush(); const before = top; top = Math.max(0, Number(value)); layout.flush(); hooks.wrote?.(); if (top !== before) moved = true; } },
     scrollHeight: { get: () => (hooks.read?.('scrollHeight', box), layout.flush(), total()), set: (value: number) => { layout.flush(); height = value; layout.flush(); } },
@@ -2724,6 +2724,22 @@ test('a growth that the depth rule skipped is delivered at the next update and t
   page.step(16);
   assert.equal(page.gap(), 0);
   assert.equal(page.evaluate("element('scroll').scrollTop"), 1800);
+});
+
+test('an animation frame preserves physical elastic overscroll during Latest travel', async () => {
+  const page = await latestPage();
+  page.add(page.text(0));
+  page.scroll(100);
+  page.evaluate("decide({type:'latest'})");
+  assert.equal(page.evaluate("scrolling.kind==='reader' && !!scrolling.travel"), true);
+  page.layout.elastic = true;
+  page.evaluate("element('scroll').scrollTop=940;element('scroll').onscroll()");
+  assert.equal(page.evaluate("element('scroll').scrollTop"), 940);
+  let writes = 0;
+  page.hooks.wrote = () => { writes++; };
+  page.step(16);
+  assert.equal(writes, 0);
+  assert.equal(page.evaluate("element('scroll').scrollTop"), 940);
 });
 
 test('a correction frame writes the bottom that the layout has now, not the one that the last delivery read', async () => {

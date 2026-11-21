@@ -472,6 +472,8 @@ function rendered() { return new Promise<void>(resolve => { waiters.push(resolve
 function tick() {
   pending = undefined;
   const now = performance.now(), measurement = scrollDecision.frame === 'measure' ? measure() : lastMeasurement ?? measure(), geo = geometry();
+  const physicalTop = element('scroll').scrollTop;
+  const top = physicalTop < -1 || physicalTop > measurement.max + 1 ? physicalTop : scrolling.last?.top ?? measurement.top;
   const grown = [...measuredHolds], fitted = [...fits];
   measuredHolds.clear(); fits.clear();
   for (const [row, overflows] of fitted) row.classList.toggle('more', overflows);
@@ -488,7 +490,7 @@ function tick() {
   }
   renderDirty(geo);
   for (const target of growing.splice(0)) { target.classList.add('hold'); observed.set(target, { type: 'hold' }); layoutObserver.observe(target); }
-  decide({ type: 'frame' }, { ...measurement, now, top: scrolling.last?.top ?? measurement.top });
+  decide({ type: 'frame' }, { ...measurement, now, top });
   for (const resolve of waiters.splice(0)) resolve();
   for (const waiter of metrics?.waiting.splice(0) ?? []) waiter();
   schedule();

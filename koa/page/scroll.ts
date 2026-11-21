@@ -118,6 +118,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
   let scrollTop: number | undefined;
   let request: Decision['request'];
   const focused = m.focused && m.visible;
+  const overscrolled = m.top < -1 || m.top > m.max + 1;
   const candidates = (seq: number) => {
     if (state.candidates === previous.candidates) state.candidates = new Map(state.candidates);
     let rows = state.candidates.get(seq);
@@ -136,7 +137,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     force = true;
   };
   const clamp = !!state.last && state.last.top > m.top && state.last.max > m.max && Math.abs(m.max - m.top) < 1;
-  if (state.kind === 'reader' && state.anchor && !state.travel && state.last && !clamp) state.anchor = { ...state.anchor, offset: state.anchor.offset - m.top + state.last.top };
+  if (!overscrolled && state.kind === 'reader' && state.anchor && !state.travel && state.last && !clamp) state.anchor = { ...state.anchor, offset: state.anchor.offset - m.top + state.last.top };
   const reader = (anchor = m.anchor) => {
     state = { ...common(state), kind: 'reader', anchor };
   };
@@ -147,12 +148,14 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     } else if (event.type === 'layout' && state.settling === 'render') state.settling = 'delivery';
     switch (event.type) {
       case 'input':
+        if (overscrolled) break;
         if (state.kind === 'following' && event.direction === 'up' && m.max > 1 || state.kind === 'reader' && state.travel) {
           state.forceItem = undefined;
           reader();
         }
         break;
       case 'scroll': {
+        if (overscrolled) break;
         const written = state.written;
         if (written) state.written = { ...written, echo: false };
         if (written?.echo && m.top === written.top || !state.last || clamp) break;
@@ -294,8 +297,8 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     newInstant = true;
     state.settling = 'delivery';
   }
-  if (state.kind === 'following' && !focused && !force && m.max - m.top > 1) reader(previous.kind === 'following' ? m.anchor : undefined);
-  if (state.kind === 'following') {
+  if (!overscrolled && state.kind === 'following' && !focused && !force && m.max - m.top > 1) reader(previous.kind === 'following' ? m.anchor : undefined);
+  if (!overscrolled && state.kind === 'following') {
     if (force || focused) scrollTop = m.max;
     if (instant || !focused || m.reducedMotion || !state.last) state = { ...state, glide: undefined };
     else {
@@ -307,7 +310,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
       } else if (state.glide) state = { ...state, glide: current ? { ...state.glide, offset: current } : undefined };
     }
     if (focused) clear();
-  } else if (state.kind === 'reader') {
+  } else if (!overscrolled && state.kind === 'reader') {
     if (state.travel) {
       const progress = Math.min(1, Math.max(0, (m.now - state.travel.start) / 250));
       if (progress === 1 || m.reducedMotion || Math.abs(m.max - state.travel.from) <= 1) {
@@ -327,7 +330,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     }
   }
   if (scrollTop !== undefined) scrollTop = Math.max(0, Math.min(m.max, scrollTop));
-  const top = scrollTop ?? m.top;
+  const top = scrollTop ?? (overscrolled ? state.last?.top ?? Math.max(0, Math.min(m.max, m.top)) : m.top);
   const distance = m.max - top;
   if (state.kind !== 'reader') state.threshold = false;
   else if (distance > m.viewport / 3) state.threshold = true;
@@ -347,7 +350,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     if (wasSettling === 'delivery') state.settling = 'none';
     else if (wasSettling === 'render') state.settling = 'delivery';
   }
-  state.last = { top, max: m.max, viewport: m.viewport, width: m.width, origin: m.origin };
+  if (!overscrolled) state.last = { top, max: m.max, viewport: m.viewport, width: m.width, origin: m.origin };
   const windowTop = scrollWindow(state, item => {
     const found = m.lookup(item);
     return found.kind === 'mounted' || found.kind === 'unmounted' ? (found.row.windowTop ?? found.row.top) - m.origin : undefined;

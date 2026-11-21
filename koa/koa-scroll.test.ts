@@ -61,10 +61,36 @@ const intent: ScrollEvent = { type: 'input', direction: 'up' };
 const scroll: ScrollEvent = { type: 'scroll' };
 const item = (seq: number, visible = true, appended = true): ScrollEvent => ({ type: 'item', seq, kind: 'assistant', visible, appended });
 
+test('fractional bottom rounding still follows and writes the bottom', () => {
+  const f = fixture();
+  const result = f.step([scroll], { top: 900.5 });
+  assert.equal(result.state.kind, 'following');
+  assert.equal(result.decision.scrollTop, 900);
+});
+
+test('elastic measurements never write or change follow state or its geometry', () => {
+  for (const mode of ['following', 'reader', 'travel'] as const) for (const top of [-40, 940]) {
+    const f = fixture();
+    if (mode !== 'following') f.step([intent], { top: 0 });
+    if (mode === 'travel') f.step([{ type: 'latest' }]);
+    const before = f.state();
+    const batches: ScrollEvent[][] = [[scroll], [intent, scroll], [layout], [{ type: 'resize' }], [{ type: 'frame' }]];
+    for (const events of batches) {
+      const result = f.step(events, { top, width: 650, now: 1001 });
+      assert.equal(result.decision.scrollTop, undefined, `${mode} at ${top}: ${events[0]?.type}`);
+      assert.equal(result.state.kind, before.kind);
+      assert.deepEqual(result.state.last, before.last);
+      if (result.state.kind === 'reader' && before.kind === 'reader') assert.deepEqual(result.state.anchor, before.anchor);
+    }
+    const rebound = f.step([scroll], { top: mode === 'following' ? 900 : 0, width: 700, now: 1002 });
+    assert.equal(rebound.state.kind, before.kind);
+  }
+});
+
 test('focused following writes each current measured bottom, including deferred layout and shrink/regrowth', () => {
   const f = fixture();
   for (const max of [1000, 1300, 800, 1400]) {
-    const result = f.step([layout], { max });
+    const result = f.step([layout], { max, ...(max === 800 ? { top: 800 } : {}) });
     assert.equal(result.state.kind, 'following');
     assert.equal(result.decision.scrollTop, max);
   }
@@ -299,7 +325,7 @@ test('glide uses signed measured bottom deltas, retargets current offset, and re
   assert.ok(Math.abs(next.decision.glideOffset - half - 20) < 0.001);
   assert.equal(next.decision.scrollTop, 1020);
   assert.equal(f.step([layout], { max: 3000 }).decision.glideOffset, 300);
-  assert.equal(f.step([layout], { max: 900 }).decision.glideOffset, -300);
+  assert.equal(f.step([layout], { max: 900, top: 900 }).decision.glideOffset, -300);
 });
 
 test('glide exclusions clear the transform and first paint is a baseline', () => {
