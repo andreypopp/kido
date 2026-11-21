@@ -37,6 +37,10 @@ lint|prompts)
 	fi
 	exit "$failed"
 	;;
+visual)
+	./node_modules/.bin/playwright install webkit
+	exec node visual/main.ts
+	;;
 test) ;;
 *) echo "unknown check: $mode" >&2; exit 1 ;;
 esac
@@ -47,7 +51,7 @@ make --no-print-directory build
 if [ "$#" -gt 0 ]; then
 	exec ../scripts/quiet-limit 180 -- node --test --test-timeout=60000 --test-concurrency=4 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./testdata/start-reporter.mjs --test-reporter-destination=stdout "$@"
 fi
-set -- koa-program-lifecycle.test.ts koa-program-agents.test.ts koa-program-editor.test.ts koa-program-session.test.ts koa-webview-sdk.test.ts koa-program-job-view.test.ts koa-agent-runtime.test.ts koa-program-real.test.ts
+set -- koa-program-lifecycle.test.ts koa-program-agents.test.ts koa-program-editor.test.ts koa-program-session.test.ts koa-webview-sdk.test.ts koa-program-job-view.test.ts koa-agent-runtime.test.ts koa-program-real.test.ts visual/pixels.test.ts
 for file in koa-*.test.ts agents.test.ts; do
 	case " $* " in *" $file "*) ;; *) set -- "$@" "$file" ;; esac
 done

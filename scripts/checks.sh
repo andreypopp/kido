@@ -79,7 +79,7 @@ ko_client/* share/ko/*.json|build lint unit e2e app ko-test
 ko_sys/* ko_vt_sys/*|build build-linux lint unit e2e
 ko/* ko_*/* fuzz/* share/ko/*|build lint unit e2e
 koa/testdata/theme-*.json|ko-test koa-visual
-koa/visual/*|koa-visual
+koa/visual/*|lint ts koa-visual
 koa/page/*|page
 koa/testdata/replay.ts koa/testdata/scenario.ts koa/testdata/scenario-parts.ts koa/testdata/scenarios/*|replay
 koa/* webview/* .pi/* koa/scripts/* scripts/test-pi.sh|build lint ts

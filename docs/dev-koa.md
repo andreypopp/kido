@@ -25,8 +25,9 @@ Start at these owners rather than duplicating their contracts:
   the lint `lint.py` and the prompt dump `dump-prompts.ts`.
 - `koa/testdata/`: fixtures, replay, scenarios, fake ko, themes and
   the prompt snapshot.
-- `koa/visual/`: the page's visual checks, a SwiftPM tool with its
-  references in `koa/visual/__Snapshots__/`.
+- `koa/visual/`: the page's visual checks, a TypeScript runner on
+  Playwright's WebKit, with its references in
+  `koa/visual/__Snapshots__/`.
 
 `koa/package.json` and its lockfile pin the build and test
 dependencies, including the real pi used by tests. Each target that
@@ -126,7 +127,7 @@ The repository's checks call these targets. `scripts/lint.sh` calls
 them from the changed paths: a change in `koa/`, `webview/` or
 `.pi/` selects `build`, `lint` and `ts`; a change of the page or the
 replay scenarios adds `koa-visual`; a change in `koa/visual/` selects
-only `koa-visual`; a change of the theme files selects `koa-visual`
+`lint`, `ts` and `koa-visual`; a change of the theme files selects `koa-visual`
 and the app's `ko-test`. Final unit verification uses `make checks`;
 `make checks DRY=1` prints its plan. CI runs the `ts` stage and
 installs koa with `make -C koa install`, then runs the installed
@@ -152,7 +153,7 @@ Use the narrowest test that observes the rule:
   model. This catches SDK event-order assumptions that a fake pi
   cannot establish.
 - Page appearance and browser-computed geometry use the replay-driven
-  WebKit cases of `koa/visual/`. Host-state changes alone must not
+  Playwright WebKit cases of `koa/visual/`. Host-state changes alone must not
   rewrite page snapshots.
 - Native focus, menus, editor floats, the bridge and the real serve
   path use the app's tests in the VM
@@ -206,13 +207,16 @@ A new state does not require a model recording or a product test flag.
 Use one fixture with multiple phases for related states and resize it
 for width changes instead of restarting the whole chain.
 
-`koa/visual/Cases.swift` assigns capture policy;
-`koa/visual/Capture.swift` crops the union of matched selectors
-at the image's backing scale. Missing or out-of-page rectangles fail,
+`koa/visual/cases.ts` assigns capture policy;
+`koa/visual/capture.ts` crops the union of matched selectors
+at the image's device scale. Missing or out-of-page rectangles fail,
 not clamp. Insets include borders and shadows. Most images cover a
 component; composition anchors cover the whole page. Geometry-only
 states keep their assertions without a redundant image. Capture stable
-states, not an uncontrolled animation frame.
+states, not an uncontrolled animation frame: before each capture the
+runner pauses the infinite page animations (`dots-bounce`, `burn`) at
+their start, and it repeats a screenshot during which the cropped
+elements moved.
 
 The app's `WebviewPaneTests` checks the generic sandbox and WebKit
 constraints. The test files, not a duplicated method list, define
@@ -220,57 +224,64 @@ coverage.
 
 ## Host visual checks
 
-`koa/visual/` is a SwiftPM executable that uses only AppKit and
-WebKit: no app sources, no GhosttyKit, no ko_client and no Xcode
-project. `make -C koa visual-build` builds it into
-`build/koa-visual/`; `make -C koa visual` builds the page and the tool
-and runs every fixture. It runs only on the host, never in the VM or
-in CI. The decision: the page renders in WebKit alone, so the app's
-pane, bridge and native chrome do not belong in its references, and a
-host run takes seconds instead of a VM run of the whole app.
+`koa/visual/` is a TypeScript runner (`koa/visual/main.ts`) that
+drives the WebKit of the pinned `playwright` package headless: no
+native code, no app sources and no window on the user's screen.
+`make -C koa visual` builds the page, installs that WebKit with the
+package's own CLI when it is missing (into Playwright's cache outside
+the repository, `~/Library/Caches/ms-playwright/` on macOS) and runs
+every fixture. It runs only on the host, never in the VM or in CI. The
+decision: the page renders in WebKit alone, so the app's pane, bridge
+and native chrome do not belong in its references, and a headless run
+needs no build and no focus. Playwright's WebKit is not the system's
+WebKit, so its pixels differ from the app's pane; a change of the
+`playwright` pin re-records the references.
 
-The tool opens an off-screen window with prohibited activation and
-fails if it becomes the active or frontmost application or takes the
-key window. Other applications can change focus while it runs: the
-user works on the same Mac. Each fixture starts its own
-`koa/testdata/replay.ts --browser --headless` process, which the tool
-owns: it reads the page URL from the first line, fails on an early
-exit or a missed deadline, checks that the replay consumed every step,
-and terminates only that process. A page gets an explicit viewport
-size in whole points and its initial scripts through its own WebKit
-configuration. The tool sets one time zone (`timeZone` in
-`koa/visual/Context.swift`) for the replay process and the page, so
-the captured times do not depend on the host's zone. It prints one flushed line per fixture, so
+One browser serves the run; each fixture gets a fresh context and its
+own `koa/testdata/replay.ts --browser --headless` process, because a
+replay holds one scenario cursor. The runner owns that process: it
+reads the page URL from the first line, fails on an early exit or a
+missed deadline, checks that the replay consumed every step, also
+when the fixture failed, and terminates only that process. A page
+gets an explicit viewport size in whole points at device scale 2 and
+its initial scripts through its context. The runner sets one time
+zone (in `koa/visual/context.ts`) for the replay process and the
+page, so the captured times do not depend on the host's zone. Images
+that a fixture uploads are drawn with Canvas in a separate page of
+the same browser. The runner prints one line per fixture, so
 `scripts/quiet-limit 60` sees progress, and a summary line `VISUAL
 pass=N diff=N missing=N errors=N` at the end.
 
 The theme is data, not a terminal: `koa/testdata/theme-light.json`
 and `koa/testdata/theme-dark.json` hold what `WebviewTheme` in the app
 gives a pane (colours, palette, font, cell metrics, appearance and
-inset). The tool installs it as the pane's `window.ko` theme at
+inset). The runner installs it as the pane's `window.ko` theme at
 document start and switches it for the dark phases. The app's
 `WebviewThemeTests` checks that `WebviewTheme`'s data for the bundled
 light and dark themes, with a fixed font configuration and accent
-colour, equals these files, so a change of the app's theme output
-fails there first.
+colour, equals these files except for the cell metrics, so a change
+of the app's theme output fails there first. The cell metrics depend
+on the machine's font rendering; the files pin them for the runner.
 
 Native behaviour (the bridge, pane chrome, native find, focus, preview
 and the pasteboard) is the app's to test, not koa's.
 
 One set of references is committed in `koa/visual/__Snapshots__/`,
-recorded on the user's Mac with this tool. A missing or different
+recorded on the user's Mac with this runner. A missing or different
 reference fails the run; the actual image and the difference go to
-`build/koa-visual/output/`. Select a fixture or capture with `ONLY`;
-all phases of a selected fixture still run. A geometry-only fixture
-runs only when it is named. Record with `RECORD=1`. Image comparison
-uses the colour-space conversion in `koa/visual/Pixels.swift`.
+`build/koa-visual/output/`, which each run clears. Select a fixture
+or capture with `ONLY`; all phases of a selected fixture still run.
+`ScrollbarJumpMountsHistory` runs only when it is named. Record with
+`RECORD=1`. `koa/visual/pixels.ts` decodes and encodes the PNGs and
+compares premultiplied RGBA with a tolerance of one step per channel;
+`make -C koa test` runs its unit tests.
 
 ```sh
 make -C koa visual ONLY=Fixture
 make -C koa visual ONLY=Fixture RECORD=1
 ```
 
-Use actual names from `koa/visual/Cases.swift`. Record the affected
+Use actual names from `koa/visual/cases.ts`. Record the affected
 images once after the last implementation and review change, then
 inspect them.
 

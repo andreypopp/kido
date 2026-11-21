@@ -81,8 +81,13 @@ test("every scenario module builds its scenarios", async () => {
       keys.add(method);
     }
   }
-  const swift = await readFile(new URL('./visual/Driver.swift', import.meta.url), 'utf8');
-  for (const match of swift.matchAll(/\bkey: "([^"]+)"/g)) assert.ok(keys.has(match[1]), `No replay scenario for ${match[1]}`);
+  const driver = await readFile(new URL('./visual/driver.ts', import.meta.url), 'utf8');
+  const calls = [...driver.matchAll(/\bkoaWebview\("([^"]+)"|\bscrollPage\(\s*"[^"]+",\s*"([^"]+)"/g)];
+  assert.equal(calls.length, 40);
+  for (const match of calls) {
+    const key = match[1] ?? match[2];
+    assert.ok(keys.has(key), `No replay scenario for ${key}`);
+  }
 });
 
 test('scenario sequences keep strict steps and give reset phases separate epochs', () => {
