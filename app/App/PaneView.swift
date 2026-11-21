@@ -2166,15 +2166,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         return ghostty_input_mods_e(mods)
     }
 
-    private static func flags(_ mods: ghostty_input_mods_e) -> NSEvent.ModifierFlags {
-        var flags = NSEvent.ModifierFlags()
-        if mods.rawValue & GHOSTTY_MODS_SHIFT.rawValue != 0 { flags.insert(.shift) }
-        if mods.rawValue & GHOSTTY_MODS_CTRL.rawValue != 0 { flags.insert(.control) }
-        if mods.rawValue & GHOSTTY_MODS_ALT.rawValue != 0 { flags.insert(.option) }
-        if mods.rawValue & GHOSTTY_MODS_SUPER.rawValue != 0 { flags.insert(.command) }
-        return flags
-    }
-
     #if KIDO_VISUAL
     static var visualKeyTranslation: ((NSEvent, NSEvent.ModifierFlags) -> String?)?
     #endif
@@ -2254,7 +2245,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             if event.modifierFlags.contains(.shift) { find.previous() } else { find.next() }
             return
         }
-        let translated = Self.flags(ghostty_surface_key_translation_mods(surface, Self.mods(event.modifierFlags)))
+        let translated = ghostty_surface_key_translation_mods(surface, Self.mods(event.modifierFlags)).eventFlags
         var translationMods = event.modifierFlags
         for flag in [NSEvent.ModifierFlags.shift, .control, .option, .command] {
             if translated.contains(flag) { translationMods.insert(flag) } else { translationMods.remove(flag) }
@@ -2341,13 +2332,48 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         keyAction(held && sidePressed ? GHOSTTY_ACTION_PRESS : GHOSTTY_ACTION_RELEASE, event: event)
     }
 
+    private func bindingFlags(_ event: NSEvent, mods: NSEvent.ModifierFlags) -> ghostty_binding_flags_e? {
+        var key = ghostty_input_key_s()
+        key.action = GHOSTTY_ACTION_PRESS
+        key.keycode = UInt32(event.keyCode)
+        key.mods = Self.mods(mods)
+        key.unshifted_codepoint = Self.characters(event, modifiers: [])?.unicodeScalars.first?.value ?? 0
+        #if KIDO_VISUAL
+        visualBindingQueries += 1
+        #endif
+        var flags = ghostty_binding_flags_e(0)
+        return (event.characters ?? "").withCString { ptr in
+            key.text = ptr
+            return ghostty_surface_key_is_binding(surface, key, &flags) ? flags : nil
+        }
+    }
+
     // AppKit offers command and control chords here before keyDown and may
     // turn them into doCommand selectors; an unbound chord is re-sent through
     // the event system and recognised in doCommand by its timestamp. A plain
     // consumed Ghostty binding goes to a menu item with that shortcut first,
     // as in Ghostty's own app.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        guard webviewView == nil, acceptsKeyInput, event.type == .keyDown, window?.firstResponder === self else { return false }
+        guard acceptsKeyInput, event.type == .keyDown else { return false }
+        if webviewView != nil {
+            guard webviewFocused else { return false }
+            let shiftFree: Bool
+            if bindingFlags(event, mods: event.modifierFlags) != nil {
+                shiftFree = false
+            } else {
+                guard event.modifierFlags.contains(.shift), bindingFlags(event, mods: event.modifierFlags.subtracting(.shift)) != nil else { return false }
+                shiftFree = true
+            }
+            for action in ["increase_font_size:1", "decrease_font_size:1", "reset_font_size"] {
+                let trigger = ghostty_config_trigger(runtime.config, action, UInt(action.utf8.count))
+                if trigger.matches(keyCode: event.keyCode, mods: event.modifierFlags, text: event.characters,
+                                   unshifted: Self.characters(event, modifiers: []), shifted: Self.characters(event, modifiers: [.shift]), shiftFree: shiftFree) {
+                    return ghostty_surface_binding_action(surface, action, UInt(action.utf8.count))
+                }
+            }
+            return false
+        }
+        guard window?.firstResponder === self else { return false }
         let mods = event.modifierFlags.intersection([.shift, .control, .option, .command])
         let chord = event.charactersIgnoringModifiers?.lowercased()
         if mods == [.command, .shift] && chord == "c" { toggleCopyMode(nil); return true }
@@ -2362,21 +2388,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             return true
         }
 
-        var key = ghostty_input_key_s()
-        key.action = GHOSTTY_ACTION_PRESS
-        key.keycode = UInt32(event.keyCode)
-        key.mods = Self.mods(event.modifierFlags)
-        key.unshifted_codepoint = Self.characters(event, modifiers: [])?.unicodeScalars.first?.value ?? 0
-        #if KIDO_VISUAL
-        visualBindingQueries += 1
-        #endif
-        var flags = ghostty_binding_flags_e(0)
-        let isBinding = (event.characters ?? "").withCString { ptr in
-            key.text = ptr
-            return ghostty_surface_key_is_binding(surface, key, &flags)
-        }
-        if isBinding {
-            let flags = flags.rawValue
+        if let binding = bindingFlags(event, mods: event.modifierFlags) {
+            let flags = binding.rawValue
             if flags & GHOSTTY_BINDING_FLAGS_CONSUMED.rawValue != 0,
                flags & (GHOSTTY_BINDING_FLAGS_ALL.rawValue | GHOSTTY_BINDING_FLAGS_PERFORMABLE.rawValue) == 0,
                NSApp.mainMenu?.performKeyEquivalent(with: event) == true {

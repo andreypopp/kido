@@ -1937,8 +1937,15 @@ such as the prompt of "Prompt with Selection…", or a click on the
 pane's band) gets the web view too: `PaneView.becomeFirstResponder`
 passes the focus to it, so the hidden terminal never takes the keys of
 a page. While the page has focus,
-`OwnerWindow.performKeyEquivalent` offers a Command key to the main menu
-before WebKit sees it, so Kido's menu keys win; every other key, Escape
+`OwnerWindow.performKeyEquivalent` first offers the key to the pane,
+which runs a chord of the Ghostty triggers of `increase_font_size:1`,
+`decrease_font_size:1` and `reset_font_size` on its own surface (only
+when the chord is a Ghostty binding), so the font keys change the
+session's font and the page's `--ko-font-size` as in a terminal pane;
+Ghostty's C API gives one trigger for each exact action, so a binding
+with another amount does not act in a page. Then it offers a Command
+key to the main menu before WebKit sees it, so Kido's menu keys win;
+every other key, Escape
 included, goes to the page. A key, text or paste that the page does not
 handle comes back up the responder chain to the pane, which never sends
 it to the terminal while a page is shown, so a Control-C in a page is

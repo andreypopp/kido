@@ -27,8 +27,10 @@ class OwnerWindow: NSWindow {
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard allowsPaneInput else { return false }
-        if PaneView.owner(firstResponder)?.webviewFocused == true, event.modifierFlags.contains(.command),
-           NSApp.mainMenu?.performKeyEquivalent(with: event) == true { return true }
+        if let pane = PaneView.owner(firstResponder), pane.webviewFocused {
+            if pane.performKeyEquivalent(with: event) { return true }
+            if event.modifierFlags.contains(.command), NSApp.mainMenu?.performKeyEquivalent(with: event) == true { return true }
+        }
         return super.performKeyEquivalent(with: event)
     }
 

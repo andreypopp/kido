@@ -45,6 +45,29 @@ import SidebarFeed
         return pane
     }
 
+    func testWebviewFontBinding() async throws {
+        let pane = try await webviewStart()
+        let web = try XCTUnwrap(pane.webviewView?.browser)
+        window.makeFirstResponder(web)
+        XCTAssertTrue(pane.webviewFocused)
+        let before = pane.font
+        let steps: [(String, UInt16, NSEvent.ModifierFlags, Float)] = [
+            ("=", 24, .command, before + 1),
+            ("+", 24, [.command, .shift], before + 2),
+            ("-", 27, .command, before + 1),
+            ("0", 29, .command, before),
+        ]
+        for (characters, code, mods, expected) in steps {
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: mods, timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
+            XCTAssertTrue(window.performKeyEquivalent(with: event))
+            try await wait("webview font \(characters)") { pane.font == expected }
+            XCTAssertEqual(pane.font, expected)
+            XCTAssertTrue(terminal?.displayedPanes.allSatisfy { $0.font == expected } == true)
+            try await webviewUntil(web, "parseFloat(ko.theme['--ko-font-size']) === \(expected)")
+        }
+    }
+
     func testWebviewLinks() async throws {
         _ = try await webviewStart()
         var opened: [URL] = []
