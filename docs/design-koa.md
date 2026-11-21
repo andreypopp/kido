@@ -758,12 +758,15 @@ follow its last work, or it must have no work. The child reads this
 fact through its parent; there is no duplicate child-side store.
 Work includes text sent by the user in the child's page view.
 
-A child reports the final text of each turn that ends without a tool
+A child reports the final text of a turn that ends without a tool
 call, when it has work to report, no non-service job running and no
-live own child that owes a report. The report goes at the turn's end,
-not when the run settles: a message queued while the turn runs starts
-the next turn in the same run, and pi settles only after that turn.
-That turn's own final text is a further report. Aborted or
+live own child that owes a report. It reports when the run settles. A
+turn's end also reports when a message from the parent is queued: pi
+starts the next turn in the same run and settles only after that
+turn, so the earlier result would be lost. That turn's own final text
+is a further report. Input that the child queues for itself, such as
+a job's notice or output, a child's report or a system notice,
+continues its own work: its turn's end waits for the settle. Aborted or
 interrupted turns do not report. Provider errors send an error notice
 instead. Empty or repeated text does not duplicate a result. While
 live work holds the report, a later final text replaces the held

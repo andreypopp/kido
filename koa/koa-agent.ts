@@ -1692,6 +1692,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   let settled = true;
   let turnEndedByControl = false;
   let workGeneration = 0;
+  let queuedParentWork = 0;
 
   type Ending =
     | { kind: "awaiting-first-turn" }
@@ -1741,6 +1742,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   const deliverAgentMessage = (agent: AgentRef, relation: Relation, text: string, work: boolean, runtime?: string, returnTo?: { session: string; pane: string }): void => {
     const from = agent.name, header = senderHeader(from, relation, runtime, returnTo);
+    if (work) queuedParentWork++;
     pi.sendMessage(
       { customType: MESSAGE_CUSTOM_TYPE, content: `${header}\n${text}`, display: true, details: { ...relationshipThread(agent), from, work, agent, body: text, inbound: { form: 'message', relation, ...(runtime ? { runtime } : {}) } } satisfies MessageDetails },
       { deliverAs: "followUp", triggerTurn: true },
@@ -1771,7 +1773,10 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   const receive = async (m: InProcessMessage): Promise<void> => {
     switch (m.kind) {
       case "user":
-        if (m.text) deliver(m.text);
+        if (m.text) {
+          queuedParentWork++;
+          deliver(m.text);
+        }
         return;
       case "message":
         deliverMessage({ agent: m.agent, relation: m.relation, text: m.text, runtime: m.runtime, returnTo: m.returnTo });
@@ -1779,6 +1784,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       case "steer": {
         if (!m.text) return;
         const from = m.agent.name;
+        if (m.relation === "parent") queuedParentWork++;
         workStarted();
         // pi drains followUp only once the agent has decided to stop; steer joins the run under way.
         pi.sendMessage(
@@ -2134,7 +2140,10 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     const m = event?.message;
     if (!ownSessionId) return;
     const details = isRecord(m) && isRecord(m.details) ? m.details : undefined;
-    if (m?.role === "user" || details?.work === true) host.self.parent?.extension?.markWork(ownSessionId);
+    if (m?.role === "user" || details?.work === true) {
+      if (queuedParentWork > 0) queuedParentWork--;
+      host.self.parent?.extension?.markWork(ownSessionId);
+    }
   });
 
   // ---- tools ----
@@ -2765,7 +2774,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     if (event?.toolResults?.length) { host.jobs.flushStreams(); return; }
     if (event.message.role !== "assistant" || event.message.stopReason !== "stop" || event.message.content.some(part => part.type === "toolCall")) return;
     ending = { kind: "ended", text: contentText(event.message.content, "") };
-    await reportIfPending();
+    if (queuedParentWork > 0) await reportIfPending();
   });
 
   pi.on("agent_end", (event) => {
@@ -2810,6 +2819,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   pi.on("agent_settled", async (event: { aborted?: boolean }, ctx: { isIdle(): boolean }) => {
     if (!ctx.isIdle()) return;
+    if (!event?.aborted) queuedParentWork = 0;
     host.jobs.finishWorking();
     settled = true;
     if (event?.aborted) ending = { kind: "aborted" };

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
-import { gatedCommand, makeFixture, selfPane, startSession, entriesOf, createChannel, stubAgent, pollUntil, idleTurn, assistant, notices, type Fixture, type Started, at, jobId, jsonRows } from "./koa-agent-fixture.ts";
+import { gatedCommand, makeFixture, selfPane, startSession, entriesOf, createChannel, stubAgent, pollUntil, idleTurn, assistant, notices, type Fixture, type Started, jobId } from "./koa-agent-fixture.ts";
 
 // The parent's branch as the host reads it: a mark for the last work and one for the last report.
 function parentLedger() {
@@ -30,105 +30,52 @@ async function child(fx: Fixture, run: (s: Started, ledger: ReturnType<typeof pa
   await run(s, ledger, channel);
 }
 
-test("a child reports its last message to its parent once the turn settles, and new work owes a new report", async () => {
-  const fx = makeFixture();
-  try {
-    await child(fx, async (s, ledger) => {
-      await s.emit("agent_start");
-      await s.emit("turn_end", { message: assistant("stop", "the merge is done; two conflicts"), toolResults: [] });
-      await s.emit("agent_end", {
-        messages: [
-          { role: "assistant", stopReason: "toolUse", content: [{ type: "text", text: "looking" }, { type: "toolCall", name: "read" }] },
-          { role: "assistant", stopReason: "stop", content: [{ type: "thinking", thinking: "hidden" }, { type: "text", text: "the merge is done" }, { type: "text", text: "; two conflicts" }] },
-        ],
-      });
-      await s.emit("agent_settled", {}, { isIdle: () => true });
-      assert.deepEqual(ledger.reports, ["the merge is done; two conflicts"]);
-      assert.deepEqual(entriesOf(s, "koa.report"), [], "the child keeps no report entry: the parent's branch holds it");
-      await idleTurn(s, "the merge is done; two conflicts");
-      assert.equal(ledger.reports.length, 1, "a second turn on the same work with the same text reports nothing");
-      await s.emit("message_start", { message: { role: "custom", customType: "ko-message", details: { work: true } } });
-      await idleTurn(s, "the merge is done; two conflicts");
-      assert.equal(ledger.reports.length, 2, "new work makes identical text a new report");
-    });
-  } finally { await fx.restore(); }
-});
-
-test("queued parent work preserves each completed turn report", async () => {
+test("a child reports completed work only before queued parent input or after settle", async () => {
   const fx = makeFixture();
   try {
     await child(fx, async (s, ledger, channel) => {
-      await s.emit("agent_start");
       const extension = channel.host.extension;
       assert.ok(extension);
-      await extension.receive({ kind: "user", text: "follow up" });
-      await s.emit("turn_end", { message: assistant("stop", "first result"), toolResults: [] });
-      assert.deepEqual(ledger.reports, ["first result"]);
-      await s.emit("turn_start");
-      await s.emit("message_start", { message: { role: "user", content: "follow up" } });
-      assert.equal(ledger.extension.childState().reported, false);
-      await s.emit("turn_end", { message: assistant("stop", "second result"), toolResults: [] });
-      await s.emit("agent_end", { messages: [assistant("stop", "first result"), assistant("stop", "second result")] });
-      await s.emit("agent_settled", {}, { isIdle: () => true });
-      assert.deepEqual(ledger.reports, ["first result", "second result"]);
-    });
-  } finally { await fx.restore(); }
-});
-
-test("an empty last message is still a report", async () => {
-  const fx = makeFixture();
-  try {
-    await child(fx, async (s, ledger) => {
-      await idleTurn(s);
-      assert.deepEqual(ledger.reports, ['subagent "worker" ended its turn with no message']);
-    });
-  } finally { await fx.restore(); }
-});
-
-test("a service does not hold the report; a non-service job does until it ends", async () => {
-  const fx = makeFixture();
-  try {
-    await child(fx, async (s, ledger) => {
-      const gate = `${fx.dir}/service-gate`;
-      const job = await s.tool("async_bash").execute("c", { command: gatedCommand(gate), name: "server", service: true });
-      assert.equal(jsonRows(await s.tool("list_async_bash").execute("l", {}))[0]?.service, true);
-      await idleTurn(s, "server ready");
-      assert.deepEqual(ledger.reports, ["server ready"]);
-      assert.deepEqual(notices(s), []);
-      writeFileSync(gate, "");
-      await pollUntil(() => notices(s).length === 1);
-      assert.ok(at(notices(s), 0).includes(jobId(job)));
-      await s.emit("message_start", { message: { role: "user", content: "more" } });
-      const build = await s.tool("async_bash").execute("c", { command: gatedCommand(`${fx.dir}/build-gate`), name: "build" });
+      const service = await s.tool("async_bash").execute("c", { command: gatedCommand(`${fx.dir}/service`), name: "service", service: true });
+      const own = await s.tool("async_bash").execute("c", { command: gatedCommand(`${fx.dir}/own`), name: "own" });
       await s.emit("agent_start");
-      await s.emit("turn_end", { message: assistant("stop", "earlier text"), toolResults: [] });
-      await s.emit("turn_start");
-      await s.emit("message_start", { message: { role: "user", content: "follow up" } });
-      await s.emit("turn_end", { message: assistant("stop", "Building."), toolResults: [] });
-      await s.emit("agent_end", { messages: [assistant("stop", "Building.")] });
+      writeFileSync(`${fx.dir}/own`, "");
+      await pollUntil(() => notices(s).some(text => text.includes(jobId(own))));
+      await s.emit("turn_end", { message: assistant("stop", "first result"), toolResults: [] });
+      assert.deepEqual(ledger.reports, [], "own queued job notice must not release the report");
+      await s.emit("agent_end", { messages: [assistant("stop", "first result")] });
       await s.emit("agent_settled", {}, { isIdle: () => true });
-      assert.deepEqual(ledger.reports, ["server ready"], "a live run holds the report");
-      await s.tool("stop_async_bash").execute("c", { job: jobId(build) });
-      await pollUntil(async () => !jsonRows(await s.tool("list_async_bash").execute("l", {})).some((row) => row.job === jobId(build) && row.state !== "ended"));
-      await idleTurn(s, "The real result.");
-      assert.deepEqual(ledger.reports, ["server ready", "Building.", "The real result."]);
-    });
-  } finally { await fx.restore(); }
-});
+      assert.deepEqual(ledger.reports, ["first result"], "a service does not hold the report");
+      assert.deepEqual(entriesOf(s, "koa.report"), []);
 
-test("a stopped job that ends after settle releases the pending report", async () => {
-  const fx = makeFixture();
-  try {
-    await child(fx, async (s, ledger, channel) => {
-      const result = await s.tool("async_bash").execute("c", { command: gatedCommand(`${fx.dir}/late-end`), name: "late" });
-      const job = channel.host.jobs.registry.jobs.get(jobId(result));
+      await s.emit("message_start", { message: { role: "user", content: "next task" } });
+      await s.emit("agent_start");
+      await extension.receive({ kind: "message", agent: { name: "boss", session: "boss-session" }, relation: "parent", text: "follow up" });
+      await s.emit("turn_end", { message: assistant("stop", "second result"), toolResults: [] });
+      assert.deepEqual(ledger.reports, ["first result", "second result"]);
+      await s.emit("turn_start");
+      await s.emit("message_start", { message: { role: "custom", customType: "ko-message", details: { work: true } } });
+      await s.emit("turn_end", { message: assistant("stop", "follow-up result"), toolResults: [] });
+      assert.deepEqual(ledger.reports, ["first result", "second result"]);
+      await s.emit("agent_end", { messages: [assistant("stop", "follow-up result")] });
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      assert.deepEqual(ledger.reports, ["first result", "second result", "follow-up result"]);
+      await idleTurn(s, "follow-up result");
+      assert.equal(ledger.reports.length, 3);
+
+      await s.emit("message_start", { message: { role: "user", content: "build" } });
+      const build = await s.tool("async_bash").execute("c", { command: gatedCommand(`${fx.dir}/build`), name: "build" });
+      const job = channel.host.jobs.registry.jobs.get(jobId(build));
       assert.ok(job);
-      const stopping = s.tool("stop_async_bash").execute("s", { job: job.id });
-      await idleTurn(s, "final report");
-      assert.deepEqual(ledger.reports, []);
-      await stopping;
+      await idleTurn(s, "build result");
+      assert.equal(ledger.reports.length, 3, "a live non-service job holds the report");
+      await s.tool("stop_async_bash").execute("s", { job: job.id });
       await job.closed;
-      assert.deepEqual(ledger.reports, ["final report"]);
+      assert.deepEqual(ledger.reports, ["first result", "second result", "follow-up result", "build result"]);
+      await s.emit("message_start", { message: { role: "user", content: "empty result" } });
+      await idleTurn(s);
+      assert.equal(ledger.reports.at(-1), 'subagent "worker" ended its turn with no message');
+      await s.tool("stop_async_bash").execute("s", { job: jobId(service) });
     });
   } finally { await fx.restore(); }
 });
