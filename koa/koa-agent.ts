@@ -1371,6 +1371,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
           const placed = placesOf(event);
           layout = { ...event, panes: [...rows.values()].filter((row) => placed.has(row.id)) };
           recordPeers();
+          host.panesChanged();
         }
         else if (layout && "pane" in event) {
           const row = layout.panes.find((p) => p.id === event.pane);
@@ -1385,6 +1386,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
             default: return;
           }
           recordPeers();
+          if ((event.type !== "var" && event.type !== "var_deleted") || event.name !== VAR_ACTIVITY) host.panesChanged();
         }
       };
       const child = openStream(ko, "/client");

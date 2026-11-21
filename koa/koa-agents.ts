@@ -109,6 +109,7 @@ export type AgentHost = {
   readonly jobs: Jobs;
   extension: Extension | undefined;
   notify(message: string, level?: "info" | "warning" | "error"): void;
+  panesChanged(): void;
   scope(): Scoped[];
   find(id: string): Agent | undefined;
   spawn(plan: SpawnPlan): Promise<Agent | { error: string }>;
@@ -402,6 +403,7 @@ export function createTree(options: TreeOptions): Tree {
         changed: job => options.jobChanged(agent(), job),
       } }), extension: undefined,
       notify: (message, level = "info") => agent().view.hooks.notify(message, level),
+      panesChanged: () => options.changed(),
       scope: () => scopeOf(agent()),
       find,
       spawn: plan => spawn(agent(), plan),

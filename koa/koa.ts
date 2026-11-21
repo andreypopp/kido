@@ -236,13 +236,26 @@ Everything after -- is message text.
     const chain = (agent: Agent): Agent[] => agent.parent ? [...chain(agent.parent), agent] : [agent];
     const rowsOf = new WeakMap<Agent, AgentRow[]>();
     const selectable = (row: AgentRow) => row.state === "running" && !row.self && row.named && row.relationship !== "other";
-    const ttl = Number(process.env.KO_AGENT_LIST_TTL_MS) || 1000;
-    const refreshRows = (agent: Agent): void => background((async () => {
-      const next = (await agent.extension?.scope(ttl) ?? []).filter(selectable);
-      if (JSON.stringify(next) === JSON.stringify(rowsOf.get(agent) ?? [])) return;
-      rowsOf.set(agent, next);
-      agent.view.publish();
-    })());
+    const refreshing = new WeakMap<Agent, { dirty: boolean }>();
+    const refreshRows = (agent: Agent): void => {
+      const pending = refreshing.get(agent);
+      if (pending) { pending.dirty = true; return; }
+      const work = { dirty: false };
+      refreshing.set(agent, work);
+      background((async () => {
+        try {
+          do {
+            work.dirty = false;
+            const next = (await agent.extension?.scope(0) ?? []).filter(selectable);
+            const previous = JSON.stringify(agentsFor(agent));
+            rowsOf.set(agent, next);
+            if (previous !== JSON.stringify(agentsFor(agent))) agent.view.publish();
+          } while (work.dirty);
+        } finally {
+          refreshing.delete(agent);
+        }
+      })());
+    };
     const agentsFor = (agent: Agent): State["agents"] => (rowsOf.get(agent) ?? []).map(row => ({ name: row.name, target: row.where.type === "process" ? { type: "view" as const, id: row.id } : { type: "pane" as const, pane: row.where.pane } }));
     const agentViewOf = (agent: Agent) => ({ id: agent.id, path: chain(agent).map(member => ({ id: member.id, name: nameOf(member), type: "agent" as const })), type: agent.parent ? 'subagent' as const : 'root' as const });
     const jobViewOf = (current: Viewed, path: View["path"]): Extract<View, { type: 'job' }> => {

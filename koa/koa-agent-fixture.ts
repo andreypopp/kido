@@ -444,7 +444,7 @@ export function createChannel(active = true) {
   const records = createPublisher({ active: active && !!facts.pane && facts.insideKo, pane: facts.pane ?? "", derive: budget => deriveRecords(self, viewing.job ? { type: "job", agent: self, job: viewing.job } : { type: "agent", agent: self }, budget) });
   const host: AgentHost = {
     self, get facts() { return hostFacts(process.env); }, browser: false, pathEditor: true, trusted: undefined, records, jobs: createJobs({ changed: () => records.changed(), path: () => "jobs", sink: () => host.extension, place: { type: "machine" }, view: { watched: job => viewing.watched.has(job), output() {}, changed() {} } }), extension: undefined,
-    notify() {}, scope: () => [], find: () => undefined, spawn: unused, stop: unused, stopDescendants: async () => {},
+    panesChanged() {}, notify() {}, scope: () => [], find: () => undefined, spawn: unused, stop: unused, stopDescendants: async () => {},
   };
   Object.assign(self, { host });
   records.changed(true);

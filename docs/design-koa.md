@@ -953,7 +953,14 @@ own child into a peer. Server-side launch and placement rules stay in
 
 A root outside a runtime observes peers with a non-sizing, unfocused
 client stream. Changed peer facts append to its registry without
-notifying the model. A refused initial connection stops retrying;
+notifying the model. The page's agent rows (the `agents` of its
+state, which make `@name` links) derive from the selected agent's
+scope. They are derived again, from a fresh pane list, when this
+stream applies a change of the panes, so a peer that writes its name
+after its spawn or resume ended still becomes a link. View switches,
+agent-tool ends and displayed custom messages also derive them. At
+most one derivation runs for each agent; changes during it cause one
+more. The state is published only when the rows changed. A refused initial connection stops retrying;
 a transport disconnect reconnects. A peer that begins and ends while
 unobserved is not recorded. An inside-runtime root cannot open this
 client stream. A saved ended peer can restart as a new top-level pane

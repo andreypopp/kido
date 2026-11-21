@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdir, readFile, mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, readdir, readFile, mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
-import { sse, ofType, selfPane, pollUntil } from "./koa-agent-fixture.ts";
+import { sse, ofType, selfPane, agentPane, pollUntil } from "./koa-agent-fixture.ts";
 import type { PageRecord } from "./koa-records.ts";
 import { realFixture } from "./koa-program-fixture.ts";
 
@@ -28,6 +28,31 @@ const items = (record: { items: object[] }) => JSON.stringify(record.items);
 const spawn = (name: string, task: string) => ({ tools: [{ name: "spawn_agent", args: { name, task } }], when: "spawn" });
 const kidScript = [spawn("kid", "work"), { when: "spawn", text: "spawned" }, { when: "work", text: "kid done" }, { when: "notice from kid", text: "noted" }];
 const posted = async (app: App) => (await app.apiCalls()).filter(call => call.method === "POST" && call.path === "/panes");
+
+test("a peer name from the client feed updates the page's agent links", { timeout: 30000 }, async t => {
+  let feed = "";
+  const env = { KO_FAKE_CLIENT_FEED: "", KO_FAKE_INSTANCE: "a".repeat(32) };
+  const peer = agentPane({ pane: "pane_2", session: "0123456789abcdef0123456789abcdef" });
+  delete peer.vars?.["koa.name"];
+  const app = await realFixture(t, {
+    panes: [selfPane(), peer, agentPane({ pane: "pane_3", session: "fedcba9876543210fedcba9876543210", name: "existing" })], replies: [],
+    env,
+    setup: async ({ dir }) => {
+      feed = env.KO_FAKE_CLIENT_FEED = join(dir, "client-feed");
+      await writeFile(feed, "");
+      return [];
+    },
+  });
+  await app.until(listed("existing"));
+  assert.deepEqual(state(app).agents, [{ name: "existing", target: { type: "pane", pane: "pane_3" } }]);
+  await pollUntil(async () => (await app.apiCalls()).some(call => call.path === "/client"), 5000, "the client stream to open");
+  const panes = JSON.parse(await readFile(join(app.dir, "panes.json"), "utf8"));
+  panes.find((row: { id: string }) => row.id === "pane_2").vars["koa.name"] = "late-peer";
+  await writeFile(join(app.dir, "panes.json"), JSON.stringify(panes));
+  await appendFile(feed, JSON.stringify({ type: "var", pane: "pane_2", name: "koa.name", value: "late-peer" }) + "\n");
+  await pollUntil(() => state(app).agents.some(agent => agent.name === "late-peer"), 5000, "the named peer in page state.agents");
+  assert.deepEqual(state(app).agents.find(agent => agent.name === "late-peer"), { name: "late-peer", target: { type: "pane", pane: "pane_2" } });
+});
 
 test("an ordinary spawn is an agent of koa's own process: no pane, a view of its own, a report to the parent", { timeout: 30000 }, async t => {
   const app = await realFixture(t, { panes: [selfPane()], replies: [...kidScript, { when: "more kid work", text: "kid again", gate: "next-turn" }, { when: "notice from kid", text: "noted again" }] });
