@@ -443,6 +443,49 @@ import XCTest
         XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
     }
 
+    func testPaneSwitchPreservesUnaffectedRecordCells() throws {
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 680),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+        let list = SidebarView()
+        window.contentView = list
+        let session = SessionID(number: 0)
+        let fixture = sidebarFixture { snapshot in
+            snapshot.sessions[0].nodes = [UInt32(2000), 2001, 2002].map { number in
+                .item(fixtureItem(number, "Agent", agentLifecycle(.running(.init())), records: [
+                    .working(.init(app: "claude-code", id: "")),
+                    number == 2002
+                        ? .blocked(.init(id: "record", kind: .permission, msg: "Waiting", title: "Waiting record"))
+                        : .working(.init(id: "record", title: "Working record")),
+                ], serial: 7, mark: .running))
+            }
+            snapshot.client = .init(session: session, window: WindowID(number: 2000), pane: PaneID(number: 2000))
+        }
+        list.show(fixture)
+        list.layoutSubtreeIfNeeded()
+        let table = try XCTUnwrap(list.visualTable as? Table)
+        let record = SidebarRow.ID.program(session, PaneID(number: 2002), Data("record".utf8))
+        let index = try XCTUnwrap(list.visualRows.firstIndex { $0.id == record })
+        let cell = try XCTUnwrap(table.view(atColumn: 0, row: index, makeIfNecessary: false))
+        let before = list.visualRows.map(\.id)
+        XCTAssertTrue(before.contains(.program(session, PaneID(number: 2000), Data("record".utf8))))
+        XCTAssertFalse(before.contains(.program(session, PaneID(number: 2001), Data("record".utf8))))
+        let reloads = table.visualReloadCount
+        var selected = fixture
+        selected.client = .init(session: session, window: WindowID(number: 2001), pane: PaneID(number: 2001))
+        list.select(selected.client)
+        XCTAssertEqual(list.visualRows.map(\.id), before)
+        list.show(selected)
+        let after = list.visualRows.map(\.id)
+        XCTAssertFalse(after.contains(.program(session, PaneID(number: 2000), Data("record".utf8))))
+        XCTAssertTrue(after.contains(.program(session, PaneID(number: 2001), Data("record".utf8))))
+        list.show(selected)
+        XCTAssertEqual(list.visualRows.map(\.id), after)
+        let finalIndex = try XCTUnwrap(list.visualRows.firstIndex { $0.id == record })
+        XCTAssertTrue(table.view(atColumn: 0, row: finalIndex, makeIfNecessary: false) === cell)
+        XCTAssertNotNil(cell.superview)
+        XCTAssertEqual(table.visualReloadCount, reloads, "pane selection must not reload the table")
+    }
+
     func testProgramRecords() throws {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 680),
                           styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)

@@ -326,23 +326,21 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
             if let row = items.first(where: { $0.id == edit.id }) {
                 edit.cell.configure(row, now: clockNow, closing: isClosing(row.id))
             }
-            let changes = items.map(\.id).difference(from: previous.map(\.id))
-            table.beginUpdates()
-            for change in changes {
-                switch change {
-                case .remove(let index, _, _): table.removeRows(at: [index], withAnimation: [])
-                case .insert(let index, _, _): table.insertRows(at: [index], withAnimation: [])
-                }
+        }
+        let changes = items.map(\.id).difference(from: previous.map(\.id))
+        table.beginUpdates()
+        for change in changes {
+            switch change {
+            case .remove(let index, _, _): table.removeRows(at: [index], withAnimation: [])
+            case .insert(let index, _, _): table.insertRows(at: [index], withAnimation: [])
             }
-            table.endUpdates()
-            table.reloadData(forRowIndexes: IndexSet(items.indices.filter { index in
-                items[index].id != editing?.id && previous.first(where: { $0.id == items[index].id }) != items[index]
-            }), columnIndexes: [0])
-            resizeRows(IndexSet(items.indices))
-        } else if previous.map(\.id) == items.map(\.id) {
-            table.reloadData(forRowIndexes: IndexSet(items.indices.filter { items[$0] != previous[$0] }), columnIndexes: [0])
-            resizeRows(IndexSet(items.indices.filter { items[$0].height != previous[$0].height }))
-        } else { table.reloadData() }
+        }
+        table.endUpdates()
+        let previousRows = Dictionary(uniqueKeysWithValues: previous.map { ($0.id, $0) })
+        table.reloadData(forRowIndexes: IndexSet(items.indices.filter { index in
+            items[index].id != editing?.id && previousRows[items[index].id].map { $0 != items[index] } == true
+        }), columnIndexes: [0])
+        resizeRows(IndexSet(items.indices.filter { previousRows[items[$0].id]?.height != items[$0].height }))
         if let edit = editing, let selection, window?.firstResponder !== editor {
             window?.makeFirstResponder(edit.cell.nameField)
             (edit.cell.nameField.currentEditor() as? NSTextView)?.setSelectedRange(selection)
@@ -727,6 +725,13 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
 }
 
 final class Table: NSTableView {
+    #if KIDO_VISUAL
+    private(set) var visualReloadCount = 0
+    override func reloadData() {
+        visualReloadCount += 1
+        super.reloadData()
+    }
+    #endif
     var focusChanged: () -> Void = {}
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()

@@ -2529,7 +2529,11 @@ headers are 26pt with the label 5pt from the top and 5pt from the left,
 and each session retains its 10pt bottom gap. The header plus is 11pt, matching its label.
 Every row has positive height. Colors resolve at drawing
 time; fonts are cached at
-initialization. Same-shape snapshots reload only changed rows. Equal-width
+initialization. A snapshot changes the table by row identity, in one
+update without animation: it removes the rows that went, inserts the rows
+that came, and reloads only the surviving rows whose content changed, so a
+change of focus that opens and folds record rows keeps every other row's
+view. A rename uses the same update. Equal-width
 clock ticks invalidate only the clock label; width changes invalidate the
 first-line band from the title's leading edge through the clock, so title
 truncation redraws. Indicator/title/activity draws outside the dirty rect are skipped.
