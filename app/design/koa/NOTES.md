@@ -2039,7 +2039,16 @@ light and dark in the gallery.
   name" in its colour and an × (14pt, the muted colour, hover the
   well2) that clears it; a click on the name opens the panel, and
   the "…" is gone. In block mode the current row is marked and the
-  "All threads" row appears. The transcript
+  "All threads" row appears. A switch of the filter (to a thread,
+  between threads, back to all) lands the newly shown transcript at
+  its bottom, following, or, when it has unread items, at the "new
+  messages" divider above the first of them with "↓ N new" (user,
+  2026-11-22; the auto-scroll rules of "Auto-scroll, the 'new
+  messages' divider and '↓ Latest'" apply from there). Under a
+  filter the unread count and the divider cover only the items the
+  filtered transcript shows; the all-threads view keeps the whole
+  count; an item unread in one view stays unread in the other until
+  it is seen. The transcript
   shows the thread's items only; every reply keeps its pill, but
   with the time alone, in the faint style of an unthreaded reply
   (the name would say the same on every row; the filter names the
