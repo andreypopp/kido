@@ -101,8 +101,9 @@ What changes visibly:
 - **Focus.** The main window stays the main window (its title bar and
   traffic lights active) while a float window is key: the float is
   a non-activating child that can become key. When the float is key:
-  its pane is the active pane, with the 1pt accent focus stroke and a
-  solid cursor; the main window's tiled panes are all unfocused
+  its pane is the active pane, with a solid cursor (and, until
+  2026-11-21, the 1pt accent focus stroke: a float draws none now,
+  section E "The paper"); the main window's tiled panes are all unfocused
   (hollow cursor, no stroke, the 3% shifted paper, also on a sole
   tiled pane: user, 2026-11-20, section E "The paper"), and the
   other floats keep their 45% inactive overlay. When the main window
@@ -291,16 +292,20 @@ parent, minimise and Space for free; each is now a rule of ours.
 - **The paper** (user, 2026-11-20; replaces "no 3% shift" in
   section B and the same in docs/design-app.md "Focus treatment").
   One rule: the focused pane is the pane of the key window among
-  Kido's, and it alone has the pure paper, the stroke and the solid
-  cursor; every other pane is unfocused. An unfocused tiled pane has
+  Kido's, and it alone has the pure paper and the solid cursor, and
+  the stroke if it is a tiled pane among several; every other pane
+  is unfocused. An unfocused tiled pane has
   the 3% shifted paper, no stroke and a hollow cursor, so while a
   float is key every tiled pane of the main window is shifted, a
   sole tiled pane too (the single-pane exception of "Focus
   treatment" holds only while the main window is key, when that pane
-  is the focused one). A float's paper is never shifted: a float is
-  pure with the stroke while key, and pure under its 45%
-  theme-background overlay while not key (the main window key, or
-  another float). A koa page follows its pane's paper through
+  is the focused one). A float draws no focus stroke, ever (user,
+  2026-11-21): it is alone in its window, as a sole tiled pane is,
+  and its window edge is its border. A float's paper is never
+  shifted: a key float is pure paper, solid cursor, no stroke, no
+  overlay; a float that is not key (the main window key, or another
+  float) is pure paper under its 45% theme-background overlay,
+  hollow cursor, no stroke. A koa page follows its pane's paper through
   `--ko-bg`, so the page of a tiled koa pane dims while its editor
   float is key. A sheet or panel over a Kido window (the close
   confirmation of section D, a save panel, the command palette,
@@ -308,8 +313,10 @@ parent, minimise and Space for free; each is now a rule of ours.
   window and returns key to the float: it counts for the window it
   took key from) counts as that
   window being key for the paper, the stroke and the overlay: a
-  sheet on a float keeps the float pure with the stroke and the
-  tiled panes shifted; a sheet on the main window keeps its active
+  sheet on a float keeps the float's paper pure (no stroke, as
+  never) under section D's dim, which is the same 45% treatment, so
+  a float under its own sheet looks like a not-key float, and the
+  tiled panes stay shifted; a sheet on the main window keeps its active
   tiled pane pure with the stroke. Only the cursor follows the key
   panel, hollow under a sheet as today. When no Kido window and no
   sheet of one is key, the not-key rule as today: no pane is

@@ -18,7 +18,7 @@ p{max-width:820px;margin:0 0 10px;color:color-mix(in srgb,var(--fg) 75%,transpar
 .tiled>div{flex:1;background:var(--shift);position:relative;font:12px/16px ui-monospace,Menlo,monospace;color:color-mix(in srgb,var(--fg) 70%,transparent);padding:8px 10px;white-space:pre}
 .tiled>div+div{border-left:1px solid var(--edge)}
 .float{position:absolute;width:300px;height:170px;background:var(--bg);border:1px solid var(--edge);border-radius:10px;box-shadow:var(--shadow);box-sizing:border-box;overflow:hidden}
-.float.key::after{content:"";position:absolute;inset:0;border:1px solid color-mix(in srgb,var(--accent) 50%,transparent);border-radius:10px;pointer-events:none}
+/* a float draws no focus stroke (user, 2026-11-21): key is pure paper and a solid cursor, nothing more */
 .float.inactive .paper{background:color-mix(in srgb,var(--bg) 100%,transparent)}
 .float.inactive::before{content:"";position:absolute;inset:0;background:color-mix(in srgb,var(--bg) 45%,transparent);z-index:3;border-radius:10px}
 .pad{position:absolute;left:0;right:0;top:0;height:22px}
@@ -127,7 +127,7 @@ short summary<span class="cursor"></span></div><div class="handle"><i></i><i></i
 ~
 ~
 <span class="cursor hollow"></span></div><div class="handle"><i></i><i></i></div></div>
-<div class="cap">not key: the 45% overlay, hollow cursor, no stroke (section E)</div></div>
+<div class="cap">not key: the 45% overlay, hollow cursor (section E); key: pure paper, solid cursor, no stroke</div></div>
 </div>
 
 <h2>3 · Docking by drag: Option over a tiled pane of the float's own window</h2>
