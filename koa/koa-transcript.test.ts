@@ -401,6 +401,18 @@ test("caps preserve UTF-8 and windows retain the newest forty items", t => {
   view.close();
 });
 
+test('a history page returns its first record even when it exceeds the byte limit', t => {
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }); t.after(() => view.close());
+  const summary = 'x'.repeat(421000);
+  view.message({ role: 'user', content: 'before', timestamp: 1 }, 'end');
+  view.message({ role: 'compactionSummary', summary, tokensBefore: 100, timestamp: 2 }, 'end');
+  const page = JSON.parse(request(view, '/items?before=2').join(''));
+  assert.deepEqual(page.items.map((item: WireItem) => item.kind), ['summary']);
+  assert.equal(page.items[0].text, summary);
+  assert.equal(page.more, true);
+  assert.equal(JSON.parse(request(view, '/items?before=1').join('')).items[0].text, 'before');
+});
+
 test("patches append only unchanged text prefixes and replace changed blocks", t => {
   const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 });
   const lines = request(view, "/events");

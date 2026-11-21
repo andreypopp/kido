@@ -1692,7 +1692,7 @@ function apply(record: PageRecord) {
     lastMeasurement = undefined;
     resetting = true;
     for (const item of record.items) { accept(item); changedItem(item.seq, false); }
-    historyBefore = record.items.filter(item => item.kind !== 'annotations' && item.kind !== 'threads').reduce((lowest, item) => Math.min(lowest, item.seq), Infinity);
+    historyBefore = record.items.filter(item => !threadFilter() || item.kind !== 'annotations' && item.kind !== 'threads').reduce((lowest, item) => Math.min(lowest, item.seq), Infinity);
     if (threadFilter()) void reloadThread();
     else { const generation = scrolling.generation; void rendered().then(() => { if (epoch === record.epoch && scrolling.generation === generation) fillHistory(); }); }
     schedule();
@@ -2065,7 +2065,7 @@ async function loadOlder(mine: NonNullable<typeof historyRequest>) {
     if (historyRequest === mine && result.epoch === epoch) {
       enqueue({ type: 'history' });
       more = result.more;
-      historyBefore = result.items.filter(item => item.kind !== 'annotations' && item.kind !== 'threads').reduce((lowest, item) => Math.min(lowest, item.seq), mine.before);
+      historyBefore = result.items.filter(item => !mine.thread || item.kind !== 'annotations' && item.kind !== 'threads').reduce((lowest, item) => Math.min(lowest, item.seq), mine.before);
       for (const item of result.items) if (!items.has(item.seq)) accept(item);
       for (const patch of mine.patches) { applyPatch(patch, false); if (historyRequest !== mine) return; }
       await rendered();

@@ -400,7 +400,11 @@ A reconnect sends the epoch and the last final item, not
 Last-Event-ID. Patches change unfinished items, so an event id would
 be the wrong cursor. A current cursor gets the missing items; another
 epoch gets a capped reset window. Older history uses the same window
-limits. The page asks for older history when its top comes into view. After
+limits. Without a thread filter, the page's cursor for the next older
+page is the lowest seq of every record that it received, metadata
+included, so a page of only metadata still moves it; a filtered
+reload's cursor ignores annotation and thread records, which can lie
+outside its message range. The page asks for older history when its top comes into view. After
 the first page, each older page and a thread reload, it asks for the
 next older page while its top is still in view, so a window that the
 rows do not fill fills itself; a failed page stops this until the next

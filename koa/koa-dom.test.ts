@@ -4436,3 +4436,18 @@ test('Select All is derived from the selection at copy time, in the menu and the
   page.collapse();
   assert.equal(page.copy().prevented, false);
 });
+
+test('metadata-only history advances the cursor and stops requesting after the last page', async () => {
+  const page = await windowPage(), requests: number[] = [];
+  page.evaluate("element('scroll').clientHeight=1000");
+  Object.assign(page.app.context, { fetch: async (path: string) => {
+    const before = Number(path.match(/before=(\d+)/)?.[1]); requests.push(before);
+    return { ok: true, json: async () => ({ epoch: 'a', more: before === 20, items: before === 20 ? [17, 18, 19].map(seq => ({ seq, revision: 0, at: 1, final: true, kind: 'threads', target: seq - 3, threads: ['general'] })) : page.rows(0, 17) }) };
+  } });
+  page.open(page.rows(20, 21), true);
+  for (let turn = 0; turn < 8; turn++) { page.settle(4); await page.settled(); }
+  const auto = [...requests];
+  void page.evaluate('older()');
+  for (let turn = 0; turn < 4; turn++) { page.settle(4); await page.settled(); }
+  assert.deepEqual({ auto, afterClick: requests }, { auto: [20, 17], afterClick: [20, 17] });
+});
