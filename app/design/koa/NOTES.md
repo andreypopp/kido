@@ -2096,7 +2096,7 @@ light and dark in the gallery.
   muted colour, 0/3px padding, 4px radius, hover the well2) that
   drops it; without a thread the row holds the "+ thread" chip
   ("Starting a thread explicitly"), so the row always exists. It is set by a click on a message's chip, by a typed
-  `/thread name` ("Starting a thread explicitly"), and by the widget: a
+  the "+ thread" chip ("Starting a thread explicitly"), and by the widget: a
   filter sets the composer's thread to the filtered thread. The
   message goes to that thread (the marker is written, the
   classifier is not asked); the chip stays after a send, so the
@@ -2130,11 +2130,9 @@ light and dark in the gallery.
   move the caret to the text), Escape or the × returns to "+
   thread". A thread's name is a Zulip topic, with spaces and any
   text, so there is no `#name` syntax (it would collide with
-  Markdown headings; user, 2026-11-21). The keyboard route is the
-  slash command `/thread <name>`: it sets the composer's thread to
-  that name, existing (the completion popup offers the existing
-  names after `/thread `) or new, and leaves the text; `/thread`
-  alone drops the composer's thread. The chip is the composer's thread ("The composer's
+  Markdown headings; user, 2026-11-21), and no `/thread` command
+  (user, 2026-11-21: "+ thread" is the only way to name the
+  composer's thread). The chip is the composer's thread ("The composer's
   thread" above): the message goes to #name, the transcript is not
   filtered (user, 2026-11-21: the filter is only the widget's), the
   × drops it and nothing returns to the text. On send the message
@@ -2171,7 +2169,7 @@ light and dark in the gallery.
   message goes without a marker). Only ↺ restores (user,
   2026-11-21: not an explicit message): a message sent to an
   archived thread by its chip in the composer (a click on a
-  message's chip, `/thread`, the naming chip), a filter on it (a
+  message's chip, the naming chip), a filter on it (a
   click on its dimmed row filters as on a live row), a turn moved
   or a thread merged into it all leave it archived. Rename works as
   on a live thread. The state is koa's, per session, in the session's thread
