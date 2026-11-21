@@ -264,7 +264,7 @@ import XCTest
             XCTAssertEqual(sheet.frame.midX, drawn.midX, accuracy: 1, "centred on the float's frame")
             XCTAssertTrue(sheet.frame.maxY <= drawn.maxY && sheet.frame.maxY > drawn.minY, "the sheet's top is inside the float's frame: \(sheet.frame) in \(drawn)")
             let displayed = try XCTUnwrap(terminal).displayedPanes.filter { $0.pane != float }
-            try await wait("the key sheet keeps its float's paper focus", within: 5) { NSApp.keyWindow === sheet && OwnerWindow.inputWindow === host && self.terminal?.visualChromes.first { $0.pane == float }?.treatment == .focus }
+            try await wait("the key sheet keeps its float's paper focus", within: 5) { NSApp.keyWindow === sheet && OwnerWindow.inputWindow === host && self.terminal?.visualChromes.first { $0.pane == float }?.treatment == .plain }
             XCTAssertTrue(displayed.allSatisfy(\.shiftedBackground), "the sheet is key, so every main-window tiled pane has shifted paper")
             let floatPane = try XCTUnwrap(session.pane(float))
             XCTAssertFalse(floatPane.visualSurfaceFocused, "the sheet owns keyboard input, so the float cursor is hollow")
@@ -285,7 +285,7 @@ import XCTest
             image.unlockFocus()
             if let failure = verifySnapshot(of: image, as: .pixels, named: "sheet", record: record, testName: testName),
                !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
-            XCTAssertEqual(try chrome(float).treatment, .focus, "the key sheet keeps the float's pure paper and accent stroke")
+            XCTAssertEqual(try chrome(float).treatment, .plain, "the key sheet keeps the float's pure paper without a stroke")
             owner.window.makeKeyAndOrderFront(nil)
             try await wait("the main window is key", within: 5) { NSApp.keyWindow === self.owner.window }
             terminal.focus(PaneID(number: 2))
@@ -404,7 +404,7 @@ import XCTest
         host.testInput(true)
         (owner.window as? OwnerWindow)?.testInput(false)
         terminal.updateFocusTreatment()
-        XCTAssertEqual(try chrome(float).treatment, .focus, "the float that has the keyboard has the accent stroke")
+        XCTAssertEqual(try chrome(float).treatment, .plain, "the float that has the keyboard has no stroke")
     }
 
     func testADividerDragIsOneResizeOfTheTwoNeighbours() async throws {

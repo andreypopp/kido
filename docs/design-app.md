@@ -1144,8 +1144,9 @@ of the key Kido window (`OwnerWindow.focusedPane`); a key sheet counts
 as its parent window being key, and only the cursor turns hollow under
 it, never the selection,
 which is only navigation. Paper, stroke, overlay and Ghostty surface focus
-all read it. While a float window is key, its pane has the 1pt accent
-stroke and a solid cursor, every tiled pane of the main window takes the
+all read it. A float never draws a stroke: its window edge is its
+border, as a sole tiled pane draws none. While a float window is key,
+its pane has pure paper and a solid cursor, every tiled pane of the main window takes the
 shift, a sole tiled pane too, with a hollow cursor and no stroke, and the
 other floats keep the overlay. A float's paper never takes the shift:
 it is pure, under the overlay when the float is not focused. While the

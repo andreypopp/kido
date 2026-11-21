@@ -250,9 +250,7 @@ import XCTest
         wait("the float follows the layout") { ((try? self.screen(view).minX) ?? 0) > owner.window.frame.minX }
     }
 
-    // The pane of a float that has the keyboard is the active pane, with the accent stroke; the tiled panes
-    // are not key and the other floats keep their overlay.
-    func testAFloatThatBecomesKeyIsTheActivePaneWithTheStroke() throws {
+    func testAFloatThatBecomesKeyIsTheActivePaneWithoutAStroke() throws {
         let (owner, client) = try shown(twoFloats)
         let session = try XCTUnwrap(owner.testSession)
         let terminal = try XCTUnwrap(session.windows.values.first { !$0.isHidden })
@@ -268,7 +266,7 @@ import XCTest
         wait("its pane is the active pane") { (try? client.model())?.selection.pane == id }
         wait("the owner's window shows its pane as active") { terminal.active == id }
         terminal.updateFocusTreatment()
-        XCTAssertEqual(terminal.visualChromes.first { $0.pane == id }?.treatment, .focus)
+        XCTAssertEqual(terminal.visualChromes.first { $0.pane == id }?.treatment, .plain)
         XCTAssertEqual(terminal.visualChromes.first { $0.pane == PaneID(number: 2) }?.treatment, .overlay)
         XCTAssertTrue(owner.owns(host))
         XCTAssertTrue(owner.inputWindow === host, "the owner routes input to the key float")
@@ -294,7 +292,7 @@ import XCTest
             }
             for floating in terminal.displayedPanes.filter({ !$0.transparentPaper }) {
                 XCTAssertFalse(floating.shiftedBackground, "float paper is never shifted")
-                XCTAssertEqual(terminal.visualChromes.first { $0.pane == floating.pane }?.treatment, floating === pane ? .focus : .overlay)
+                XCTAssertEqual(terminal.visualChromes.first { $0.pane == floating.pane }?.treatment, floating === pane ? .plain : .overlay)
             }
             let main = try XCTUnwrap(owner.window as? OwnerWindow)
             let tiled = try XCTUnwrap(terminal.displayedPanes.first { $0.transparentPaper })
@@ -845,7 +843,7 @@ import XCTest
             XCTAssertTrue(host.firstResponder === host.content)
             XCTAssertTrue(PaneView.owner(host.firstResponder) === pane)
             terminal.updateFocusTreatment()
-            XCTAssertEqual(terminal.visualChromes.first { $0.pane == pane.pane }?.treatment, .focus)
+            XCTAssertEqual(terminal.visualChromes.first { $0.pane == pane.pane }?.treatment, .plain)
             XCTAssertNotEqual(host.frame.origin, initial.origin)
             let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: host.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
             host.sendEvent(escape)

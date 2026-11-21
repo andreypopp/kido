@@ -49,7 +49,7 @@ final class PaneChrome: NSView {
     var padding: [CGRect] { bounds.insetBy(dx: 5, dy: 5).subtracting([content] + overlays) }
     var hover: (PaneChrome, NSPoint?) -> Void = { _, _ in }
     var content = CGRect.zero
-    enum Treatment { case plain, edge, focus, overlay }
+    enum Treatment { case plain, edge, overlay }
     var treatment = Treatment.plain { didSet { if treatment != oldValue { needsDisplay = true } } }
     // Where the pane runs: its stripe is the top band of the chrome, over the top side of the focus edge.
     static let stripeBand: CGFloat = 3
@@ -110,11 +110,6 @@ final class PaneChrome: NSView {
                     else { path.line(to: corner) }
                 }
                 path.close()
-                path.stroke()
-            case .focus:
-                Chrome.focusStroke.setStroke()
-                let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 10, yRadius: 10)
-                path.lineWidth = 1
                 path.stroke()
             case .overlay:
                 Chrome.floatingOverlay(runtime.background).setFill()

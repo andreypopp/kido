@@ -470,9 +470,9 @@ final class WindowView: NSView {
             let tiled = pane.transparentPaper
             let focused = pane === focusedPane
             let shifted = tiled && (!mainKey || multiple && !focused)
-            chrome.treatment = tiled
-                ? (multiple && focused ? .edge : .plain)
-                : (focused ? .focus : .overlay)
+            chrome.treatment = focused
+                ? (tiled && multiple ? .edge : .plain)
+                : (tiled ? .plain : .overlay)
             chrome.runtimeFocused = focused
             pane.runtimeFocused = focused
             let changed = shifted != pane.shiftedBackground
