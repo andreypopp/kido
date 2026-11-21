@@ -16,7 +16,9 @@ repeat them.
 - [docs/design-runtimes.md](docs/design-runtimes.md): runtimes.
 - [docs/design-webview.md](docs/design-webview.md): webview panes.
 - [docs/design-koa.md](docs/design-koa.md): koa, its page, agent
-  extension, subagents, jobs, development and release.
+  extension, subagents, jobs and release.
+- [docs/dev-koa.md](docs/dev-koa.md): koa's development: build,
+  checks, fakes, replay and the page's visual checks.
 - [docs/design-app.md](docs/design-app.md): Kido.app.
 - [docs/kow.md](docs/kow.md): kow, the deployment of one remote ko
   server.
@@ -363,7 +365,7 @@ Conventions:
   formula of the code under test. Only `fuzz/` reads `KO_FUZZ_*`.
 
 **koa.** Follow [docs/design-koa.md](docs/design-koa.md) for the
-harness boundary, page, extension, subagents, jobs and development.
+harness boundary, page, extension, subagents and jobs.
 
 ## The server
 
@@ -476,8 +478,7 @@ docs/verification.md describes every check. The targets agents run:
     make cargo ARGS='test -p ko_server'  one cargo command, for iterating on one package
     make lint    cargo fmt --check, clippy and scripts/lint.sh
     make schemas regenerate the schemas and webview/ko-api.d.ts
-    make prompts regenerate the prompt fixture (make -C koa prompts)
-    make -C koa check  koa's typecheck, lint and test; test FILE=name.test.ts runs one file
+    make prompts regenerate koa's prompt fixture
     make fuzz TARGET=ring TIME=600  one time-boxed fuzz run, only when the user asks
     make ci-like ARGS=...  a CPU/memory-capped Linux container
 
@@ -497,9 +498,8 @@ windows and take focus. The app's test targets (`test`, `ko-test`,
 tests in the visual-test VM through `app/scripts/guest-test.sh`
 (docs/build.md, "The visual-test VM"). Only CI passes `GUEST=0`; an
 agent never does. A new target that launches the app uses the same
-runner. koa visual checks run only on the host with
-`make -C koa visual`; see
-[docs/design-koa.md](docs/design-koa.md#host-visual-checks).
+runner. koa's page visual checks start no app: they run only on the
+host.
 
 **Visual snapshots belong to the guest.** `make -C app visual` builds
 on the host and runs in the visual-test VM on one pinned macOS build
@@ -545,8 +545,8 @@ PASS/FAIL line. A change that makes a stage slower needs a reason.
   its tests at once, so each server start costs the whole suite: put
   cases that need the same setup in one test, on one server.
 - Test pure logic in a unit test, not through a server.
-- For TypeScript fixtures and event gates, follow
-  [docs/design-koa.md](docs/design-koa.md#fake-ko-and-fake-model).
+- A TypeScript fixture waits for a gate of the test action, not for
+  elapsed time.
 - A test earns its time. Do not keep a test that repeats another
   test, the prompt snapshot or the compiler, or that only repeats a
   constant or a one-line function.

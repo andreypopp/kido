@@ -67,10 +67,8 @@ the host's macOS build is not the reference. `make visual` prints one
 tests, the quit check and the total; `test` and `ko-test` print the
 same lines without the quit check.
 
-koa visual checks run only on the host with `make -C koa visual`, the
-local stage `koa-visual`.
-See [design-koa.md](design-koa.md#development) for snapshots and the
-replay driver.
+See [dev-koa.md](dev-koa.md#checks) for koa's checks, its host
+stage `koa-visual` and its CI steps.
 
 `scripts/main-watch.sh` watches main and reports each observed head's
 CI. `/gh-watch` starts it through streamed `async_bash`.
@@ -159,7 +157,7 @@ the pane's terminal. It runs 20 random cases under `cargo test`;
 
 ## The TypeScript suite
 
-See [design-koa.md](design-koa.md#development) for the TypeScript suite, fake ko, fake model and replay fixtures.
+See [dev-koa.md](dev-koa.md) for the TypeScript suite, fake ko, fake model and replay fixtures.
 
 ## The e2e suite
 

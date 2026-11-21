@@ -433,7 +433,7 @@ Their source is `share/ko/bin`; the shared helper is
   directory (`look_path_past` in `ko_shell/src/bin_dir.rs`).
 
 `koa` is not ko's: it is its own package with its own shim
-(design-koa.md, "Build, install and run"), so `koa` in a pane is the first
+(dev-koa.md, "Build, install and run"), so `koa` in a pane is the first
 `koa` of the user's PATH.
 
 A shim never embeds an installed path. It calculates every location
@@ -466,7 +466,7 @@ order.
 **Install layout.** `make build` lays out `build/ko/` as installed:
 `bin/ko`, `bin/ko-pane` and `share/ko` with `bin/`, `shim.sh`,
 `webview/` (the SDK and `ko-api.d.ts`) and the terminfo; koa has its
-own layout (design-koa.md, "Build, install and run"). `make
+own layout (dev-koa.md, "Build, install and run"). `make
 install` copies it under
 `PREFIX`, default `~/.local`. This is Homebrew's `pkgshare` layout.
 
@@ -477,7 +477,7 @@ passes them in the server's environment. The linger grace and runtime
 idle are configuration keys, read at each use; tests change their
 private server's configuration file.
 
-See [design-koa.md](design-koa.md#development) for harness test controls.
+See [dev-koa.md](dev-koa.md) for harness test controls.
 
 ## Known limits
 

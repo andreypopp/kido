@@ -317,7 +317,7 @@ import WebKit
                 _ = try await webviewJS(web, "(()=>{document.querySelector('.thread-clear')?.click();document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));window.composer.setText('');return true})()")
                 try await advance()
             }
-            self.resize(NSSize(width: name == "threads-marks-narrow" ? 448 : 960, height: 557.5))
+            self.resize(NSSize(width: name == "threads-marks-narrow" ? 448 : 960, height: 557))
         try await webviewUntil(web, "!document.querySelector('#threads').hidden&&document.querySelector('.thread-capsule')!==null")
         if name == "threads-many" || name == "threads-many-narrow" {
             let expected = name == "threads-many" ? 9 : 4
@@ -348,7 +348,7 @@ import WebKit
         }
         try await capture(name)
         if name == "threads-many" || name == "threads-filter" {
-            self.resize(NSSize(width: 448, height: 557.5))
+            self.resize(NSSize(width: 448, height: 557))
             try await koaMeasured(web, "#threads")
             try await capture(name + "-narrow")
         }
@@ -435,7 +435,7 @@ import WebKit
             var lastSize = width
             for size in [width, 400, 280, 208, width] {
                 let previous = try await webviewJS(web, "document.querySelector('#scroll').clientWidth")
-                self.resize(NSSize(width: size, height: 557.5))
+                self.resize(NSSize(width: size, height: 557))
                 if size != lastSize { try await webviewUntil(web, "document.querySelector('#scroll').clientWidth!==\(previous)") }
                 lastSize = size
                 try await webviewUntil(web, "(()=>{const column=document.querySelector('#transcript').getBoundingClientRect(),bar=document.querySelector('#bar');return Math.abs(Number.parseFloat(bar.style.maxWidth)-(column.width-16))<=.5&&column.width<=\(Int(size))})()")
@@ -577,7 +577,7 @@ import WebKit
         initialScript.append("const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[1700000012000]))}static now(){return 1700000012000}};window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};")
 
         let assets = try replayRoot()
-        try await start(module: module, key: key, assets: assets, viewport: NSSize(width: 680, height: 557.5), initialScripts: [initialScript])
+        try await start(module: module, key: key, assets: assets, viewport: NSSize(width: 680, height: 557), initialScripts: [initialScript])
         try await wait("koa page") { self.browser != nil }
         let web = try requireValue(browser)
         assertReplayRan(web)
@@ -757,72 +757,72 @@ import WebKit
 
 
     func testKoaWebviewBangCompletion() async throws {
-        try await koaWebview(key: "BangCompletion", width: 960, height: 357.5, scenario: .bang, pairedWidths: true, phases: ["bang-tab"])
+        try await koaWebview(key: "BangCompletion", width: 960, height: 357, scenario: .bang, pairedWidths: true, phases: ["bang-tab"])
     }
     func testKoaWebviewBang() async throws {
-        try await koaWebview(key: "Bang", width: 960, height: 217.5, scenario: .bang, pairedWidths: true, phases: ["bang"])
+        try await koaWebview(key: "Bang", width: 960, height: 217, scenario: .bang, pairedWidths: true, phases: ["bang"])
     }
     func testKoaWebviewComposerFootResponsive() async throws {
-        try await koaWebview(key: "testKoaWebviewComposerFootResponsive", width: 656, height: 297.5, scenario: .composer, phases: ["foot-responsive"])
+        try await koaWebview(key: "testKoaWebviewComposerFootResponsive", width: 656, height: 297, scenario: .composer, phases: ["foot-responsive"])
     }
     func testKoaWebviewComposerFootStates() async throws {
-        try await koaWebview(key: "ComposerFootStates", width: 960, height: 557.5, scenario: .composer, pairedWidths: true, phases: ["foot-idle", "foot-working", "foot-editing", "foot-picker", "foot-toast", "foot-toast-err", "foot-narrow", "foot-extras", "foot-waiting", "foot-exited"])
+        try await koaWebview(key: "ComposerFootStates", width: 960, height: 557, scenario: .composer, pairedWidths: true, phases: ["foot-idle", "foot-working", "foot-editing", "foot-picker", "foot-toast", "foot-toast-err", "foot-narrow", "foot-extras", "foot-waiting", "foot-exited"])
     }
 
     func testKoaWebviewComposerStateGeometryWide() async throws {
-        try await koaWebview(key: "testKoaWebviewComposerStateGeometryWide", width: 960, height: 557.5, phases: ["geometry"])
+        try await koaWebview(key: "testKoaWebviewComposerStateGeometryWide", width: 960, height: 557, phases: ["geometry"])
     }
     func testKoaWebviewComposerStateGeometryNarrow() async throws {
-        try await koaWebview(key: "testKoaWebviewComposerStateGeometryNarrow", width: 448, height: 557.5, phases: ["geometry"])
+        try await koaWebview(key: "testKoaWebviewComposerStateGeometryNarrow", width: 448, height: 557, phases: ["geometry"])
     }
 
 
     func testKoaWebviewCommandsNarrow() async throws {
-        try await koaWebview(key: "testKoaWebviewCommandsNarrow", width: 448, height: 557.5, scenario: .commands, phases: [])
+        try await koaWebview(key: "testKoaWebviewCommandsNarrow", width: 448, height: 557, scenario: .commands, phases: [])
     }
 
     func testKoaWebviewMockupStates() async throws {
-        try await koaWebview(key: "testKoaWebviewMockupStates", width: 960, height: 557.5, phases: ["user-well"])
+        try await koaWebview(key: "testKoaWebviewMockupStates", width: 960, height: 557, phases: ["user-well"])
     }
 
     func testKoaWebviewNotices() async throws {
-        try await koaWebview(key: "Notices", width: 960, height: 557.5, scenario: .notices, pairedWidths: true, phases: [])
+        try await koaWebview(key: "Notices", width: 960, height: 557, scenario: .notices, pairedWidths: true, phases: [])
     }
 
     func testKoaWebviewLatest() async throws {
-        try await koaWebview(key: "Latest", width: 960, height: 557.5, scenario: .latest, pairedWidths: true, phases: [])
+        try await koaWebview(key: "Latest", width: 960, height: 557, scenario: .latest, pairedWidths: true, phases: [])
     }
 
     func testKoaWebviewErrorState() async throws {
-        try await koaWebview(key: "testKoaWebviewErrorState", width: 960, height: 590.5, phases: ["error"])
+        try await koaWebview(key: "testKoaWebviewErrorState", width: 960, height: 590, phases: ["error"])
     }
 
     func testKoaWebviewShortStates() async throws {
-        try await koaWebview(key: "testKoaWebviewShortStates", width: 960, height: 297.5, phases: ["idle"])
+        try await koaWebview(key: "testKoaWebviewShortStates", width: 960, height: 297, phases: ["idle"])
     }
 
     func testKoaWebviewNarrowStates() async throws {
-        try await koaWebview(key: "testKoaWebviewNarrowStates", width: 448, height: 557.5, phases: ["narrow-stream"])
+        try await koaWebview(key: "testKoaWebviewNarrowStates", width: 448, height: 557, phases: ["narrow-stream"])
     }
 
     func testKoaWebviewDialogs() async throws {
-        try await koaWebview(key: "testKoaWebviewDialogs", width: 960, height: 557.5, scenario: .dialogs, phases: ["dialog-select"])
+        try await koaWebview(key: "testKoaWebviewDialogs", width: 960, height: 557, scenario: .dialogs, phases: ["dialog-select"])
     }
 
     func testKoaWebviewControls() async throws {
-        try await koaWebview(key: "testKoaWebviewControls", width: 960, height: 297.5, scenario: .controls, phases: ["queue"])
+        try await koaWebview(key: "testKoaWebviewControls", width: 960, height: 297, scenario: .controls, phases: ["queue"])
     }
 
     func testKoaWebviewNarrowControls() async throws {
-        try await koaWebview(key: "testKoaWebviewNarrowControls", width: 448, height: 297.5, scenario: .controls, phases: ["narrow-queue"])
+        try await koaWebview(key: "testKoaWebviewNarrowControls", width: 448, height: 297, scenario: .controls, phases: ["narrow-queue"])
     }
 
     func testKoaWebviewExit() async throws {
-        try await koaWebview(key: "testKoaWebviewExit", width: 960, height: 557.5, scenario: .exit, phases: ["times"])
+        try await koaWebview(key: "testKoaWebviewExit", width: 960, height: 557, scenario: .exit, phases: ["times"])
     }
 
     func testKoaWebviewFailed() async throws {
-        try await koaWebview(key: "Failed", width: 960, height: 557.5, scenario: .failed, pairedWidths: true, phases: ["exited"])
+        try await koaWebview(key: "Failed", width: 960, height: 557, scenario: .failed, pairedWidths: true, phases: ["exited"])
     }
 
     func testKoaWebviewRhythm() async throws {
@@ -844,72 +844,72 @@ import WebKit
 
 
     func testKoaWebviewThreads() async throws {
-        try await koaWebview(key: "Threads", width: 960, height: 557.5, scenario: .threads, phases: ["threads-two", "threads-many", "threads-marks", "threads-marks-narrow"])
+        try await koaWebview(key: "Threads", width: 960, height: 557, scenario: .threads, phases: ["threads-two", "threads-many", "threads-marks", "threads-marks-narrow"])
     }
 
     func testKoaWebviewThreadsFilter() async throws {
-        try await koaWebview(key: "ThreadsFilter", width: 960, height: 557.5, scenario: .threads, phases: ["threads-filter"])
+        try await koaWebview(key: "ThreadsFilter", width: 960, height: 557, scenario: .threads, phases: ["threads-filter"])
     }
     func testKoaWebviewThreadsFilterPanel() async throws {
-        try await koaWebview(key: "ThreadsFilterPanel", width: 960, height: 557.5, scenario: .threads, phases: ["threads-filter-panel"])
+        try await koaWebview(key: "ThreadsFilterPanel", width: 960, height: 557, scenario: .threads, phases: ["threads-filter-panel"])
     }
     func testKoaWebviewAgents() async throws {
-        try await koaWebview(key: "Agents", width: 960, height: 557.5, scenario: .agents, pairedWidths: true, phases: [])
+        try await koaWebview(key: "Agents", width: 960, height: 557, scenario: .agents, pairedWidths: true, phases: [])
     }
 
     func testKoaWebviewSubagentView() async throws {
-        try await koaWebview(key: "SubagentView", width: 960, height: 557.5, scenario: .views, pairedWidths: true, phases: [])
+        try await koaWebview(key: "SubagentView", width: 960, height: 557, scenario: .views, pairedWidths: true, phases: [])
     }
     func testKoaWebviewViewBar() async throws {
-        try await koaWebview(key: "ViewBar", width: 960, height: 557.5, scenario: .views, pairedWidths: true, phases: [])
+        try await koaWebview(key: "ViewBar", width: 960, height: 557, scenario: .views, pairedWidths: true, phases: [])
     }
     func testKoaWebviewJobs() async throws {
-        try await koaWebview(key: "Jobs", width: 960, height: 557.5, scenario: .jobs, pairedWidths: true, phases: ["job-running", "job-ended", "job-service"])
+        try await koaWebview(key: "Jobs", width: 960, height: 557, scenario: .jobs, pairedWidths: true, phases: ["job-running", "job-ended", "job-service"])
     }
 
     func testKoaWebviewLightbox() async throws {
-        try await koaWebview(key: "testKoaWebviewLightbox", width: 960, height: 557.5, scenario: .lightbox, phases: ["media-lightbox"])
+        try await koaWebview(key: "testKoaWebviewLightbox", width: 960, height: 557, scenario: .lightbox, phases: ["media-lightbox"])
     }
 
     func testKoaWebviewPaths() async throws {
-        try await koaWebview(key: "Paths", width: 960, height: 397.5, scenario: .paths, phases: ["path-links"])
+        try await koaWebview(key: "Paths", width: 960, height: 397, scenario: .paths, phases: ["path-links"])
     }
 
 
     func testKoaWebviewMedia() async throws {
-        try await koaWebview(key: "Media", width: 960, height: 557.5, scenario: .media, pairedWidths: true, phases: ["media-read-image"])
+        try await koaWebview(key: "Media", width: 960, height: 557, scenario: .media, pairedWidths: true, phases: ["media-read-image"])
     }
 
     func testKoaWebviewAttachments() async throws {
-        try await koaWebview(key: "Attachments", width: 960, height: 557.5, scenario: .attachments, pairedWidths: true, phases: [])
+        try await koaWebview(key: "Attachments", width: 960, height: 557, scenario: .attachments, pairedWidths: true, phases: [])
     }
 
     func testKoaWebviewUserMarkdown() async throws {
-        try await koaWebview(key: "UserMarkdown", width: 960, height: 557.5, scenario: .userMarkdown, pairedWidths: true, phases: ["user-markdown"])
+        try await koaWebview(key: "UserMarkdown", width: 960, height: 557, scenario: .userMarkdown, pairedWidths: true, phases: ["user-markdown"])
     }
 
     func testKoaWebviewReveal() async throws {
-        try await koaWebview(key: "testKoaWebviewReveal", width: 960, height: 557.5, scenario: .reveal, phases: ["reveal-fold"])
+        try await koaWebview(key: "testKoaWebviewReveal", width: 960, height: 557, scenario: .reveal, phases: ["reveal-fold"])
     }
 
     func testKoaWebviewThinkingMarkdown() async throws {
-        try await koaWebview(key: "ThinkingMarkdown", width: 960, height: 557.5, scenario: .thinkingMarkdown, pairedWidths: true, phases: ["thinking-markdown"])
+        try await koaWebview(key: "ThinkingMarkdown", width: 960, height: 557, scenario: .thinkingMarkdown, pairedWidths: true, phases: ["thinking-markdown"])
     }
 
     func testKoaWebviewComposerMarkdown() async throws {
-        try await koaWebview(key: "testKoaWebviewComposerMarkdown", width: 960, height: 557.5, scenario: .markdown, phases: ["composer-markdown"])
+        try await koaWebview(key: "testKoaWebviewComposerMarkdown", width: 960, height: 557, scenario: .markdown, phases: ["composer-markdown"])
     }
 
     func testKoaWebviewQuestions() async throws {
-        try await koaWebview(key: "Questions", width: 960, height: 557.5, scenario: .questions, pairedWidths: true, phases: ["questions-reply"])
+        try await koaWebview(key: "Questions", width: 960, height: 557, scenario: .questions, pairedWidths: true, phases: ["questions-reply"])
     }
 
     func testKoaWebviewCompletion() async throws {
-        try await koaWebview(key: "Completion", width: 960, height: 557.5, scenario: .completion, pairedWidths: true, phases: [])
+        try await koaWebview(key: "Completion", width: 960, height: 557, scenario: .completion, pairedWidths: true, phases: [])
     }
 
     func testKoaWebviewSessions() async throws {
-        try await koaWebview(key: "Sessions", width: 960, height: 557.5, scenario: .sessions, pairedWidths: true, phases: [])
+        try await koaWebview(key: "Sessions", width: 960, height: 557, scenario: .sessions, pairedWidths: true, phases: [])
     }
 
     private func koaBangCompletion(web: WKWebView, width: CGFloat, pairedWidths: Bool, capture: (String) async throws -> Void) async throws {
@@ -938,12 +938,12 @@ import WebKit
             try requireEqual(contained, "true", "Shell completion stays in the transcript above the dock")
             try await capture(prefix + "bang-tab-cap")
             for currentWidth in (pairedWidths ? [width, 448] : [width]) {
-                self.resize(NSSize(width: currentWidth, height: 217.5))
+                self.resize(NSSize(width: currentWidth, height: 217))
                 window.contentView?.layoutSubtreeIfNeeded()
                 web.superview?.layoutSubtreeIfNeeded()
                 try await webviewUntil(web, "(()=>{const popup=document.querySelector('.koa-complete')?.getBoundingClientRect(),dock=document.querySelector('#dock').getBoundingClientRect(),list=document.querySelector('.koa-complete ul');return innerHeight<250&&!!popup&&popup.top>=0&&popup.bottom<=dock.top&&list.scrollHeight>list.clientHeight})()")
             }
-            self.resize(NSSize(width: width, height: 217.5))
+            self.resize(NSSize(width: width, height: 217))
             try await koaMeasured(web, "#composer")
             _ = try await webviewJS(web, "(()=>{tabKey('Escape');window.tabKind='none';window.composer.setText('!make checkz');window.tabTimeout=window.setTimeout;window.setTimeout=(fn,ms,...args)=>ms===1500?(window.tabNone=fn,0):tabTimeout(fn,ms,...args);tabKey('Tab');return true})()")
             try await webviewUntil(web, "document.querySelector('.koa-complete.empty')?.textContent==='no completions'")
@@ -982,7 +982,7 @@ import WebKit
         case .commands, .sessions, .questions, .completion, .attachments, .userMarkdown, .thinkingMarkdown, .exit, .lightbox, .paths, .threads: measured = true
         default: measured = completionCaptures
         }
-        let measurementClock = Self.localeScript + "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};"
+        let measurementClock = "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};"
         var initialScript = measurementClock
         // WebKit pauses animation frames in an off-screen window.
         if measured {
@@ -1158,7 +1158,7 @@ import WebKit
                 try await capture(prefix + "bang")
                 _ = try await webviewJS(web, "(()=>{window.composer.setText('!!git status --short');return true})()")
                 try await capture(prefix + "bang2")
-                resize(297.5)
+                resize(297)
                 _ = try await webviewJS(web, "(()=>{window.composer.setText('');const transfer=new DataTransfer();transfer.items.add(new File([new Uint8Array(8192)],'notes.md'));document.querySelector('.cm-content').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:transfer}));return true})()")
                 try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===1&&document.querySelectorAll('.attach-icon.pending').length===0")
                 _ = try await webviewJS(web, "(()=>{window.composer.setText('!make checks DRY=1');return true})()")
@@ -1167,12 +1167,12 @@ import WebKit
                 try await webviewUntil(web, "document.querySelector('.attach-notice').textContent==='a command takes no attachments'&&!document.querySelector('.attach-notice').hidden")
 
                 _ = try await webviewJS(web, "(()=>{document.querySelector('.attach-remove').click();window.composer.setText('');return true})()")
-                resize(557.5)
+                resize(557)
                 try await advance()
                 try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===5")
                 _ = try await webviewJS(web, "(()=>{const lines=document.querySelectorAll('.cmdrun>.line');lines[0].click();lines[2].click();lines[4].click();return true})()")
                 try await capture(prefix + "bang-runs")
-                resize(327.5)
+                resize(327)
                 for (name, command) in [("done", "make checks DRY=1"), ("error", "make verify STAGES=unit"), ("cancelled", "make e2e"), ("truncated", "find . -type f"), ("quiet", "git status --short")] {
                     try await advance()
                     try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===1&&document.querySelector('.cmdrun .cmd')?.textContent===\(String(reflecting: command))")
@@ -1181,7 +1181,7 @@ import WebKit
                 }
                 try await advance()
                 try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===0")
-                resize(217.5)
+                resize(217)
                 _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'!make verify STAGES=unit',mode:'prompt',attachments:[]})}).then(r=>r.json())")
                 try await webviewUntil(web, "document.querySelector('.cmdrun .live')?.textContent.includes('running 212 tests')&&document.querySelector('.cmdrun .dots')!==null")
                 try await capture(prefix + "bang-running")
@@ -1198,7 +1198,7 @@ import WebKit
                 _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())")
                 try await advance()
                 try await webviewUntil(web, "document.querySelector('.cmdrun .meta')?.textContent==='cancelled'")
-                resize(327.5)
+                resize(327)
                 try await capture(prefix + "bang-completed")
             }()
             return
@@ -1445,9 +1445,9 @@ import WebKit
                 try requireEqual(taskMarkdown, "true", "Outbound task renders Markdown elements")
                 try await capture(prefix + "out")
                 try await advance(); try await webviewUntil(web, "document.querySelectorAll('.agent-step').length===2&&document.querySelectorAll('.agent-step .agent-name.err').length===2")
-                size(327.5); try await openRuns(); try await aligned(); try await capture(prefix + "failed")
+                size(327); try await openRuns(); try await aligned(); try await capture(prefix + "failed")
                 try await advance(); try await webviewUntil(web, "document.querySelectorAll('.agent-step').length===5")
-                size(557.5); try await openRuns()
+                size(557); try await openRuns()
                 _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.agent-step>.line')[1].click();return true})()")
                 let rendered = try await webviewJS(web, "(()=>{const body=document.querySelectorAll('.agent-step')[1].querySelector('.agent-body');return !!body.querySelector('ul li')&&!!body.querySelector('code')&&!!body.querySelector('strong')&&body.querySelector('a')?.getAttribute('href')==='https://example.com/sidebar'&&!body.querySelector('.caret')})()")
                 try requireEqual(rendered, "true", "Expanded agent body renders final Markdown elements")
@@ -1461,11 +1461,11 @@ import WebKit
                 try await advance(); try await webviewUntil(web, "document.querySelectorAll('.job-step').length===1&&document.querySelectorAll('.agent-step').length===1")
                 let summary = try await webviewJS(web, "document.querySelector('.agent-preview').textContent==='Built the right-side indicators with SidebarRow.swift; see the reference. Pre-fix failures: 6 snapshot tests (SidebarTests.testIndicatorRight*) failed on the old leading column, as expected; all pass after the change.'")
                 try requireEqual(summary, "true", "Collapsed agent body has no Markdown syntax")
-                size(327.5); try await capture(prefix + "fold-a")
+                size(327); try await capture(prefix + "fold-a")
                 _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.run>.line').forEach(line=>{if(line.getAttribute('aria-expanded')!=='true')line.click()});document.querySelector('.agent-step>.line').click();document.querySelector('.job-step>.line').click();return true})()")
                 try await capture(prefix + "fold-b")
                 try await advance(); try await webviewUntil(web, "document.querySelectorAll('.step').length===3&&document.querySelectorAll('.agent-step').length===0")
-                size(297.5); try await openRuns(true); try await capture(prefix + "tools")
+                size(297); try await openRuns(true); try await capture(prefix + "tools")
             }()
             return
         }
@@ -1674,7 +1674,7 @@ import WebKit
                 try await capture(prefix + "slash-all")
                 try await key("ArrowDown"); try await key("Tab")
                 try await webviewUntil(web, "window.composer.text()==='/thinking '&&!document.querySelector('.koa-complete')&&completePrompts.length===0")
-                try await resize(297.5)
+                try await resize(297)
                 try await show("", "/re")
                 try await capture(prefix + "slash-filter")
                 _ = try await webviewJS(web, "(()=>{const index=lastComplete.result.options.findIndex(option=>option.label==='/release');if(index<0)throw Error('missing release command');for(let i=0;i<index;i++)document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}));return true})()")
@@ -1699,7 +1699,7 @@ import WebKit
                 try await capture(prefix + "at-mid")
                 try await key("Enter")
                 try await webviewUntil(web, "window.composer.text()==='Hand the weight rule to '+lastComplete.result.options[1].insert+' and tell me when it lands'&&completePrompts.length===1")
-                try await resize(297.5)
+                try await resize(297)
                 try await show("Read ", "@zzz", empty: true)
                 try await capture(prefix + "none")
                 try await show("", "/re")

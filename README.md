@@ -23,7 +23,7 @@ Kido.app, the macOS client:
 brew install --cask andreypopp/tap/kido-app
 ```
 
-For koa installation and host requirements, see [docs/design-koa.md](docs/design-koa.md#build-install-and-run).
+For koa installation and host requirements, see [docs/dev-koa.md](docs/dev-koa.md#build-install-and-run).
 
 Every shell that ko starts (a Kido.app pane, `ko shell`, a runtime
 pane, `ko ssh` to a host with ko) completes `ko` in zsh and bash, with
@@ -181,8 +181,8 @@ ko is a Rust cargo workspace. It needs:
   `rust-toolchain.toml`). The Makefile finds that cargo itself.
 - zig at the release of `scripts/install-zig.sh`, on PATH
 - make and `tic`; a C compiler only for `make build-bench`
-- Node and npm for the TypeScript build, tests and lint; see
-  [docs/design-koa.md](docs/design-koa.md#development) for requirements
+- Node and npm for koa and the TypeScript lint; see
+  [docs/dev-koa.md](docs/dev-koa.md) for koa's workflow
 
 ```sh
 git clone --recurse-submodules https://github.com/andreypopp/kido.git && cd kido
@@ -206,7 +206,7 @@ The other targets:
     make bindgen  regenerate ko_vt_sys/src/bindings.rs
     make probe BYTES=N  ko-bench throughput: the server's ring reader under ko-pane, N bytes of bench/streams (default 1 GiB); not part of verify
     make build-bench  the C helpers of bench/ in build/bench/, after build
-    make prompts regenerate the prompt fixture through make -C koa prompts
+    make prompts regenerate koa's prompt fixture
     make schemas regenerate share/ko/openapi.json, share/ko/client-model.json, share/ko/config-schema.json and webview/ko-api.d.ts through scripts/lint.sh --update-schemas
     make api-docs  one static HTML page of share/ko/openapi.json (Redocly) in build/ko-api.html; not part of verify
     make fuzz TARGET=ring TIME=600  one time-boxed fuzz run; no TARGET lists the targets

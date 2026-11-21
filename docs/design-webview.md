@@ -94,5 +94,5 @@ and must not be treated as a native sandbox test.
 
 The e2e suite checks the real webview bridge. Kido.app's
 `WebviewPaneTests` checks the sandbox and WebKit constraints. See
-[design-koa.md](design-koa.md#development) for SDK and page tests,
+[dev-koa.md](dev-koa.md) for SDK and page tests,
 including the open-ended fetch-body constraint and replay fixtures.

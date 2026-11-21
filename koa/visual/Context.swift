@@ -113,7 +113,7 @@ struct ThemePayload: Decodable {
             configuration.writingToolsBehavior = .none
             configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
             configuration.mediaTypesRequiringUserActionForPlayback = .all
-            for script in [try themeScript(.light)] + initialScripts {
+            for script in [Self.localeScript, try themeScript(.light)] + initialScripts {
                 configuration.userContentController.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
             }
             let web = WKWebView(frame: NSRect(origin: .zero, size: viewport), configuration: configuration)

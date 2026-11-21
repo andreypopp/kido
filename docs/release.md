@@ -81,4 +81,4 @@ app's signing.
 
 ## Previewing koa
 
-See [design-koa.md](design-koa.md#build-install-and-run) for an installed preview and login PATH selection.
+See [dev-koa.md](dev-koa.md#build-install-and-run) for an installed preview and login PATH selection.

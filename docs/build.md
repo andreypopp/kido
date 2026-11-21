@@ -58,7 +58,7 @@ directory, with the underscore.
 - `ko_e2e/` is the e2e suite, a workspace member outside
   `default-members` (verification.md, "The e2e suite").
 - `koa/testdata/fake_ko/` is the workspace's test-only fake ko;
-  see [design-koa.md](design-koa.md#fake-ko-and-fake-model).
+  see [dev-koa.md](dev-koa.md#fake-ko-and-fake-model).
 - `ko_bench/` is the binary `ko-bench`, the benchmark modes, which
   `make build-bench` builds into `target/release` and never installs.
 
@@ -397,7 +397,7 @@ configuration.
       shim.sh           their shared helper
       bash/, zsh/       the OSC 133 integrations every primed shell sources
       openapi.json, client-model.json, config-schema.json   the generated schemas (make schemas)
-    koa/                the harness and its development tools (design-koa.md, "Development")
+    koa/                the harness and its development tools (dev-koa.md)
     webview/            the webview SDK (design-koa.md, "The webview SDK")
                         and generated ko-api.d.ts, also installed with ko
     .pi/prompts/        gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed;

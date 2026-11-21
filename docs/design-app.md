@@ -3471,7 +3471,7 @@ A snapshot shows the component under its test, so that a change elsewhere does
 not re-record it. The notice states crop to the pane
 area or the notice host in backing pixels; a few full-window anchors in each
 appearance and window mode keep the composition with the sidebar and the
-header. See [design-koa.md](design-koa.md#replay-scenarios-and-snapshots) for koa captures. States that reach the
+header. See [dev-koa.md](dev-koa.md#replay-scenarios-and-snapshots) for koa captures. States that reach the
 same pixels through different transitions compare against one baseline that
 the test names explicitly; each transition keeps its actions and assertions.
 
@@ -3543,7 +3543,7 @@ view. Geolocation answers only in an ordered window, so that check
 orders the window far off screen. The Command-key check drives
 `OwnerWindow.performKeyEquivalent` with the web view as first responder.
 
-See [design-koa.md](design-koa.md#development) for koa's replay, native integration and focus tests.
+See [dev-koa.md](dev-koa.md#choose-the-test-boundary) for koa's tests and their boundary with the app's tests.
 
 `make ko-test` runs the `Ko` scheme (`app/KoTests/`): the client, view,
 content bridge, layout editor, layout gesture, owner and owner-model
