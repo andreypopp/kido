@@ -302,8 +302,11 @@ parent, minimise and Space for free; each is now a rule of ours.
   theme-background overlay while not key (the main window key, or
   another float). A koa page follows its pane's paper through
   `--ko-bg`, so the page of a tiled koa pane dims while its editor
-  float is key. A sheet or panel attached to a Kido window (the
-  close confirmation of section D, a save panel) counts as that
+  float is key. A sheet or panel over a Kido window (the close
+  confirmation of section D, a save panel, the command palette,
+  which opens over the main window or, from a float, over the main
+  window and returns key to the float: it counts for the window it
+  took key from) counts as that
   window being key for the paper, the stroke and the overlay: a
   sheet on a float keeps the float pure with the stroke and the
   tiled panes shifted; a sheet on the main window keeps its active
