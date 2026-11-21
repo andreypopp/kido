@@ -14,6 +14,11 @@ export const threadMove = (entry: { type: string; customType?: string; data?: un
   const from = parseThreadName('from' in entry.data ? entry.data.from : undefined), to = parseThreadName('to' in entry.data ? entry.data.to : undefined);
   return from && to ? { from, to } : undefined;
 };
+export const threadArchive = (entry: { type: string; customType?: string; data?: unknown }): { name: ThreadName; archived: boolean } | undefined => {
+  if (entry.type !== 'custom' || entry.customType !== 'koa.thread-archive' || typeof entry.data !== 'object' || entry.data === null) return;
+  const name = parseThreadName('name' in entry.data ? entry.data.name : undefined);
+  return name && 'archived' in entry.data && typeof entry.data.archived === 'boolean' ? { name, archived: entry.data.archived } : undefined;
+};
 export const messageThread = (entry: { type: string; customType?: string; data?: unknown }): { entries: string[]; thread: ThreadName } | undefined => {
   if (entry.type !== 'custom' || entry.customType !== 'koa.message-thread' || typeof entry.data !== 'object' || entry.data === null) return;
   const data = entry.data, entries = 'entries' in data ? data.entries : undefined;

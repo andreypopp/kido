@@ -115,6 +115,21 @@ function captureTarget(name: string, scenario: Scenario): { selector: string; pa
       return { selector: ".newmsgs", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
     case "latest/latest-new":
       return { selector: "#latest", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
+    case "threads/thread-create-empty":
+    case "threads/thread-create-typed":
+      return { selector: '#field', padding: { top: 8, left: 8, bottom: 8, right: 8 } };
+    case "threads/thread-create-reply-hover":
+    case "threads/thread-create-message-name":
+      return { selector: '#items > [data-seq="8"] .msg.prose', padding: { top: 8, left: 8, bottom: 8, right: 8 } };
+    case "threads/thread-create-user-hover":
+      return { selector: '#items > [data-seq="7"]', padding: { top: 8, left: 8, bottom: 8, right: 8 } };
+    case "threads/thread-archive-panel-live":
+    case "threads/thread-archive-panel-restore":
+    case "threads/thread-archive-block":
+      return { selector: '.thread-panel:not([hidden])', padding: { top: 8, left: 8, bottom: 8, right: 8 } };
+    case "threads/thread-archive-filter":
+    case "threads/thread-archive-all":
+      return { selector: '.thread-capsule', padding: { top: 4, left: 4, bottom: 4, right: 4 } };
     case "threads/threads-drag-row":
     case "threads/threads-rename":
     case "threads/threads-filter-panel":
@@ -307,6 +322,8 @@ async function prepareCapture(name: string, scenario: Scenario, measured: boolea
                 ready = "document.querySelector('#items').textContent.includes('Then the save step stays as mocked: four rows, the session row last.')"
             break;
             default:
+                if (name.startsWith('thread-create-')) { ready = "document.querySelector('#items').textContent.includes('A fix is in the test’s wait.')"; break; }
+                if (name.startsWith('thread-archive-')) { ready = "document.querySelector('#items').textContent.includes('Then the save step stays as mocked: four rows, the session row last.')"; break; }
                 require(false, `No thread capture phase for ${name}`)
                 throw Error("CapturePhase")
             }
@@ -323,7 +340,7 @@ async function prepareCapture(name: string, scenario: Scenario, measured: boolea
         equal(viewportWidth, viewport().width, `The page fills the native webview width at capture ${name}`)
         const initialScroll = top || aboveBottom ? "0" : scenario == "latest" ? "scroll.scrollTop" : "scroll.scrollHeight"
         const stopFollowing = top || aboveBottom
-        await webviewJS(web, `(()=>{if(!document.querySelector('.thread-rename')&&!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');if(${stopFollowing})scroll.dispatchEvent(new WheelEvent('wheel',{deltaY:-1,bubbles:true}));scroll.scrollTop=${initialScroll};if(${ordered})document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()`)
+        await webviewJS(web, `(()=>{if(!document.querySelector('.thread-input')&&!document.querySelector('.thread-rename')&&!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');if(${stopFollowing})scroll.dispatchEvent(new WheelEvent('wheel',{deltaY:-1,bubbles:true}));scroll.scrollTop=${initialScroll};if(${ordered})document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()`)
         await webviewUntil(web, "(()=>{const dock=document.querySelector('#dock');return Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===dock.getBoundingClientRect().height})()")
         const latestAtTop = top || scenario == "latest" && name.endsWith("new")
         const scrollPosition = latestAtTop ? "0" : scenario == "latest" ? "document.querySelector('.newmsgs').offsetTop-300" : aboveBottom ? "0" : "scroll.scrollHeight"
@@ -356,8 +373,8 @@ async function driveThreads(web: Page, phases: string[], capture: (name: string)
                 await webviewJS(web, "(()=>{document.querySelector('.thread-clear')?.click();document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));window.composer.setText('');return true})()")
                 await advance()
             }
-            await web.setViewportSize({ width: name == "threads-marks-narrow" ? 448 : name.startsWith("threads-drag") || name == "threads-rename" || name == "threads-pending" ? 980 : 960, height: 557 })
-        await webviewUntil(web, "!document.querySelector('#threads').hidden&&document.querySelector('.thread-capsule')!==null")
+            await web.setViewportSize({ width: name === 'thread-archive-block' ? 1280 : name == "threads-marks-narrow" ? 448 : name.startsWith("threads-drag") || name == "threads-rename" || name == "threads-pending" ? 980 : 960, height: 557 })
+        await webviewUntil(web, name === 'thread-archive-block' ? "document.querySelector('#threads').dataset.mode==='block'" : "!document.querySelector('#threads').hidden&&document.querySelector('.thread-capsule')!==null")
         if (name == "threads-many" || name == "threads-many-narrow") {
             const expected = name == "threads-many" ? 9 : 4
             await webviewUntil(web, `(()=>{const capsule=document.querySelector('.thread-capsule');return capsule.querySelectorAll('.thread-open>.thread-name').length===${expected}&&${expected == 9 ? "capsule.querySelector('.thread-more')===null" : "capsule.querySelector('.thread-more')?.textContent==='+5'"}})()`)
@@ -371,10 +388,10 @@ async function driveThreads(web: Page, phases: string[], capture: (name: string)
             const wrapping = await webviewJS(web, "(()=>{const host=document.querySelector('.assistant>.reply-section>.msg');if(!host)throw Error('Missing threaded prose');const token='identifier'.repeat(100),p=document.createElement('p'),pre=document.createElement('pre'),table=document.createElement('table');p.textContent=pre.textContent=token;table.innerHTML='<tr><td>'+token+'</td></tr>';host.append(p,pre,table);try{return [p.scrollWidth<=p.clientWidth,getComputedStyle(pre).overflowWrap,getComputedStyle(table).overflowWrap,pre.scrollWidth>pre.clientWidth]}finally{p.remove();pre.remove();table.remove()}})()")
             equal(wrapping, [true,"normal","normal",true], "Threaded prose wraps an unbroken token; code and tables keep horizontal scrolling")
         }
-        if (name.includes("filter")) {
+        if (name.startsWith("threads-filter")) {
             await webviewJS(web, "(()=>{document.querySelector('.thread-overflow').click();document.querySelector('.thread-entry[data-thread=sidebar]').click();return true})()")
-            await webviewUntil(web, `document.querySelector('.composer-thread .thread-clear')!==null&&document.querySelector('.user')!==null&&document.querySelector('#items .thread-chip')===null&&${koaIdle}`)
-            const filtered = await webviewJS(web, "document.querySelector('#items .thread-chip')===null&&document.querySelector('#thread-cell')===null&&document.querySelector('.composer-thread .thread-name').textContent==='#sidebar'&&document.querySelector('.thread-capsule .thread-clear')!==null")
+            await webviewUntil(web, `document.querySelector('.composer-thread .thread-clear')!==null&&document.querySelector('.user')!==null&&document.querySelector('#items .thread-chip:not(.thread-new)')===null&&${koaIdle}`)
+            const filtered = await webviewJS(web, "document.querySelector('#items .thread-chip:not(.thread-new)')===null&&document.querySelector('#thread-cell')===null&&document.querySelector('.composer-thread .thread-name').textContent==='#sidebar'&&document.querySelector('.thread-capsule .thread-clear')!==null")
             equal(filtered, true, "Filtered messages have time-only headers and the composer owns the chip")
         }
         if (name.includes("many") || name.endsWith("panel")) {
@@ -398,6 +415,28 @@ async function driveThreads(web: Page, phases: string[], capture: (name: string)
                 await web.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 6 })
                 await webviewUntil(web, "document.querySelector('.drop-target')!==null")
             }
+        }
+        if (name.startsWith('thread-create-')) {
+            if (name === 'thread-create-empty' || name === 'thread-create-typed') {
+                await web.locator('.composer-thread .thread-new').click()
+                if (name === 'thread-create-typed') await web.locator('.composer-thread .thread-input').fill('release-notes')
+            } else {
+                const row = name === 'thread-create-user-hover' ? web.locator('#items .user .message-header').last() : web.locator('#items .assistant .message-header').last()
+                await row.hover()
+                equal(await row.locator('.thread-new').isVisible(), true, 'Message hover exposes the naming chip')
+                if (name === 'thread-create-message-name') { await row.locator('.thread-new').click(); await row.locator('.thread-input').fill('sweep-test') }
+            }
+        }
+        if (name.startsWith('thread-archive-')) {
+            if (name === 'thread-archive-filter') {
+                await web.locator('.thread-overflow').click()
+                await web.locator('.thread-entry[data-thread=palette]').click()
+                await webviewUntil(web, "document.querySelector('.thread-capsule .thread-name.archived')!==null")
+            } else if (name !== 'thread-archive-all') {
+                if (name !== 'thread-archive-block') await web.locator('.thread-overflow').click()
+                await web.locator(name === 'thread-archive-panel-restore' ? '.thread-entry[data-thread=palette]' : '.thread-entry[data-thread=release-0-32]').hover()
+                equal(await webviewJS(web, "(()=>{const rows=[...document.querySelectorAll('.thread-entry')],first=rows.findIndex(row=>row.classList.contains('archived'));return first>0&&rows.slice(first).every(row=>row.classList.contains('archived'))})()"), true, 'Archived rows follow every live row')
+            } else equal(await webviewJS(web, "document.querySelector('.thread-capsule').textContent"), '…', 'An all-archived capsule has only its panel opener')
         }
         await capture(name)
         if (name.startsWith("threads-drag") || name == "threads-rename") {
@@ -1716,6 +1755,8 @@ const entries: Record<string, () => Promise<void>> = {
   "Failed": () => koaWebview("Failed", 960, 557, "failed", true, ["exited"]),
   "Rhythm": testKoaWebviewRhythm,
   "Threads": () => koaWebview("Threads", 960, 557, "threads", false, ["threads-two", "threads-many", "threads-marks", "threads-marks-narrow"]),
+  "ThreadsCreate": () => koaWebview("ThreadsCreate", 960, 557, "threads", false, ["thread-create-empty", "thread-create-typed", "thread-create-reply-hover", "thread-create-user-hover", "thread-create-message-name"]),
+  "ThreadsArchive": () => koaWebview("ThreadsArchive", 960, 557, "threads", false, ["thread-archive-panel-live", "thread-archive-panel-restore", "thread-archive-block", "thread-archive-filter", "thread-archive-all"]),
   "ThreadsEdit": () => koaWebview("ThreadsEdit", 980, 557, "threads", false, ["threads-drag-row", "threads-drag-reply", "threads-rename", "threads-pending"]),
   "ThreadsFilter": () => koaWebview("ThreadsFilter", 960, 557, "threads", false, ["threads-filter"]),
   "ThreadsFilterPanel": () => koaWebview("ThreadsFilterPanel", 960, 557, "threads", false, ["threads-filter-panel"]),

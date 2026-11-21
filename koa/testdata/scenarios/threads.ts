@@ -75,9 +75,23 @@ const phases = {
   testKoaWebviewThreadsFilterPanel: dir => scene(dir, 'filter'),
 } satisfies Scenarios;
 
+const paletteName = parseThreadName('palette');
+if (!paletteName) throw Error('Invalid palette thread');
 const order: (keyof typeof phases)[] = ['testKoaWebviewThreadsTwo', 'testKoaWebviewThreadsMany', 'testKoaWebviewThreadsMarks', 'testKoaWebviewThreadsMarksNarrow'];
 
 export const scenarios: Scenarios = {
+  ThreadsCreate: dir => sequence(Array.from({ length: 5 }, () => scene(dir, 'marks-narrow'))),
+  ThreadsArchive: dir => sequence(Array.from({ length: 5 }, (_, index) => {
+    const result = scene(dir, 'many'), state = result.open.find(record => record.type === 'state'), reset = result.open.find(record => record.type === 'reset');
+    if (!state || !('threads' in state) || !reset) throw Error('Missing archive fixture state');
+    state.threads = state.threads.map(thread => ({ ...thread, ...(index === 4 || thread.name === paletteName || thread.name === 'docs-cleanup-after-the-sessions' ? { archived: true as const } : {}) }));
+    if (index === 3) {
+      const labels = new Map(reset.items.flatMap(item => item.kind === 'threads' ? [[item.target, item.threads] as const] : []));
+      const items = reset.items.filter(item => item.kind === 'threads' ? item.threads.includes(paletteName) : labels.get(item.seq)?.includes(paletteName) || 'thread' in item && item.thread === paletteName || item.kind === 'assistant' && item.blocks.some(block => block.thread === paletteName));
+      result.steps.push(expect({ on: { method: 'GET', path: '/items', body: value => same(value, { before: String(Number.MAX_SAFE_INTEGER), thread: paletteName, sessionId: state.sessionId }) }, reply: { status: 200, json: { epoch: reset.epoch, more: false, items } } }), expect({ on: { method: 'GET', path: '/items', body: value => same(value, { before: String(Number.MAX_SAFE_INTEGER), sessionId: state.sessionId }) }, reply: { status: 200, json: { epoch: reset.epoch, more: false, items: reset.items } } }));
+    }
+    return result;
+  })),
   testKoaWebviewThreadsModes: phases.testKoaWebviewThreadsModes,
   Threads: dir => sequence(order.map(key => phases[key](dir))),
   ThreadsEdit: dir => sequence(Array.from({ length: 4 }, (_, index) => {

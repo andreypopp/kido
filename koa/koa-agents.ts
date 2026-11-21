@@ -234,7 +234,9 @@ export function createTree(options: TreeOptions): Tree {
       if (classifier.type === 'invalid') throw Error(`invalid koa.threads.model: ${classifier.setting}`);
       const queued = agent.view.prompts.view();
       const { threads, others } = agent.view.feed.threadContext([...queued.steering, ...queued.followUp]);
-      return threadPrompt(text, await classify(agent.session.modelRuntime, classifier, threads, others, text, AbortSignal.timeout(options.classifierDeadlineMs ?? 15000)));
+      const name = agent.view.feed.resolveThread(await classify(agent.session.modelRuntime, classifier, threads, others, text, AbortSignal.timeout(options.classifierDeadlineMs ?? 15000)));
+      if (agent.view.feed.isThreadArchived(name)) throw Error(`archived thread classification: ${JSON.stringify(name)}`);
+      return threadPrompt(text, name);
     } catch (error) {
       if (!classifierWarned) { classifierWarned = true; agent.host.notify(`Thread classifier: ${errorText(error)}`, 'warning'); }
       return text;

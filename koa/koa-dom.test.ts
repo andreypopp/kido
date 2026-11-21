@@ -167,6 +167,7 @@ async function page() {
     set className(value: string) { this.classes = new Set(value.split(/\s+/).filter(Boolean)); }
     classList = { toggle: (name: string, force = !this.classes.has(name)) => { if (force) this.classes.add(name); else this.classes.delete(name); }, remove: (name: string) => { this.classes.delete(name); }, add: (name: string) => { this.classes.add(name); }, contains: (name: string) => this.classes.has(name) };
     parent?: Node;
+    get parentElement() { return this.parent; }
     inert = false;
     contains(node: Node | undefined): boolean { return !!node && (node === this || this.contains(node.parent)); }
     append(...children: Node[]) { children.forEach(child => { if (child instanceof Node) { child.remove(); child.parent = this; } }); this.children.push(...children); }
@@ -774,7 +775,7 @@ test('reply sections carry interactive thread chips or a plain time with no mark
     const selected=[composerThreadName(),threadFilter()];setThread('one');renderDirty();
     put({seq:2,at,kind:'user',revision:0,final:true,text:'pending',images:[],attachments:[]});
     const pending=all(views.get(2).view).some(node=>node.classList.contains('thread-waiting')||node.classList.contains('thread-pending'));
-    const filtered=all(views.get(0).view).filter(node=>node.classList.contains('message-header')).map(header=>[header.children.find(node=>node.tagName==='TIME')?.textContent,!!header.querySelector('.thread-name'),header.querySelector('.thread-chip')?.getAttribute('role')??null,typeof header.querySelector('.thread-chip')?.onclick==='function']);
+    const filtered=all(views.get(0).view).filter(node=>node.classList.contains('message-header')).map(header=>[header.children.find(node=>node.tagName==='TIME')?.textContent,!!header.querySelector('.thread-name'),header.querySelector('.thread-name')?.parentNode?.getAttribute('role')??null,typeof header.querySelector('.thread-name')?.parentNode?.onclick==='function']);
     return [labels,plainInfo,noMarks,threadFilter(),pending,timestamp(at),filtered,selected];
   })()`);
   const value=JSON.parse(JSON.stringify(result));
@@ -788,7 +789,7 @@ test('message headers exclude runs and notices and the composer clear preserves 
   const result = app.run(`(()=>{
     state={...state,life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'headers',threads:[{name:'one'}]};
     const base={at:1,revision:0,final:true};
-    const count=(root,name)=>root.children.reduce((sum,child)=>sum+(child instanceof HTMLElement?Number(child.classList.contains(name))+count(child,name):0),0);
+    const count=(root,name)=>root.children.reduce((sum,child)=>sum+(child instanceof HTMLElement?Number(child.classList.contains(name)&&!(name==='thread-chip'&&child.classList.contains('thread-new')))+count(child,name):0),0);
     put({...base,seq:0,kind:'user',text:'Question',thread:'one',images:[],attachments:[]});
     put({...base,seq:1,kind:'assistant',blocks:[{type:'text',text:'Answer',thread:'one'}],stop:'stop',error:''});
     put({...base,seq:2,kind:'assistant',blocks:[{type:'tool',id:'t',name:'bash',args:{text:'{}'},state:{type:'done',error:false,result:{text:'ok',images:[]}}}],stop:'stop',error:''});
@@ -901,6 +902,71 @@ test('moving a thread updates its composer chip without replacing an independent
     return [renamed,[threadFilter(),composerThreadName(),element('field').querySelector('.thread-name').title]];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [[null,'B','B'],['B','C','C']]);
+});
+
+test('composer naming commits with Enter or Tab, keeps its input on refresh and cancels without filtering', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'existing'}]};refreshComposer();
+    const key=value=>({key:value,preventDefault(){},stopPropagation(){}}),open=()=>{element('field').querySelector('.thread-new').onclick();return element('field').querySelector('.thread-input')};
+    let input=open();const initial=[input.placeholder,input.style.width,threadNaming.chip.style['--thread-color']];input.value='existing';input.oninput();const existing=threadNaming.chip.style['--thread-color'];refreshComposer();const retained=element('field').querySelector('.thread-input')===input&&document.activeElement===input;
+    input.onkeydown(key('Tab'));const committed=[composerThreadName(),threadFilter(),editor.hasFocus()];
+    element('field').querySelector('.thread-clear').onclick();input=open();input.value='New topic';input.onkeydown(key('Enter'));const named=[composerThreadName(),editor.hasFocus()];
+    element('field').querySelector('.thread-clear').onclick();input=open();input.value='Cancelled';input.onkeydown(key('Escape'));const escaped=[composerThreadName(),!!element('field').querySelector('.thread-new')];
+    input=open();element('field').querySelector('.thread-clear').onclick();
+    return [initial,existing,retained,committed,named,escaped,composerThreadName(),!!element('field').querySelector('.thread-new')];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['thread name','11ch','var(--thread-1)'],'var(--thread-0)',true,['existing',null,true],['New topic',true],[null,true],null,true]);
+});
+
+test('message naming keeps focus and text through updates and ignores composing Enter and Escape', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'old'}]};
+    const requests=[];fetchJSON=async(path,body)=>{requests.push(body);return {}};
+    const results=[];
+    for(const kind of ['user','assistant']){
+      const seq=kind==='user'?0:1,item=kind==='user'?{seq,at:1,revision:0,kind,final:true,text:'Question',thread:'old',images:[],attachments:[]}:{seq,at:1,revision:0,kind,final:false,blocks:[{type:'text',text:'Reply',thread:'old'}]};
+      put(item);views.get(seq).view.querySelector('.thread-new').onclick();const input=views.get(seq).view.querySelector('.thread-input');input.value='New topic';
+      const key=(key,isComposing)=>({key,isComposing,preventDefault(){},stopPropagation(){}});
+      input.onkeydown(key('Enter',true));input.onkeydown(key('Escape',true));
+      put({...item,revision:1,...(kind==='user'?{text:'Updated'}:{blocks:[{type:'text',text:'Reply grows',thread:'old'}]})});renderDirty();
+      results.push([document.activeElement===input,input.value,views.get(seq).view.querySelector('.thread-input')===input,requests.length]);input.onkeydown(key('Enter',false));
+    }
+    refreshComposer();element('field').querySelector('.thread-new').onclick();const input=element('field').querySelector('.thread-input');input.value='Composer';input.onkeydown({key:'Enter',isComposing:true,stopPropagation(){}});const composing=composerThreadName();input.onkeydown({key:'Enter',isComposing:false,stopPropagation(){},preventDefault(){}});
+    return [results,requests,composing,composerThreadName()];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [[[true,'New topic',true,0],[true,'New topic',true,1]],[{sessionId:'s',seq:0,thread:'New topic'},{sessionId:'s',seq:1,thread:'New topic'}],null,'Composer']);
+});
+
+test('message naming sends its turn identity and cancels on Escape, outside click or session change', async () => {
+  const app = await page(), evaluate = app.repl();
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'origin',view:{id:'root',path:[],type:'root'},threads:[{name:'old'}]};put({seq:0,at:1,revision:0,kind:'user',final:true,text:'Question',thread:'old',images:[],attachments:[]});window.requests=[];fetchJSON=async(path,body)=>{window.requests.push([path,body]);return {}};window.openName=()=>{views.get(0).view.querySelector('.thread-new').onclick();return views.get(0).view.querySelector('.thread-input')};window.key=value=>({key:value,preventDefault(){},stopPropagation(){}});`);
+  assert.equal(evaluate(`(()=>{const input=window.openName();input.value='New topic';input.onkeydown(window.key('Enter'));return views.get(0).view.querySelector('.thread-name').title})()`), 'old');
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate('window.requests'))), [['/messages/thread',{sessionId:'origin',seq:0,thread:'New topic'}]]);
+  evaluate(`window.openName().onkeydown(window.key('Escape'));window.openName();views.get(0).view.querySelector('.thread-clear').onclick();window.openName()`);
+  app.listeners.get('pointerdown')?.({ target:app.context.document.body });
+  assert.equal(evaluate("!!views.get(0).view.querySelector('.thread-input')"), false);
+  evaluate(`window.openName();renderThreads();element('threads').querySelector('.thread-panel').querySelector('.thread-entry').querySelector('.thread-archive').onpointerdown({stopPropagation(){}})`);
+  assert.equal(evaluate("!!views.get(0).view.querySelector('.thread-input')"), false);
+  evaluate(`window.openName();state={...state,sessionId:'replacement'};refreshComposer()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate('[window.requests.length,threadNaming,composerThreadName(),threadFilter()]'))), [1,null,null,null]);
+});
+
+test('archive controls do not filter or drag and archived rows follow live rows without entering the capsule counts', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'archived',archived:true,last:{summary:'Old',at:30}},{name:'live',last:{summary:'Live',at:20}},{name:'older',archived:true,last:{summary:'Older',at:10}}]};renderThreads();
+    const text=root=>root.textContent+root.children.map(text).join(''),panel=element('threads').querySelector('.thread-panel'),rows=panel.querySelectorAll('.thread-entry'),order=rows.map(row=>row.dataset.thread),capsule=text(element('threads').querySelector('.thread-capsule'));
+    const requests=[];let stopped=0;fetchJSON=async(path,body)=>{requests.push([path,body]);return {}};
+    const action=rows[0].querySelector('.thread-archive');action.onpointerdown({stopPropagation(){stopped++}});action.onclick({stopPropagation(){stopped++}});
+    rows[1].querySelector('.thread-archive').onclick({stopPropagation(){stopped++}});
+    const actions=[rows[0].tagName,action.tagName,action.textContent,rows[1].querySelector('.thread-archive').textContent,stopped,threadFilter(),threadDragged,renaming];
+    setThread('archived');const selected=element('threads').querySelector('.thread-capsule').querySelector('.thread-name').classList.contains('archived');
+    setThread(undefined);state={...state,threads:state.threads.map(thread=>({...thread,archived:true}))};renderThreads();const empty=text(element('threads').querySelector('.thread-capsule'));
+    return [order,capsule,requests,actions,selected,empty];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['live','archived','older'],'#live…',[['/threads/archive',{sessionId:'s',name:'live',archived:true}],['/threads/archive',{sessionId:'s',name:'archived',archived:false}]],['DIV','BUTTON','×','↺',3,null,false,false],true,'…']);
 });
 
 test('block thread updates preserve the scrolled panel position', async () => {

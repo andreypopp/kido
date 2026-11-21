@@ -155,7 +155,7 @@ function refreshThreadItems() {
 }
 function setThread(name: ThreadName | undefined) {
   const next = threadFilter() === name ? undefined : name;
-  if (next) composerThreads.set(filterKey(), next);
+  if (next) { composerThreads.set(filterKey(), next); if (threadNaming?.target.kind === 'composer') threadNaming = undefined; }
   updateThreadFilter(next);
 }
 function updateThreadFilter(name: ThreadName | undefined) {
@@ -165,9 +165,9 @@ function updateThreadFilter(name: ThreadName | undefined) {
   enqueue({ type: 'reset' });
   if (epoch) void reloadThread();
 }
-function threadColour(name: ThreadName): string {
-  const index = 'threads' in state ? state.threads.findIndex(thread => thread.name === name) : -1;
-  return `var(--thread-${Math.max(0, index) % 6})`;
+function threadColour(name?: ThreadName): string {
+  const threads = 'threads' in state ? state.threads : [], index = threads.findIndex(thread => thread.name === name);
+  return `var(--thread-${(index < 0 ? threads.length : index) % 6})`;
 }
 function threadName(name: ThreadName) {
   const label = node('span', undefined, 'thread-name'); label.dataset.thread = name; label.title = name;
@@ -177,8 +177,48 @@ function threadName(name: ThreadName) {
 }
 const composerThreadName = (): ThreadName | undefined => state.view.type === 'root' ? composerThreads.get(filterKey()) : undefined;
 function setComposerThread(name: ThreadName | undefined) {
+  if (threadNaming?.target.kind === 'composer') threadNaming = undefined;
   if (name) composerThreads.set(filterKey(), name); else composerThreads.delete(filterKey());
   refreshComposer();
+}
+type ThreadNamingTarget = { kind: 'composer' } | { kind: 'message'; seq: number; key: string };
+let threadNaming: { target: ThreadNamingTarget; scope: string; sessionId: string | undefined; chip: HTMLElement; input: HTMLInputElement } | undefined;
+function newThreadChip(target: ThreadNamingTarget) {
+  const chip = node('span', undefined, 'thread-chip thread-new'); chip.append(node('span', '+', 'thread-hash'), node('span', 'thread'));
+  chip.setAttribute('role', 'button'); chip.tabIndex = -1; chip.setAttribute('aria-label', 'Name a thread');
+  chip.onclick = () => startThreadNaming(chip, target);
+  chip.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); startThreadNaming(chip, target); } };
+  return chip;
+}
+function finishThreadNaming(commit: boolean) {
+  const naming = threadNaming;
+  if (!naming) return;
+  const name = commit ? parseThreadName(naming.input.value) : undefined;
+  if (commit && !name) { naming.input.focus(); return; }
+  threadNaming = undefined;
+  naming.chip.replaceWith(newThreadChip(naming.target));
+  if (naming.scope !== filterKey()) return;
+  if (naming.target.kind === 'composer') { setComposerThread(name); editor.focus(); }
+  else if (name) void fetchJSON('/messages/thread', { sessionId: naming.sessionId, seq: naming.target.seq, thread: name }).catch(reportError);
+}
+function startThreadNaming(plus: HTMLElement, target: ThreadNamingTarget) {
+  finishThreadNaming(false);
+  const chip = node('span', undefined, 'thread-chip thread-naming'), input = node('input', undefined, 'thread-input');
+  input.placeholder = 'thread name'; input.maxLength = 200; input.spellcheck = false; input.setAttribute('aria-label', 'Thread name');
+  const colour = () => {
+    chip.style.setProperty('--thread-color', threadColour(parseThreadName(input.value)));
+    input.style.width = Math.max(6, input.value.length || input.placeholder.length) + 'ch';
+  };
+  input.oninput = colour; colour();
+  input.onkeydown = event => {
+    event.stopPropagation();
+    if (event.isComposing) return;
+    if (event.key === 'Enter' || event.key === 'Tab' && target.kind === 'composer') { event.preventDefault(); finishThreadNaming(true); }
+    else if (event.key === 'Escape') { event.preventDefault(); finishThreadNaming(false); }
+  };
+  const cancel = node('button', '×', 'thread-clear'); cancel.type = 'button'; cancel.setAttribute('aria-label', 'Cancel thread name'); cancel.onclick = () => finishThreadNaming(false);
+  chip.append(node('span', '#', 'thread-hash'), input, cancel); plus.replaceWith(chip);
+  threadNaming = { target, scope: filterKey(), sessionId: state.sessionId, chip, input }; input.focus();
 }
 function threadChip(name: ThreadName, clear = false) {
   const mark = node('span', undefined, 'thread-chip');
@@ -194,9 +234,11 @@ function threadChip(name: ThreadName, clear = false) {
   }
   return mark;
 }
-function messageHeader(name: ThreadName | undefined, at?: number) {
+function messageHeader(name: ThreadName | undefined, at?: number, target?: Extract<ThreadNamingTarget, { kind: 'message' }>) {
+  if (target && threadNaming?.scope === filterKey() && threadNaming.target.kind === 'message' && threadNaming.target.key === target.key && threadNaming.chip.parentElement?.classList.contains('message-header')) return threadNaming.chip.parentElement;
   const row = node('div', undefined, 'message-header');
   if (name && !threadFilter() && state.view.type === 'root') row.append(threadChip(name));
+  if (target && state.view.type === 'root') row.append(threadNaming?.scope === filterKey() && threadNaming.target.kind === 'message' && threadNaming.target.key === target.key ? threadNaming.chip : newThreadChip(target));
   if (at !== undefined) { const time = node('time', timestamp(at)); time.dateTime = new Date(at).toISOString(); row.append(time); }
   return row;
 }
@@ -322,7 +364,7 @@ function fitThreads(width = document.documentElement.clientWidth) {
   const button = capsule.view.querySelector<HTMLElement>('.thread-open');
   if (!button) return;
   button.classList.remove('single');
-  for (let count = capsule.names.length; count >= 1; count--) {
+  for (let count = Math.max(1, capsule.names.length); count >= 1; count--) {
     const children: HTMLElement[] = [];
     for (const name of capsule.names.slice(0, count)) {
       if (children.length) children.push(node('span', '·', 'thread-separator'));
@@ -352,14 +394,14 @@ function renderThreads() {
   if (!('threads' in state) || host.hidden) { host.replaceChildren(); threadCapsule = undefined; return; }
   const previousPanel = host.querySelector<HTMLElement>('.thread-panel'), open = previousMode === 'line' && previousPanel?.hidden === false;
   const scrollTop = previousPanel?.scrollTop ?? 0;
-  const threads = state.threads.map((thread, index) => ({ ...thread, index })).sort((a, b) => a.last && b.last ? b.last.at - a.last.at || b.index - a.index : a.last ? 1 : b.last ? -1 : b.index - a.index);
-  const names = threads.map(thread => thread.name), changed = !threadCapsule || threadCapsule.selected !== filter || names.length !== threadCapsule.names.length || names.some((name, index) => name !== threadCapsule?.names[index]);
+  const threads = state.threads.map((thread, index) => ({ ...thread, index })).sort((a, b) => Number(!!a.archived) - Number(!!b.archived) || (a.last && b.last ? b.last.at - a.last.at || b.index - a.index : a.last ? 1 : b.last ? -1 : b.index - a.index));
+  const names = threads.filter(thread => !thread.archived).map(thread => thread.name), changed = !threadCapsule || threadCapsule.selected !== filter || names.length !== threadCapsule.names.length || names.some((name, index) => name !== threadCapsule?.names[index]);
   if (mode === 'block') threadCapsule = undefined;
   else if (changed) {
     const capsule = node('div', undefined, 'thread-capsule'), button = node(filter ? 'button' : 'div', undefined, 'thread-open');
     button.setAttribute('aria-label', 'Threads');
     if (filter) { button.setAttribute('type', 'button'); button.onclick = toggleThreads; }
-    if (filter) { button.classList.add('single'); button.append(threadName(filter)); }
+    if (filter) { button.classList.add('single'); const label = threadName(filter); label.classList.toggle('archived', !!state.threads.find(thread => thread.name === filter)?.archived); button.append(label); }
     capsule.append(button);
     if (filter) { const clear = node('button', '×', 'thread-clear'); clear.type = 'button'; clear.setAttribute('aria-label', 'All threads'); clear.onclick = () => setThread(undefined); capsule.append(clear); }
     threadCapsule = { view: capsule, names, selected: filter };
@@ -368,13 +410,20 @@ function renderThreads() {
   if (filter) capsule?.querySelector('.thread-open')?.setAttribute('aria-expanded', String(open));
   const panel = node('div', undefined, 'thread-panel'); panel.hidden = mode === 'line' && !open; panel.setAttribute('aria-label', 'Choose thread');
   for (const thread of threads) {
-    const entry = node('button', undefined, 'thread-entry'); entry.type = 'button'; entry.dataset.thread = thread.name;
+    const entry = node('div', undefined, 'thread-entry'); entry.setAttribute('role', 'button'); entry.tabIndex = -1; entry.dataset.thread = thread.name;
+    entry.classList.toggle('archived', !!thread.archived);
     entry.classList.toggle('current', thread.name === filter); entry.setAttribute('aria-pressed', String(thread.name === filter));
     const label = threadName(thread.name); label.classList.add('thread-toggle'); entry.append(label);
+    const age = node('span', undefined, 'thread-age');
     if (thread.last) {
       const time = node('time', threadAge(thread.last.at, Date.now())); time.dateTime = new Date(thread.last.at).toISOString();
-      entry.append(node('span', markdownLine(thread.last.summary), 'thread-summary'), time);
+      entry.append(node('span', markdownLine(thread.last.summary), 'thread-summary')); age.append(time);
     }
+    const archive = node('button', thread.archived ? '↺' : '×', 'thread-archive'); archive.type = 'button'; archive.setAttribute('aria-label', thread.archived ? 'Restore thread' : 'Archive thread');
+    archive.onpointerdown = event => { if (threadNaming?.target.kind === 'message') finishThreadNaming(false); event.stopPropagation(); };
+    archive.onclick = event => { event.stopPropagation(); void fetchJSON('/threads/archive', { sessionId: state.sessionId, name: thread.name, archived: !thread.archived }).catch(reportError); };
+    age.append(archive); entry.append(age);
+    entry.onkeydown = event => { if (event.target === entry && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setThread(thread.name); } };
     entry.onpointerdown = event => dragThread(event, entry, thread.name);
     entry.onclick = event => clickThread(event, entry, thread.name); panel.append(entry);
   }
@@ -1253,8 +1302,9 @@ function renderItem(item: WireItem) {
       if (block.type === 'text') {
         flush();
         const message = prose(key, block.text, item.final || index < item.blocks.length - 1, annotationItems.get(item.seq)?.get(index), 'assistant');
-        message.querySelector('.message-header')?.remove();
-        if (!parts.some(part => part.classList.contains('msg'))) { message.prepend(messageHeader(block.thread, hasHeader ? undefined : item.at)); hasHeader = true; }
+        const header = message.querySelector('.message-header');
+        if (!header?.contains(threadNaming?.chip ?? null)) header?.remove();
+        if (!parts.some(part => part.classList.contains('msg'))) { if (!message.querySelector('.message-header')) message.prepend(messageHeader(block.thread, hasHeader ? undefined : item.at, { kind: 'message', seq: item.seq, key })); hasHeader = true; }
         parts.push(message);
       }
       else steps.push({ kind: 'block', block, item, key, index, slots });
@@ -1271,7 +1321,7 @@ function renderItem(item: WireItem) {
     view.className = 'msg ' + item.kind;
     if (item.kind === 'user') {
       const names = threadItems.get(item.seq)?.threads ?? [];
-      const header = messageHeader(item.thread ?? (names.length === 1 ? names[0] : undefined), item.at);
+      const header = messageHeader(item.thread ?? (names.length === 1 ? names[0] : undefined), item.at, { kind: 'message', seq: item.seq, key: item.seq + ':user' });
       const text = node('div', undefined, 't'); text.append(prose(item.seq + ':user', item.text, true, undefined, 'user'));
       if (item.images.length) { const images = thumbnails(item.images, () => slots); images.load(); text.append(images.view); }
       const paths = item.attachments.filter(file => file.kind === 'file').map(file => file.path);
@@ -1574,12 +1624,16 @@ function refreshComposer() {
   editor.running(running);
   editor.readonly(editing());
   draft.refresh();
+  if (threadNaming && threadNaming.scope !== filterKey()) finishThreadNaming(false);
   const thread = composerThreadName();
-  composerThread.remove(); composerThread.replaceChildren();
-  if (state.view.type === 'root') {
-    if (thread) composerThread.append(threadChip(thread, true));
-    else { const chip = node('span', undefined, 'thread-chip thread-new'); chip.append(node('span', '+', 'thread-hash'), node('span', 'thread')); composerThread.append(chip); }
-    element('field').prepend(composerThread);
+  if (threadNaming?.target.kind !== 'composer' || !composerThread.contains(threadNaming.chip)) {
+    composerThread.remove(); composerThread.replaceChildren();
+    if (state.view.type === 'root') {
+      if (threadNaming?.target.kind === 'composer') composerThread.append(threadNaming.chip);
+      else if (thread) composerThread.append(threadChip(thread, true));
+      else composerThread.append(newThreadChip({ kind: 'composer' }));
+      element('field').prepend(composerThread);
+    }
   }
   const addressed = viewedName();
   editor.placeholder(state.life.type === 'starting' ? 'Starting pi…' : state.life.type === 'switching' ? 'Loading…' : running ? 'running… ⎋ cancels' : draft.hover && !state.edit ? 'Drop to attach' : hasFailed() ? 'koa could not start the agent' : working && state.compaction !== 'running' ? 'Steer ' + addressed + '…' : 'Message ' + addressed + '…');
@@ -1815,6 +1869,7 @@ function applyPatch(record: Patch, buffer: boolean) {
 }
 function apply(record: PageRecord) {
   if (record.type === 'reset') {
+    if (threadNaming?.target.kind === 'message') finishThreadNaming(false);
     pathWarnings.clear(); pathWarningEpoch++;
     editor.resetCompletion();
     find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); runKeys.clear(); runThreads = undefined; order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); threadItems.clear(); projections.clear(); folds.clear(); historyRequest = undefined; more = record.more;
@@ -2444,7 +2499,7 @@ document.addEventListener('keydown', event => {
   }
   previewHover(event); if (previewKey(event)) return; if (event.key === 'Escape' && element('threads').dataset.mode === 'line' && element('threads').querySelector<HTMLElement>('.thread-panel')?.hidden === false) { event.preventDefault(); closeThreads(); return; } if (!barMenu.hidden && event.key === 'Escape') { event.preventDefault(); closeBarMenu(); return; } if (state.view.type === 'job') return; if (!event.defaultPrevented && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.isComposing && event.key === 'g' && composerReceivesKeys() && !editing()) { event.preventDefault(); void openEditor(); return; } if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasFailed() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
-document.addEventListener('pointerdown', event => { if (!element('threads').contains(event.target instanceof Node ? event.target : null)) closeThreads(); if (!barMenu.hidden && !barMenu.contains(event.target instanceof Node ? event.target : null) && !(event.target instanceof Element && event.target.closest('.ellipsis'))) closeBarMenu(); if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
+document.addEventListener('pointerdown', event => { if (threadNaming?.target.kind === 'message' && !threadNaming.chip.contains(event.target instanceof Node ? event.target : null)) finishThreadNaming(false); if (!element('threads').contains(event.target instanceof Node ? event.target : null)) closeThreads(); if (!barMenu.hidden && !barMenu.contains(event.target instanceof Node ? event.target : null) && !(event.target instanceof Element && event.target.closest('.ellipsis'))) closeBarMenu(); if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
 element('scroll').onscroll = () => {
   decide({ type: 'scroll' });
   const geo = geometry(), top = geo.top - geo.origin, half = geo.viewport / 2, { total } = ensureTable();

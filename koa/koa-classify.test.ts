@@ -8,9 +8,11 @@ import { classifierPrompt, parseClassification } from './koa-classify.ts';
 test('quotes require one unambiguous thread and ignore short fragments', () => {
   const one = parseThreadName('one'), two = parseThreadName('two'); assert.ok(one && two);
   const reply = (seq: number, thread: typeof one): Item => ({ kind: 'assistant', seq, revision: 0, at: 1, final: true, lifecycle: 'ended', blocks: [{ type: 'text', thread, text: 'A sufficiently long **quoted** passage' }], stop: 'stop', error: '' });
-  assert.equal(quotedThread([reply(0, one)], '> A sufficiently long quoted passage\nYes'), one);
-  assert.equal(quotedThread([reply(0, one), reply(1, two)], '> A sufficiently long quoted passage'), undefined);
-  assert.equal(quotedThread([reply(0, one)], '> short'), undefined);
+  assert.equal(quotedThread([reply(0, one)], '> A sufficiently long quoted passage\nYes', new Set()), one);
+  assert.equal(quotedThread([reply(0, one), reply(1, two)], '> A sufficiently long quoted passage', new Set()), undefined);
+  assert.equal(quotedThread([reply(0, one)], '> short', new Set()), undefined);
+  assert.equal(quotedThread([reply(0, one)], '> A sufficiently long quoted passage', new Set([one])), undefined);
+  assert.equal(quotedThread([reply(0, one), reply(1, two)], '> A sufficiently long quoted passage', new Set([one])), two);
 });
 
 test('classification accepts only one complete valid name', () => {
@@ -28,9 +30,12 @@ test('thread context selects five recent threads, three prose messages, and queu
   const first = names[0];
   assert.ok(first);
   const queued: QueuedPrompt[] = [{ thread: first, text: 'queued\tuser', attachments: [] }];
-  const context = threadContext(items, names, queued);
+  const context = threadContext(items, names, queued, new Set());
   assert.deepEqual(context.threads.map(thread => thread.name), [...names.slice(3), first]);
   assert.deepEqual(context.others, names.slice(1, 3));
+  const excluded = threadContext(items, names, queued, new Set([first, names[1], names[6]]));
+  assert.deepEqual(excluded.threads.map(thread => thread.name), names.slice(2, 6));
+  assert.deepEqual(excluded.others, []);
   assert.deepEqual(context.threads.at(-1)?.messages.map(message => message.from), ['user', 'assistant', 'user']);
   assert.equal(context.threads.at(-1)?.messages.at(-1)?.text, 'queued user');
   assert.equal(context.threads[0]?.messages[0]?.text, 'message 2');

@@ -72,7 +72,7 @@ export function createView(options: ViewOptions) {
     const next = feed.threads();
     if (publishedThreads?.length === next.length && next.every((thread, index) => {
       const previous = publishedThreads?.[index];
-      return previous?.name === thread.name && previous.last?.summary === thread.last?.summary && previous.last?.at === thread.last?.at;
+      return previous?.name === thread.name && previous.archived === thread.archived && previous.last?.summary === thread.last?.summary && previous.last?.at === thread.last?.at;
     })) return;
     publish(false, next);
   };

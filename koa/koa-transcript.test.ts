@@ -91,6 +91,26 @@ test('moving the latest persisted reply removes its only old thread', t => {
   assert.deepEqual(view.threadContext([]).others, []);
 });
 
+test('archive metadata changes thread state without changing feed items or epoch and survives rebuild', t => {
+  const branch: SessionEntry[] = [];
+  const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const reply = assistant('[thread: one]\nReply with a sufficiently long quotation');
+  branch.push({ type: 'message', id: 'reply', parentId: null, timestamp: new Date(123).toISOString(), message: reply }); view.message(reply, 'end');
+  const before = JSON.parse(request(view, '/items?before=100').join(''));
+  const archive: SessionEntry = { type: 'custom', id: 'archive', parentId: 'reply', timestamp: new Date(124).toISOString(), customType: 'koa.thread-archive', data: { name: 'one', archived: true } };
+  branch.push(archive); view.annotation(archive);
+  assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')), before);
+  assert.equal(view.threads()[0]?.archived, true);
+  assert.deepEqual(view.threadContext([]), { threads: [], others: [] });
+  assert.equal(view.quotedThread('> Reply with a sufficiently long quotation'), undefined);
+  view.rebuild(branch, 'session', 'archive');
+  assert.equal(view.threads()[0]?.archived, true);
+  const restore: SessionEntry = { ...archive, id: 'restore', parentId: 'archive', data: { name: 'one', archived: false } };
+  branch.push(restore); view.annotation(restore);
+  assert.equal(view.threads()[0]?.archived, undefined);
+  assert.equal(view.quotedThread('> Reply with a sufficiently long quotation'), 'one');
+});
+
 test('rebuild replays the whole active branch across compactions', t => {
   const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 }); t.after(() => view.close());
   const entries: SessionEntry[] = [

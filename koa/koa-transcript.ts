@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:f
 import { join } from "node:path";
 import { imageInfo, imageExtensions } from "./koa-image.ts";
 import { pathArg, type Annotation } from "./koa-records.ts";
-import { isRelation, isAgentFailure, parseThreadName, messageThread, type ThreadName } from "./records.ts";
+import { isRelation, isAgentFailure, parseThreadName, messageThread, threadArchive, type ThreadName } from "./records.ts";
 import { decodePrompt } from "./prompt.ts";
 import { threadList, type ThreadList } from "./thread-list.ts";
 import type { Thread, Text, Block, Item, Assistant, WireItem, State, PageRecord, ImageRef, Attachment, AgentCall, NotifyLevel, CommandResult, BashResult } from "./koa-records.ts";
@@ -209,7 +209,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
   };
   const isThreadRecord = (entry: SessionEntry): boolean => {
     if (kind !== 'root' || entry.type !== 'custom') return false;
-    if (entry.customType === 'koa.thread-move' || messageThread(entry)) return true;
+    if (entry.customType === 'koa.thread-move' || messageThread(entry) || threadArchive(entry)) return true;
     return entry.customType === 'koa.thread';
   };
   let currentThread: ThreadName | undefined;
@@ -507,6 +507,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     return ids.every((id): id is string => id !== undefined) ? ids : undefined;
   };
   const annotation = (entry: SessionEntry, notify = true): void => {
+    if (kind === 'root' && threadArchive(entry)) { list = undefined; changed?.(); return; }
     if (kind === 'root' && (entry.type === 'custom' && entry.customType === 'koa.thread-move' || messageThread(entry))) {
       flush();
       list = undefined;
@@ -716,12 +717,12 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
   };
   return { threadContext: (queued: readonly QueuedPrompt[]) => {
     const { project, names, owner } = projection();
-    return threadContext(items.map(project), names, queued.map(prompt => prompt.thread ? { ...prompt, thread: owner.resolve(prompt.thread) } : prompt));
-  }, resolveThread: (name: ThreadName) => threads().resolve(name), movable: (from: ThreadName, to: ThreadName) => threads().movable(from, to), moveTargets, quotedThread: (text: string) => {
-    const { project } = projection();
-    return quotedThread(items.map(project), text);
+    return threadContext(items.map(project), names, queued.map(prompt => prompt.thread ? { ...prompt, thread: owner.resolve(prompt.thread) } : prompt), new Set(names.filter(owner.archived)));
+  }, resolveThread: (name: ThreadName) => threads().resolve(name), isThreadArchived: (name: ThreadName) => threads().archived(name), movable: (from: ThreadName, to: ThreadName) => threads().movable(from, to), moveTargets, quotedThread: (text: string) => {
+    const { project, names, owner } = projection();
+    return quotedThread(items.map(project), text, new Set(names.filter(owner.archived)));
   }, threads: (): Thread[] => {
-    const { project, names } = projection(), remaining = new Set(names);
+    const { project, names, owner } = projection(), remaining = new Set(names);
     const summaries = new Map<ThreadName, NonNullable<Thread['last']>>();
     const note = (name: ThreadName | undefined, text: string, at: number) => {
       if (!name || !remaining.has(name)) return;
@@ -736,6 +737,6 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
         const value = item.blocks[block]; if (value.type === 'text') note(value.thread, value.text, item.at);
       }
     }
-    return names.map(name => ({ name, ...(summaries.has(name) ? { last: summaries.get(name) } : {}) }));
+    return names.map(name => ({ name, ...(owner.archived(name) ? { archived: true as const } : {}), ...(summaries.has(name) ? { last: summaries.get(name) } : {}) }));
   }, command, jobFacts, itemFile, release, show, expire: (parent: string) => expire(subscribers, parent), message, thinking, annotation, rebuild, toolRunning, toolPartial, toolDone, state, notify, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
 }

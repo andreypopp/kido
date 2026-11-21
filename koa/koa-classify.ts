@@ -6,10 +6,10 @@ import type { Item, QueuedPrompt } from './koa-records.ts';
 
 export type ThreadContext = { name: ThreadName; messages: { from: 'user' | 'assistant'; text: string }[] }[];
 
-export function threadContext(items: readonly Item[], indexed: readonly ThreadName[], queued: readonly QueuedPrompt[]): { threads: ThreadContext; others: ThreadName[] } {
+export function threadContext(items: readonly Item[], indexed: readonly ThreadName[], queued: readonly QueuedPrompt[], archived: ReadonlySet<ThreadName>): { threads: ThreadContext; others: ThreadName[] } {
   const messages = new Map<ThreadName, ThreadContext[number]['messages']>();
   const add = (name: ThreadName | undefined, from: 'user' | 'assistant', text: string) => {
-    if (!name || !text.trim()) return;
+    if (!name || archived.has(name) || !text.trim()) return;
     const previous = messages.get(name) ?? [];
     messages.delete(name);
     messages.set(name, [...previous, { from, text }].slice(-3));
@@ -20,12 +20,12 @@ export function threadContext(items: readonly Item[], indexed: readonly ThreadNa
   }
   for (const prompt of queued) add(prompt.thread, 'user', prompt.text);
   const threads = [...messages].slice(-5).map(([name, messages]) => ({ name, messages: messages.map(message => ({ ...message, text: cleanLine(message.text, 300) })) }));
-  return { threads, others: indexed.filter(name => !threads.some(thread => thread.name === name)) };
+  return { threads, others: indexed.filter(name => !archived.has(name) && !threads.some(thread => thread.name === name)) };
 }
 
 const quoteText = (text: string): string => text.replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
 
-export function quotedThread(items: readonly Item[], text: string): ThreadName | undefined {
+export function quotedThread(items: readonly Item[], text: string, archived: ReadonlySet<ThreadName>): ThreadName | undefined {
   const quotes: string[] = [];
   let open = false;
   for (const line of text.split(/\r?\n/)) {
@@ -36,7 +36,7 @@ export function quotedThread(items: readonly Item[], text: string): ThreadName |
   }
   const wanted = quotes.map(quoteText).filter(quote => quote.length >= 12);
   if (!wanted.length) return;
-  const sections = items.filter(item => item.kind === 'assistant').slice(-20).flatMap(item => item.blocks.flatMap(block => block.type === 'text' && block.thread ? [{ thread: block.thread, text: quoteText(block.text) }] : []));
+  const sections = items.filter(item => item.kind === 'assistant').slice(-20).flatMap(item => item.blocks.flatMap(block => block.type === 'text' && block.thread && !archived.has(block.thread) ? [{ thread: block.thread, text: quoteText(block.text) }] : []));
   const found = new Set<ThreadName>();
   for (const quote of wanted) {
     const threads = new Set(sections.filter(section => section.text.includes(quote)).map(section => section.thread));

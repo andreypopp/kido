@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { scenarios } from './testdata/scenarios/threads.ts';
 import { test } from 'node:test';
-import { parseThreadName } from './records.ts';
+import { parseThreadName, threadArchive } from './records.ts';
 import { threadList } from './thread-list.ts';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { threadSections } from './text.ts';
@@ -41,6 +41,40 @@ test('thread list folds alias chains, rename-back and valid entry overrides once
   custom('koa.message-thread', { entries: ['user'], thread: 'override' });
   assert.equal(threadList(branch).assignment('user', parseThreadName('a')), 'override');
   assert.deepEqual(threadList(branch).names, ['override']);
+});
+
+test('archive replay follows rename aliases and only an archive entry restores a thread', () => {
+  const a = parseThreadName('a'), b = parseThreadName('b'); assert.ok(a && b);
+  const branch: SessionEntry[] = [{ type: 'message', id: 'user', parentId: null, timestamp: new Date(1).toISOString(), message: { role: 'user', content: '[thread: a]\nWork', timestamp: 1 } }];
+  const custom = (customType: string, data: unknown) => branch.push({ type: 'custom', id: String(branch.length), parentId: branch.at(-1)?.id ?? null, timestamp: new Date(2).toISOString(), customType, data });
+  custom('koa.thread-archive', { name: 'a', archived: true });
+  custom('koa.thread-move', { from: 'a', to: 'b' });
+  assert.equal(threadList(branch).archived(b), true);
+  custom('koa.thread', { name: 'b' });
+  custom('koa.message-thread', { entries: ['user'], thread: 'b' });
+  assert.equal(threadList(branch).archived(b), true);
+  custom('koa.thread-archive', { name: 'a', archived: false });
+  assert.equal(threadList(branch).archived(b), false);
+  custom('koa.thread-archive', { name: 'b', archived: true });
+  custom('koa.thread-move', { from: 'b', to: 'a' });
+  assert.equal(threadList(branch).archived(a), true);
+  assert.equal(threadList(branch).archived(b), true);
+  for (const data of [{ name: 'a' }, { name: 'a', archived: 1 }, { name: 'a]b', archived: true }]) assert.equal(threadArchive({ type: 'custom', customType: 'koa.thread-archive', data }), undefined);
+});
+
+test('a merge takes the existing target archive state even when the target has no name index', () => {
+  const a = parseThreadName('a'), b = parseThreadName('b'); assert.ok(a && b);
+  for (const source of [false, true]) for (const target of [false, true]) {
+    const branch: SessionEntry[] = ['a', 'other'].map((name, index) => ({ type: 'message', id: 'user' + index, parentId: index ? 'user0' : null, timestamp: new Date(index).toISOString(), message: { role: 'user', content: '[thread: ' + name + ']\nWork', timestamp: index } }));
+    const custom = (customType: string, data: unknown) => branch.push({ type: 'custom', id: String(branch.length), parentId: branch.at(-1)?.id ?? null, timestamp: new Date(2).toISOString(), customType, data });
+    custom('koa.message-thread', { entries: ['user1'], thread: 'b' });
+    custom('koa.thread-archive', { name: 'a', archived: source });
+    custom('koa.thread-archive', { name: 'b', archived: target });
+    custom('koa.thread-move', { from: 'a', to: 'b' });
+    const list = threadList(branch);
+    assert.deepEqual(list.names, ['b']);
+    assert.equal(list.archived(a), target); assert.equal(list.archived(b), target);
+  }
 });
 
 test('thread sections preserve source code point ranges and fence text', () => {

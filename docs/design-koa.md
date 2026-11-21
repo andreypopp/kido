@@ -807,6 +807,32 @@ rename does not filter. Long names are cut on the page with the whole
 name in the title. The visual rules of these interactions are in
 `app/design/koa/NOTES.md`, "Threads".
 
+The user names a thread with the "+ thread" chip. In the composer it
+sets the composer's thread and writes nothing to the session. A new
+thread exists only when a message carries it. On a message header it
+moves the message's turn through the same `koa.message-thread` entry
+as a drag. A name that no thread has yet creates that thread, so the
+move route accepts any valid name. There is no slash command for
+threads.
+
+Archiving hides a thread from the classifier and from the line-mode
+capsule. The thread stays in the panel. A `koa.thread-archive` entry
+records each archive and restore. `koa/thread-list.ts` folds these
+entries in branch order together with the moves, so a replay and a
+resume agree. A rename keeps the archived state of its source. A
+merge keeps the state of its target, because the source ends there.
+A thread counts as an existing target when the branch before the move
+uses it in a message. A name that only the index holds does not count.
+Only a restore clears the archived state. A message, a move, a merge
+or an agent label that goes into an archived thread leaves it
+archived. The classifier gets no archived thread in its context, and
+the quote match ignores archived threads. An answer that resolves to
+an archived thread is a classification failure, so the message goes
+without a marker. The archive route is serial with the prompt routes,
+so an archive cannot land while a prompt waits for its
+classification. Archived state reaches the page as an optional field
+of the root state's threads. No feed item changes and no reset occurs.
+
 ## Agent extension, subagents and jobs
 
 ### Extension boundary and identity

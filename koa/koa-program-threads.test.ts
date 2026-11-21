@@ -7,6 +7,74 @@ import { join, resolve } from 'node:path';
 
 const classification = { settings: { koa: { threads: { model: 'fake/classifier' } } }, models: [{ provider: 'fake', id: 'fake-model' }, { provider: 'fake', id: 'classifier' }] };
 
+test('archive and restore persist through reload while explicit sends and new turn assignments keep archive state', { timeout: 10000 }, async t => {
+  const app = await realFixture(t, { ...classification, replies: [
+    { when: '[thread: one]\nfirst', text: '[thread: one]\nFirst reply' },
+    { when: '[thread: other]\nsecond', text: '[thread: other]\nSecond reply' },
+    { when: '[thread: one]\nexplicit', text: 'Still archived' },
+  ] });
+  for (const [thread, text] of [['one', 'first'], ['other', 'second']]) {
+    const before = app.count(); await app.post('prompt', { text, thread, mode: 'prompt', attachments: [] });
+    await app.until(ofType('state', state => !state.working), before);
+  }
+  const history = await (await fetch(app.url('items?before=100'))).json();
+  let before = app.count();
+  assert.equal((await app.post('threads/archive', { name: 'one', archived: true })).status, 200);
+  const archived = await app.until(ofType('state', state => 'threads' in state && !!state.threads.find(thread => thread.name === 'one')?.archived), before);
+  assert.ok(archived.sessionFile);
+  const entries = (await readFile(archived.sessionFile, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.equal((await app.post('threads/archive', { name: 'one', archived: true })).status, 200);
+  assert.equal((await readFile(archived.sessionFile, 'utf8')).trim().split('\n').length, entries.length);
+  assert.equal((await (await fetch(app.url('items?before=100'))).json()).epoch, history.epoch);
+  before = app.count(); await app.post('prompt', { text: 'explicit', thread: 'one', mode: 'prompt', attachments: [] });
+  await app.until(ofType('state', state => !state.working), before);
+  const explicit = await app.until(ofType('item', record => record.item.kind === 'user' && record.item.text === 'explicit'), before);
+  assert.equal(explicit.item.kind === 'user' ? explicit.item.thread : undefined, 'one');
+  before = app.count(); await app.post('prompt', { text: '/reload', mode: 'prompt', attachments: [] });
+  await app.until(ofType('reset'), before);
+  const replay = await app.until(ofType('state', state => 'threads' in state && !!state.threads.find(thread => thread.name === 'one')?.archived), before);
+  const saved = replay.sessionFile; assert.ok(saved);
+  const resumed = await realFixture(t, { ...classification, replies: [], setup: async ({ sessions }) => { const file = join(sessions, 'archived.jsonl'); await cp(saved, file); return ['--session', file]; } });
+  await resumed.until(ofType('state', state => 'threads' in state && !!state.threads.find(thread => thread.name === 'one')?.archived));
+  assert.equal((await app.post('threads/move', { from: 'one', to: 'renamed' })).status, 200);
+  assert.equal((await app.post('threads/move', { from: 'other', to: 'renamed' })).status, 200);
+  const current = await (await fetch(app.url('items?before=100'))).json();
+  const reply = current.items.find((item: { kind: string }) => item.kind === 'assistant'); assert.ok(reply);
+  assert.equal((await app.post('messages/thread', { seq: reply.seq, thread: 'New topic' })).status, 200);
+  const moved = await (await fetch(app.url('items?before=100'))).json();
+  assert.equal(moved.items.find((item: { kind: string }) => item.kind === 'user')?.thread, 'New topic');
+  before = app.count(); assert.equal((await app.post('threads/archive', { name: 'renamed', archived: false })).status, 200);
+  await app.until(ofType('state', state => 'threads' in state && state.threads.some(thread => thread.name === 'renamed' && !thread.archived)), before);
+  assert.equal(app.provider.requests.filter(request => request.body.model === 'classifier').length, 0);
+  for (const body of [{ name: 'missing', archived: true }, { name: 'renamed', archived: 1 }]) assert.equal((await app.post('threads/archive', body)).status, 400);
+});
+
+test('a classifier alias to an archived thread is rejected and archived quotes fall through without context', { timeout: 10000 }, async t => {
+  const app = await realFixture(t, { ...classification, replies: [
+    { when: '[thread: one]\nseed', text: '[thread: one]\nA sufficiently long quoted passage' },
+    { model: 'classifier', when: 'New message:\nlate', text: 'one' },
+    { when: 'late', text: 'Done' },
+    { model: 'classifier', when: 'New message:\n> A sufficiently long quoted passage\nAgain', text: 'renamed' },
+    { when: '> A sufficiently long quoted passage\nAgain', text: 'Done again' },
+  ] });
+  let before = app.count(); await app.post('prompt', { text: 'seed', thread: 'one', mode: 'prompt', attachments: [] });
+  await app.until(ofType('state', state => !state.working), before);
+  await app.post('threads/move', { from: 'one', to: 'renamed' });
+  await app.post('threads/archive', { name: 'renamed', archived: true });
+  before = app.count(); await app.post('prompt', { text: 'late', mode: 'prompt', attachments: [] });
+  const late = await app.until(ofType('item', record => record.item.kind === 'user' && record.item.text === 'late'), before);
+  assert.equal(late.item.kind === 'user' ? late.item.thread : undefined, undefined);
+  await app.until(ofType('state', state => !state.working), before);
+  before = app.count(); await app.post('prompt', { text: '> A sufficiently long quoted passage\nAgain', mode: 'prompt', attachments: [] });
+  const quoted = await app.until(ofType('item', record => record.item.kind === 'user' && record.item.text.includes('Again')), before);
+  assert.equal(quoted.item.kind === 'user' ? quoted.item.thread : undefined, undefined);
+  await app.until(ofType('state', state => !state.working), before);
+  const requests = app.provider.requests.filter(request => request.body.model === 'classifier');
+  assert.equal(requests.length, 2);
+  assert.ok(!JSON.stringify(requests[1].body).includes('## renamed'));
+  assert.equal(app.records().filter(ofType('item', record => record.item.kind === 'notify' && record.item.text.text.startsWith('Thread classifier:'))).length, 1);
+});
+
 test('a rejected classified submission returns the accepted text to the editor', { timeout: 10000 }, async t => {
   const dir = await mkdtemp('/tmp/koa-rejected-prompt-');
   t.after(() => rm(dir, { recursive: true, force: true }));

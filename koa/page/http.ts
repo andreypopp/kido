@@ -22,6 +22,7 @@ export type Routes = {
   '/editor/open': { request: Session & { text: string }; response: { pane: string } };
   '/editor/ack': { request: Session & { id: string }; response: Empty };
   '/messages/thread': { request: Session & { seq: number; thread: ThreadName }; response: Empty };
+  '/threads/archive': { request: Session & { name: ThreadName; archived: boolean }; response: Empty };
   '/threads/move': { request: Session & { from: ThreadName; to: ThreadName }; response: Empty };
   '/queue/clear': { request: Session; response: { steering: QueuedPrompt[]; followUp: QueuedPrompt[] } };
   '/queue/remove': { request: Session & { kind: 'steer' | 'follow-up'; index: number; text: string; thread?: ThreadName }; response: Empty };

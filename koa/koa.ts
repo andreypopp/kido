@@ -630,10 +630,22 @@ Everything after -- is message text.
         owned(req, owner);
         const thread = isRecord(value) ? parseThreadName(value.thread) : undefined, seq = isRecord(value) && typeof value.seq === "number" && Number.isSafeInteger(value.seq) ? value.seq : undefined;
         const targets = seq === undefined ? undefined : v.feed.moveTargets(seq);
-        if (agent.parent || !thread || !targets?.length || !v.feed.threads().some(row => row.name === thread)) { respond(response, 400, JSON.stringify({ error: "A finished message of the root and a live thread are required" })); return; }
+        if (agent.parent || !thread || !targets?.length) { respond(response, 400, JSON.stringify({ error: "A finished message of the root and a thread name are required" })); return; }
         const entry = owner.sessionManager.getEntry(owner.sessionManager.appendCustomEntry('koa.message-thread', { entries: targets, thread }));
         if (entry) v.feed.annotation(entry);
         v.publish();
+        respond(response, 200, "{}");
+      }); } },
+      "/threads/archive": { method: "POST", access: "session", scope: "agent", handle: (value, response, req) => { const { agent } = req, v = agent.view, owner = agent.session; return v.serial(async () => {
+        owned(req, owner);
+        const name = isRecord(value) ? parseThreadName(value.name) : undefined, archived = isRecord(value) && typeof value.archived === 'boolean' ? value.archived : undefined;
+        const thread = v.feed.threads().find(row => row.name === name);
+        if (agent.parent || !name || archived === undefined || !thread) { respond(response, 400, JSON.stringify({ error: "A thread of the root and an archive state are required" })); return; }
+        if (!!thread.archived !== archived) {
+          const entry = owner.sessionManager.getEntry(owner.sessionManager.appendCustomEntry('koa.thread-archive', { name, archived }));
+          if (entry) v.feed.annotation(entry);
+          v.publish();
+        }
         respond(response, 200, "{}");
       }); } },
       "/threads/move": { method: "POST", access: "session", scope: "agent", handle: (value, response, req) => { const { agent } = req, v = agent.view, owner = agent.session; return v.serial(async () => {
