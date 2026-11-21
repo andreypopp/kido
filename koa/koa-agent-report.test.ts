@@ -59,7 +59,9 @@ test("queued parent work preserves each completed turn report", async () => {
   try {
     await child(fx, async (s, ledger, channel) => {
       await s.emit("agent_start");
-      await channel.host.extension!.receive({ kind: "user", text: "follow up" });
+      const extension = channel.host.extension;
+      assert.ok(extension);
+      await extension.receive({ kind: "user", text: "follow up" });
       await s.emit("turn_end", { message: assistant("stop", "first result"), toolResults: [] });
       assert.deepEqual(ledger.reports, ["first result"]);
       await s.emit("turn_start");
