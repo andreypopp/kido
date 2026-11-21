@@ -1,0 +1,37 @@
+---
+import { fields, limits, prose, typeHtml, variants, type Schema } from '../lib/openapi';
+type Props = { schema: Schema; inner?: boolean };
+const { schema, inner } = Astro.props;
+const bases = schema.type === 'object' ? schema.allOf : undefined;
+const cases = variants(schema);
+const rows = fields(schema);
+const note = limits(schema);
+---
+<Fragment set:html={prose(schema.description)} />
+{cases ? (
+  <ul class="cases">
+    {cases.map(({ tag, value }) => (
+      <li>
+        <code>{tag}</code>
+        <Astro.self schema={value} inner />
+      </li>
+    ))}
+  </ul>
+) : rows.length > 0 || bases ? (
+  <>
+    {bases && <p>With the fields of <code class="ty" set:html={bases.map(typeHtml).join(', ')} />.</p>}
+    {rows.length > 0 && <table class="fields">
+      <tbody>
+        {rows.map(({ name, value, required }) => (
+          <tr>
+            <td><code>{name}</code>{!required && <small>optional</small>}</td>
+            <td><code class="ty" set:html={typeHtml(value)} /></td>
+            <td><Fragment set:html={prose(value.description)} /><Fragment set:html={limits(value)} /></td>
+          </tr>
+        ))}
+      </tbody>
+    </table>}
+  </>
+) : !inner && (
+  <p><code class="ty" set:html={typeHtml(schema)} />{note && <span class="note" set:html={note} />}</p>
+)}

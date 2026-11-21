@@ -50,8 +50,15 @@ the middle and the headings of the page at the right. A page names its
 `src/lib/docs.ts` holds the groups and builds the sidebar from the
 pages. `src/styles/base.css` holds what the landing page and the
 documentation share: the colours, the font and the texture. The
-documentation pages are placeholders, and the landing page does not
-link to them yet.
+markdown pages are placeholders, and the landing page does not link to
+the documentation yet.
+
+`src/pages/docs/ko-api.astro` is the reference of the server's HTTP API,
+in the same layout. The build generates it from `share/ko/openapi.json`
+of this checkout: `src/lib/openapi.ts` reads the description and turns
+a schema into a type expression, and `src/components/Schema.astro`
+shows one schema. The page has one section for each first path segment,
+one entry for each operation, and every named type at the end.
 
 `brand/kandinsky/` holds the app icon in this style, light and dark. The
 recordings in `public/media/` and the `demo/` directory belong to the

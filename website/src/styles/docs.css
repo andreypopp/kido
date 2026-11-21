@@ -20,7 +20,7 @@ body{min-height:100vh}
 
 .toc{font-size:.88rem}
 .toc ul{border-left:1px solid color-mix(in srgb,var(--line) 45%,transparent);gap:0;margin-top:1rem}
-.toc a{padding-left:1.2rem}
+.toc a{padding-left:1.2rem;overflow-wrap:anywhere}
 .toc .d3 a{padding-left:2.1rem}
 .toc a[data-here]{color:var(--ink)}
 .toc a[data-here]::before{content:"";position:absolute;left:-6px;top:50%;width:11px;height:11px;margin-top:-5.5px;border-radius:50%;background:var(--red)}
@@ -47,6 +47,29 @@ body{min-height:100vh}
 .doc th{text-align:left;font-weight:500;border-bottom:1px solid var(--line);padding:.5rem .8rem .5rem 0}
 .doc td{border-bottom:1px solid color-mix(in srgb,var(--line) 30%,transparent);padding:.5rem .8rem .5rem 0;vertical-align:top}
 .doc hr{border:0;height:1px;background:var(--line);opacity:.45;margin:2.5rem 0}
+
+.api h3{display:flex;flex-wrap:wrap;align-items:baseline;gap:.7rem;font-size:1.1rem;margin:0 0 .7rem}
+.api h3 code,.api h4 code{font-family:var(--mono);font-size:.95em}
+.api h4{font-family:var(--sans);font-size:.74rem;font-weight:400;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin:1.4rem 0 .3rem}
+.api h4.type{font-size:1rem;letter-spacing:0;text-transform:none;color:var(--ink);margin:0 0 .6rem}
+.api .op{padding-top:1.5rem;margin-top:1.5rem;border-top:1px solid color-mix(in srgb,var(--line) 30%,transparent)}
+.api h2+.op{border-top:0;padding-top:0;margin-top:0}
+.api :target{scroll-margin-top:2rem}
+.method{font-family:var(--sans);font-size:.74rem;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.method.get{color:var(--blue)}.method.post{color:var(--green)}.method.put,.method.patch{color:var(--brown)}.method.delete{color:var(--red)}
+.api .fields{font-size:.88rem;table-layout:fixed}
+.api .fields td:first-child{width:28%}.api .fields td:nth-child(2){width:32%}
+.api .fields td{overflow-wrap:anywhere}
+.api .fields p{margin:0}
+.api .fields tr:last-child td{border-bottom:0}
+.api :is(small,.note){display:block;font-size:.8rem;color:var(--muted)}
+.api .note{margin-top:.2rem}
+.api code.ty{background:none;padding:0;overflow-wrap:anywhere}
+.api code.ty a{color:var(--blue);text-decoration:none}
+.api code.ty a:hover{text-decoration:underline}
+.api .cases{padding-left:1.4rem}
+.api .cases>li+li{margin-top:.8rem}
+.api .cases .fields{margin:.4rem 0 0}
 
 .pager{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-top:4rem;padding-top:1.4rem;border-top:1px solid color-mix(in srgb,var(--line) 45%,transparent)}
 .pager a{text-decoration:none;font-size:1.25rem;font-weight:300;color:var(--head)}

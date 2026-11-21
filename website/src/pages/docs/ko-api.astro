@@ -1,0 +1,95 @@
+---
+import Schema from '../../components/Schema.astro';
+import Docs from '../../layouts/Docs.astro';
+import { body, groups, info, limits, prose, schemas, typeHtml } from '../../lib/openapi';
+export const frontmatter = { title: 'HTTP API', group: 'ko', order: 2 } as const;
+const headings = [
+  ...groups.flatMap((group) => [
+    { depth: 2, slug: group.slug, text: group.title },
+    ...group.routes.map(({ method, path, op }) => ({ depth: 3, slug: op.operationId, text: `${method.toUpperCase()} ${path}` })),
+  ]),
+  { depth: 2, slug: 'types', text: 'Types' },
+];
+---
+<Docs frontmatter={frontmatter} headings={headings}>
+  <div class="api">
+    <Fragment set:html={prose(info.description)} />
+    <p>This page is generated from the OpenAPI description of the server, which <code>ko api-schema</code> prints.</p>
+    {groups.map((group) => (
+      <>
+        <h2 id={group.slug}>{group.title}</h2>
+        {group.routes.map(({ method, path, op }) => {
+          const socket = op['x-ko-websocket'];
+          return (
+            <section class="op">
+              <h3 id={op.operationId}><span class={`method ${method}`}>{method}</span><code>{path}</code>{socket && <span class="method ws">WebSocket</span>}</h3>
+              <Fragment set:html={prose(op.description)} />
+              {op.parameters && (
+                <>
+                  <h4>Parameters</h4>
+                  <table class="fields">
+                    <tbody>
+                      {op.parameters.map((param) => (
+                        <tr>
+                          <td><code>{param.name}</code><small>{param.in}{!param.required && ', optional'}</small></td>
+                          <td><code class="ty" set:html={typeHtml(param.schema)} /></td>
+                          <td><Fragment set:html={prose(param.schema.description)} /><Fragment set:html={limits(param.schema)} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )}
+              {op.requestBody && (
+                <>
+                  <h4>Request body</h4>
+                  {body(op.requestBody.content).map(({ media, schema }) => (
+                    <>
+                      <p><code class="ty" set:html={typeHtml(schema)} /><span class="note">{media}</span></p>
+                      {!schema.$ref && <Schema schema={{ ...schema, type: 'object' }} />}
+                    </>
+                  ))}
+                </>
+              )}
+              {socket && (
+                <>
+                  <h4>Messages</h4>
+                  <table class="fields">
+                    <tbody>
+                      {([['The client sends', socket.send], ['The server sends', socket.recv]] as const).map(([who, schema]) => schema && (
+                        <tr>
+                          <td>{who}</td>
+                          <td><code class="ty" set:html={typeHtml(schema)} /></td>
+                          <td><Fragment set:html={[schema, ...(schema.oneOf ?? [])].map((part) => prose(part.description)).join('')} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )}
+              <h4>Responses</h4>
+              <table class="fields">
+                <tbody>
+                  {Object.entries(op.responses).map(([status, response]) => (
+                    <tr>
+                      <td><code>{status}</code></td>
+                      <td>{body(response.content).map(({ media, schema }) => <><code class="ty" set:html={typeHtml(schema)} /><small>{media}</small></>)}</td>
+                      <td>{response.description}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+          );
+        })}
+      </>
+    ))}
+    <h2 id="types">Types</h2>
+    {schemas.map(([name, schema]) => (
+      <section class="op">
+        <h4 id={`type-${name}`} class="type"><code>{name}</code></h4>
+        <Schema schema={schema} />
+      </section>
+    ))}
+  </div>
+</Docs>
