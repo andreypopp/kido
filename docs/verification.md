@@ -67,8 +67,7 @@ the host's macOS build is not the reference. `make visual` prints one
 tests, the quit check and the total; `test` and `ko-test` print the
 same lines without the quit check.
 
-See [dev-koa.md](dev-koa.md#checks) for koa's checks, its host
-stage `koa-visual` and its CI steps.
+See [dev-koa.md](dev-koa.md#checks) for koa's checks.
 
 `scripts/main-watch.sh` watches main and reports each observed head's
 CI. `/gh-watch` starts it through streamed `async_bash`.
@@ -158,6 +157,18 @@ the pane's terminal. It runs 20 random cases under `cargo test`;
 ## The TypeScript suite
 
 See [dev-koa.md](dev-koa.md) for the TypeScript suite, fake ko, fake model and replay fixtures.
+
+The repository's checks call koa's targets. `scripts/lint.sh` calls
+`make -C koa lint`. The `ts` stage of `scripts/verify.sh` runs `make
+-C koa typecheck test` and `scripts/test-pi.sh`; the local stage
+`koa-visual` runs `make -C koa visual`. `scripts/checks.sh` selects
+them from the changed paths: a change in `koa/`, `webview/` or
+`.pi/` selects `build`, `lint` and `ts`; a change of the page or the
+replay scenarios adds `koa-visual`; a change in `koa/visual/` selects
+`lint`, `ts` and `koa-visual`; a change of the theme files selects
+`koa-visual` and the app's `ko-test`. CI runs the `ts` stage and
+installs koa with `make -C koa install`, then runs the installed
+`koa --help`. CI does not run `koa-visual`.
 
 ## The e2e suite
 
