@@ -110,9 +110,10 @@ What changes visibly:
   and every float has the overlay, the last-active float too. A click anywhere in the
   main window (sidebar, tabs, a pane) makes it key; a click in a float
   makes that float key. The menu bar and ⌘-shortcuts act on the key
-  window's pane: the Pane menu on the float's pane while the float is
-  key. The palette opens over the main window as today and returns
-  key to the window it took it from.
+  window's pane, and never on the main window while a float is key
+  (section F, "The menu while a float is key": the Window and
+  Session menus are disabled then). The palette opens over the main
+  window as today and returns key to the window it took it from.
 - **Dragging** the main window moves the floats with it (child
   windows), with no edit: the cell geometry is unchanged. A resize of
   the main window keeps each float where it is (section E; it
@@ -130,17 +131,17 @@ What changes visibly:
 
 The 5pt edges were too thin.
 
-- **Move: the top band.** The float's top padding is 10pt of chrome
-  above the grid (no cells under it); the move handle is a 16pt band
-  straddling the top edge, 10pt inside (that padding) and 6pt outside
-  in the drawn shadow's margin, the full width; the hover toolbar
-  sits on it and keeps precedence. Cursor: open hand, closed while
-  dragging. The toolbar's grip button stays, and it is the only
-  handle that docks (section A); the band and the draggable padding
-  elsewhere only move the float. A runtime float's 3pt stripe moves
-  down with the band: it sits at the top of the grid's padding, 10pt
-  below the frame's edge, directly above the first row (the band is
-  chrome, the stripe marks the runtime's content). Visible on hover of the band: a 36×4pt pill
+- **Move: the top band.** The float's top padding is chrome above
+  the grid (no cells under it): 10pt here, 22pt since section F; the
+  move handle is a band straddling the top edge, the padding inside
+  and 6pt outside in the drawn shadow's margin, the full width; the
+  hover toolbar sits on it and keeps precedence. Cursor: open hand,
+  closed while dragging. The toolbar's grip button stayed here as the
+  only handle that docks (section A); section F removes it from a
+  float's toolbar, and the band docks with Option. A runtime float's
+  3pt stripe sits at the bottom of that padding, directly above the
+  first row (the band is chrome, the stripe marks the runtime's
+  content). Visible on hover of the band: a 36×4pt pill
   centred in it, 2pt radius, the foreground at 25% in both themes,
   120ms fade; nothing otherwise.
 - **Resize: the bottom-right corner first.** A 20×20pt square
@@ -283,7 +284,7 @@ parent, minimise and Space for free; each is now a rule of ours.
 - **Focus.** A float that becomes key makes its pane the server's
   active pane, as today; the main window does not switch session or
   window for that: its tabs and the shown ko window stay, and the
-  sidebar marks the float's row where it is. A focus route that
+  sidebar marks no row (a float has none, section F). A focus route that
   lands on a tiled pane (⌘[, the sidebar, the palette, Back/Forward)
   switches the main window to show it, as the sidebar does today; a
   route that lands on a float never switches the main window.
@@ -325,8 +326,10 @@ parent, minimise and Space for free; each is now a rule of ours.
 - **Identity on screen.** The window title (Dock menu, Mission
   Control, ⌘\`, accessibility) is "<pane title> — <session> /
   <window>", the pane title as the tab shows it. On the float
-  itself, nothing new while its ko window is the one the main window
-  shows. When it is not, a native **place capsule**, drawn by
+  itself, nothing (section F removed the place capsule of this
+  bullet; the rest of the bullet is history). Before: nothing new
+  while its ko window is the one the main window
+  shows; when it is not, a native **place capsule**, drawn by
   Kido.app over the float for every pane kind (the app has no native
   breadcrumb any more; koa's view bar is the page's): the pane
   capsule family (koa NOTES, the breadcrumb pill's geometry: 22pt
@@ -394,8 +397,138 @@ parent, minimise and Space for free; each is now a rule of ours.
   sidebar width change, a session switch and a full-screen entry,
   and takes the layout's size when a shrink clamps its cells; a
   float without a local frame follows its cells; a float of another
-  session is on screen, shown for the seen-state, and its breadcrumb
-  names the session and window; focusing it does not switch the main
+  session is on screen, shown for the seen-state, and its window
+  title names the session and window; focusing it does not switch the main
   window; Dock Pane from it switches first; a second Kido window on
   the same server shows no floats and adopts them when the first
   closes; the screen rule moves a float by the least amount.
+
+## F · A float is a window, not a row (2026-11-21, spec)
+
+The user, after section E shipped: a float is its own macOS window,
+so it is not in the sidebar, carries no chip, has no grip, and the
+keyboard never reaches the main window through it. Its lifecycle
+does not change: the server's cascade still closes a float with its
+parent pane (koa's editor float with koa's pane), and Dock Pane,
+Float Pane and the close confirmation (section D) stay as they are.
+The mockup is `mockup.html` (light and dark): the float's chrome
+before and after, the band's hover, the toolbar, a runtime float,
+the Option drag, and the sidebar without the float's row.
+
+- **Not in the sidebar.** The rows of a window are its tiled panes;
+  a pane that floats has no row, and neither do its program records
+  (OSC 7501) and its folded cluster: they are the float's, and the
+  float is a window of its own. A child pane that is itself a float
+  is absent; a tiled child pane of a float keeps its row in its own
+  window, at depth 0 (its parent has no row). The folded cluster of a
+  pane counts only its tiled children. Tabs do not change: the
+  window's tab stays, and its status aggregate still takes the
+  window's floats (a waiting agent in a float still marks the tab and
+  notifies, as today). While the active pane is a float, no row has
+  the focus fill, and the keyboard selection is where it was; a focus
+  route that lands on a float raises its window and marks no row.
+  The palette lists a float under its window as today, as the one
+  list that finds a float besides ⌘\` and the Dock menu, and
+  Back/Forward keeps float targets. A float's pane closing, docking
+  or floating changes the rows in the same snapshot as the layout.
+- **No chip.** The place capsule of section E ("<session> ›
+  <window>") goes, with the `--ko-inset-top` it set: the float's
+  identity is its window title (Dock menu, Mission Control, ⌘\`),
+  and nothing is drawn over a float's content for it. `PanePlaceCapsule`
+  is deleted. (Assumed: the "chip for child panes inside floats" is
+  this capsule, the only chip the app draws over a float; if another
+  is meant, it goes the same way and this bullet names it.)
+- **No grip; a taller top padding.** A float's hover toolbar has no
+  Drag pane button: Split right, Split down, Zoom, Dock Pane,
+  separator, Close pane, at the tiled toolbar's spacing (x 3, 29,
+  55, 81, separator, 116), 145×32pt at (paneWidth − 8 − 145, 8); the
+  tiled toolbar keeps its grip and its 171pt. Instead the top
+  padding, the chrome above the grid with no cells under it, grows
+  from 10pt to 22pt (`PaneLayout.floatTop`): padding, not border,
+  because a thicker border would read as a frame of another colour,
+  and the padding is paper the user already drags. The move band is
+  then 28pt: the 22pt padding inside and 6pt outside in the shadow's
+  margin, the full width, the toolbar over it with precedence; the
+  hover pill (36×4pt, 2pt radius, foreground 25%, 120ms) is centred
+  in the padding, at y 9–13 of the frame. The resize zones of
+  section C are unchanged (the top edge's 8pt band wins over the
+  move band in its 4pt). A runtime float's 3pt stripe sits at the
+  bottom of the padding, y 19–22, directly above the first row. The
+  COPY and history pills, the find capsule and the runtime pill keep
+  their places in the content, below the padding. A koa page's
+  `--ko-inset-top` is 0 in a float (nothing sits over the page).
+  The float's size in cells does not change; the window is 12pt
+  taller for the same grid.
+- **Docking by drag.** A drag by the band moves the float, with no
+  drop targets and no bar, as before (user, 2026-11-13: a float that
+  is moved over the main window must not dock by accident, and a
+  top-level float lives over the main window more than ever). The
+  deliberate dock by drag stays, under Option: while Option is held
+  during a band drag and the pointer is over a tiled pane of the
+  float's own ko window shown in the main window, the drop targets
+  and the accent insertion bar show as for a tiled source, and the
+  drop sends `dock {pane, target, edge}`; releasing Option hides
+  the bar and the drop is a move; over any other content the drag is
+  a move with or without Option. Option is read on each move and on
+  the drop, as the pop out's is (section A). Escape or a click
+  cancels, and the float returns. A float's drag never shows the
+  pop-out ghost. The other docking routes are unchanged: Dock Pane
+  in the Shell menu (⌥⌘F), the toolbar button, the palette.
+- **The menu while a float is key.** The key window's first
+  responder is the float's pane, and nothing acts on the main window
+  (the user: ⌘{ and ⌘} must not switch the main window's tabs).
+  Three kinds of items, by menu, with their keys; "disabled" means
+  the item is grey and its key does nothing, neither in the main
+  window nor in the float's program:
+  - Kido: Hide Kido, Quit Kido (⌘Q): app-wide.
+  - File: New Session (⌘N), New Window (⌘T), New Agent (⇧⌘N):
+    app-wide, as today: the new session or window is made on the
+    float's server, shown in the main window, which becomes key.
+    Close Window: disabled (it would close a window the user does
+    not see as the float's). Connect to Local Host, Connect to Remote
+    Host… (⇧⌘K), Pair Server…, the Runtimes submenu: app-wide.
+  - Shell: Close Pane (⌘W): the float's pane, with section D's sheet
+    on the float. Dock Pane (⌥⌘F): the float's pane. Split Right
+    (⌘D), Split Down (⇧⌘D): disabled (ko refuses a split of a
+    float). Zoom Pane (⇧⌘↩): disabled. Select Pane Left, Above,
+    Right, Below (⌥⌘ arrows, ⌘H ⌘J ⌘K ⌘L), Next Pane (⌘]), Previous
+    Pane (⌘[): disabled; they would move the focus in the main
+    window's layout. Back (⌃⌘[), Forward (⌃⌘]) and the mouse's back
+    and forward buttons on a float: disabled; the history is the
+    main window's.
+  - Edit: Undo, Redo, Cut, Copy (⌘C), Paste (⌘V), Paste and Match
+    Style, Delete, Select All (⌘A), Find… (⌘F), Find Next (⌘G), Find
+    Previous (⇧⌘G), Reload Page (⌘R), Prompt with Selection… (⌘O),
+    Copy Mode (⇧⌘C), and the pane's context menu: the float's pane,
+    as today (⌘O's palette opens over the main window and returns
+    key to the float). Reset Clipboard and Upload Permissions:
+    app-wide.
+  - View: Hide Sidebar (⇧⌘S): disabled. Focus Sidebar (⌘S):
+    app-wide: it is a route out of the float, making the main window
+    key with the sidebar focused, as today. Command Palette… (⌘P,
+    ⇧⌘P): app-wide, over the main window, key back to the float on
+    close unless the palette navigated. Theme…: app-wide.
+  - Window: Next Window (⌘}), Previous Window (⌘{), the window list
+    (⌘1…⌘9): disabled.
+  - Session: Next Session (⌥⌘]), Previous Session (⌥⌘[), the session
+    list, Rename Session…, Close Session: disabled.
+  - Full Screen (⌃⌘F) is the main window's native item; a float has
+    no title bar and no full screen, so the key does nothing in a
+    float. ⌘\` cycles the windows, floats included, as AppKit does.
+  The main window's own shortcuts work again the moment it is key.
+  The palette's rows follow the same table: while a float is key the
+  palette's root hides the Window and Session rows that are disabled
+  (Next/Previous Window, Next/Previous Session, Close Window, Rename
+  Session, Close Session, Hide Sidebar, Zoom Pane, Split Right/Down),
+  and keeps the sessions, panes, recent hosts and app-wide commands.
+- **Tests.** Rows: a window with a float lists its tiled panes only,
+  a float's records and cluster are absent, a tiled child of a float
+  is a depth-0 row, the cluster count omits a floating child, the
+  tab's aggregate includes the float, no row is focused while the
+  float is the active pane. Chrome: a float's toolbar has five
+  buttons at 145pt, the pill is at y 9–13, the stripe at 19–22, the
+  grid starts at 22pt. Menu: with a float key, validate returns false
+  for every item of the disabled list and true for the others, and
+  ⌘} with a float key leaves the shown window unchanged; an Option
+  band drag over the shown ko window's tiled pane shows the bar and
+  docks, the same drag without Option moves.
