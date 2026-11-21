@@ -463,12 +463,13 @@ export function createJobs(options: { records: Records; path: () => string; sink
     options.view?.changed(job);
     detachJob(job);
     const sink = options.sink();
-    sink?.jobEnded();
     if (!sink || job.state.type !== "ended" || job.state.announced) return;
     if (job.state.end.type !== "stopped") {
       if (streams(job)) flush(job);
       const tail = jobTail(job);
       sink.jobNotice(`job ${quote(job.mode.name)} (${job.id}) ${jobEndText(job.state.end)}\n--- last ${TAIL_BYTES} bytes of its output ---\n${tail}\nlog: ${job.mode.log}`, { kind: "job", ...(job.mode.origin.type === 'async_bash' && job.mode.origin.thread ? { thread: job.mode.origin.thread } : {}), job: { ...jobReference(job, options.place), end: job.state.end }, tail });
+    } else {
+      sink.jobEnded();
     }
     job.state.announced = true;
     pruneJobs(registry);

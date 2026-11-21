@@ -772,8 +772,9 @@ continues its own work: its turn's end waits for the settle. Aborted or
 interrupted turns do not report. Provider errors send an error notice
 instead. Empty or repeated text does not duplicate a result. While
 live work holds the report, a later final text replaces the held
-one. A stopped job sends no notice, so job ending also checks whether
-a settled child can now report the held text.
+one. A job's end that sends a notice starts the turn that reports. A
+stopped job sends no notice, so only its end checks whether a settled
+child can now report the held text.
 
 The parent records the report before delivering its capped notice.
 `read_report` reads the stored text. Reporting does not end a child;

@@ -72,6 +72,18 @@ test("a child reports completed work only before queued parent input or after se
       await s.tool("stop_async_bash").execute("s", { job: job.id });
       await job.closed;
       assert.deepEqual(ledger.reports, ["first result", "second result", "follow-up result", "build result"]);
+      await s.emit("message_start", { message: { role: "user", content: "wait for job" } });
+      const waiting = await s.tool("async_bash").execute("c", { command: gatedCommand(`${fx.dir}/waiting`), name: "waiting" });
+      await idleTurn(s);
+      const beforeNotice = [...ledger.reports];
+      assert.equal(beforeNotice.length, 4, "an empty turn with a live job holds the report");
+      writeFileSync(`${fx.dir}/waiting`, "");
+      await pollUntil(() => notices(s).some(text => text.includes(jobId(waiting))));
+      assert.deepEqual(ledger.reports, beforeNotice, "a job end notice must not release the report before its turn");
+      await s.emit("agent_start");
+      await idleTurn(s, "job notice result");
+      assert.deepEqual(ledger.reports, [...beforeNotice, "job notice result"]);
+
       await s.emit("message_start", { message: { role: "user", content: "empty result" } });
       await idleTurn(s);
       assert.equal(ledger.reports.at(-1), 'subagent "worker" ended its turn with no message');
