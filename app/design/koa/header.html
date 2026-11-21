@@ -664,24 +664,80 @@ html:not([data-dock=band]) .gallery .dock .field{-webkit-backdrop-filter:none;ba
 .pane .msg.user,html[data-um=solid] .pane .msg.user{display:block}
 .msg.assistant .sec+.sec{margin-top:10px}
 .field .hd{margin:0 0 4px}
+/* the panel's drag, drop and rename (NOTES, "The classifier MVP, reviewed") */
+.tpanel .row.dragging{opacity:.5}
+.tpanel .row.drop{outline:2px solid color-mix(in srgb,var(--dc) 50%,transparent);outline-offset:-2px;background:color-mix(in srgb,var(--dc) 6%,var(--well))}
+.msg.assistant.drop{outline:2px solid color-mix(in srgb,var(--dc) 50%,transparent);outline-offset:3px;border-radius:6px;background:color-mix(in srgb,var(--dc) 6%,transparent)}
+.tpanel .row.renaming{cursor:default}.tpanel .row.renaming .n{color:var(--tc)}.tpanel .row.renaming .n .h{opacity:.55;font-weight:400}
+.tpanel .row.renaming .input{flex:1;min-width:0;border:1px solid var(--hair);border-radius:4px;padding:2px 6px;background:var(--ko-bg);color:var(--fg);font-weight:400;line-height:1.3}
+.tpanel .row.renaming .sel{background:color-mix(in srgb,var(--accent) 28%,transparent)}
+/* naming a new thread in the composer (proposal 2026-11-21) */
+.chip.naming{cursor:text}.chip.naming .in{min-width:6ch}.chip.naming .ph{color:var(--faint);font-weight:400}.chip.naming .caret{display:inline-block;width:1px;height:1em;background:var(--fg);vertical-align:-2px;margin-left:1px}
+.tpanel .row.new .n{color:var(--muted);font-weight:500}
+.field .text.has{color:var(--fg)}
+/* adding a thread to an existing message: the "+ thread" chip on hover of the header row */
+.chip.add{border:1px dashed color-mix(in srgb,var(--fg) 30%,transparent);background:none;color:var(--muted);font-weight:500;padding:0 8px}.chip.add .h{opacity:.8;font-weight:500}
+.msg.user .chip.add{border-color:color-mix(in srgb,var(--ink,var(--fg)) 45%,transparent);color:color-mix(in srgb,var(--ink,var(--fg)) 80%,transparent)}
+.msg.user .chip.naming{background:color-mix(in srgb,var(--ko-bg) 22%,transparent);color:var(--ink,var(--fg))}.msg.user .chip.naming .caret{background:var(--ink,var(--fg))}.msg.user .chip.naming .ph{color:color-mix(in srgb,var(--ink,var(--fg)) 55%,transparent)}
+/* archive (user, 2026-11-21): an × at the row's right on hover, in the age's slot; an archived row stays, dimmed, after the live ones, and its hover control is ↺ */
+.tpanel .row .x{display:none;width:16px;height:16px;line-height:16px;text-align:center;border-radius:4px;color:var(--muted);font:14px/16px var(--prose);flex-shrink:0;margin:0 -2px 0 0}
+.tpanel .row.hov .w,.tpanel .row:hover .w{display:none}.tpanel .row.hov .x,.tpanel .row:hover .x{display:inline-block}.tpanel .row .x:hover{background:var(--well2);color:var(--ko-fg)}
+.tpanel .row.archived{opacity:.45}.tpanel .row.archived:hover,.tpanel .row.archived.hov{opacity:.7}
+.caps .hn.archived{display:none}
+/* chip variants for the user to choose (2026-11-21) */
+html[data-chip=plain] .chip{border-color:transparent;background:none;padding:0}
+html[data-chip=tint] .chip{border-color:transparent;background:color-mix(in srgb,var(--tc) 10%,transparent)}
+html[data-chip=tint] .msg.user .chip{background:color-mix(in srgb,var(--ko-bg) 22%,transparent);color:var(--ink,var(--fg))}
+html[data-chip=tint] .msg.user .chip .h{opacity:.6}
+html[data-chip=dot] .chip{border-color:transparent;background:none;padding:0;color:var(--muted);font-weight:500}
+html[data-chip=dot] .chip .h{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--tc);opacity:1;align-self:center;margin-right:-1px}
+html[data-chip=dot] .chip .h::before{content:""}
+html[data-chip=dot] .msg.user .chip{color:color-mix(in srgb,var(--ink,var(--fg)) 80%,transparent)}
+html[data-chip=muted] .chip{border-color:transparent;background:none;padding:0;color:var(--muted);font-weight:600}
+html[data-chip=muted] .chip .h{opacity:.6}
+html[data-chip=muted] .msg.user .chip{color:color-mix(in srgb,var(--ink,var(--fg)) 70%,transparent)}
+html[data-chip=line] .chip{border:0;border-radius:0;background:none;padding:0 0 0 8px;border-left:2px solid var(--tc);color:var(--fg);font-weight:500;line-height:1.2}
+html[data-chip=line] .msg.user .chip{color:var(--ink,var(--fg));border-left-color:color-mix(in srgb,var(--ink,var(--fg)) 70%,transparent)}
+html[data-chip=line] .chip .h{display:none}
+.toc{position:sticky;top:52px;z-index:5;display:flex;flex-wrap:wrap;gap:4px 6px;padding:6px 0 8px;background:color-mix(in srgb,var(--ko-fg) 6%,var(--ko-bg))}
+.toc a{font:12px/1 var(--prose);color:var(--fg);text-decoration:none;padding:5px 9px;border-radius:999px;background:var(--well);border:1px solid var(--hair)}.toc a:hover{background:var(--well2)}
+section{scroll-margin-top:96px}#gallery{scroll-margin-top:96px}
+section h2 a{color:inherit;text-decoration:none}section h2 a:hover{text-decoration:underline}
 </style>
 </head>
 <body>
 <div class="controls"><h1>Threads: the header row and the chip</h1>
 <label>Theme <select id="theme"><option value="light">kido-light</option><option value="dark">kido-dark</option></select></label>
+<label>Chip <select id="chip"><option value="tint">tinted pill (chosen 2026-11-21)</option><option value="tag">outlined tag</option><option value="plain">plain #name in the colour</option><option value="dot">colour dot + name, muted</option><option value="muted">#name muted, no colour</option><option value="line">bar + name</option></select></label>
 <label>Width <select id="width"><option value="wide">wide</option><option value="narrow">60 columns</option></select></label>
 <span style="color:var(--muted)">approved 2026-11-21 · a header row on every message and a thread chip replace the reply's pill</span></div>
+<nav class="toc"><a href="#header">Header row &amp; chip</a><a href="#filter">Filter &amp; composer chip</a><a href="#new">Starting a thread</a><a href="#archive">Archiving</a><a href="#panel">Drag &amp; rename</a><a href="#block">Block mode</a><a href="#gallery">Gallery</a></nav>
 <p class="lede">A thread is a named workstream of one session; the agent labels its own text with <code>[thread: name]</code> lines, which the transcript turns into marks. The page shows the threads in a capsule at the top left (the view bar's family), lists them with their status and summary in a panel under it, and filters the transcript to one thread on a click. Nothing here is live.</p>
 
-<section><h2>1 · The header row and the chip</h2>
-<p>Approved (user, 2026-11-21). Every message, user or agent, starts with a header row that holds only its time at the right (the time's design as today) and, when the message has a thread, the thread's chip at the left: "# name" in the thread's colour as an outlined tag. The reply's pill is gone. A reply about two threads has the chip of its first section in the header, and each later section starts with a row of its own chip, without a time. A user message whose thread is known (the classifier's label, a filter, a typed marker) has the chip too; the two multi-thread user messages here have none. Runs, steps, notices and job lines are unchanged: no header, no chip.</p>
+<section id="header"><h2><a href="#header">1 · The header row and the chip</a></h2>
+<p>Approved (user, 2026-11-21). Every message, user or agent, starts with a header row that holds only its time at the right (the time's design as today) and, when the message has a thread, the thread's chip at the left: "# name" in the thread's colour on a tinted pill (the colour at 10%; on the solid user block the page background at 22% with the ink), the user's choice of 2026-11-21 among the Chip picker's treatments. The reply's pill is gone. A reply about two threads has the chip of its first section in the header, and each later section starts with a row of its own chip, without a time. A user message whose thread is known (the classifier's label, a filter, a typed marker) has the chip too; the two multi-thread user messages here have none. Runs, steps, notices and job lines are unchanged: no header, no chip.</p>
 <div class="grid"><div class="pane aligned withcaps" data-state="marks"></div><div class="pane aligned withcaps narrow" data-state="marks-narrow"></div></div></section>
 
-<section><h2>2 · A filter active: the chip in the composer</h2>
-<p>While a filter is on, the thread's chip stands at the top left of the field, above the text, with an × that clears the filter; the placeholder is the plain "Steer @ko…" / "Message @ko…" and the foot's thread cell is gone (the chip says it once). The messages of the filtered transcript show the time alone in their header (the chip would say the same on every row). The line-mode capsule keeps "# name" (opens the panel) and loses its ×; the panel keeps "All threads".</p>
+<section id="filter"><h2><a href="#filter">2 · A filter active: the chip in the composer</a></h2>
+<p>Two things (user, 2026-11-21): the composer's thread and the transcript's filter. The composer's thread is its chip at the top left of the field, above the text, with an × that drops it; it is set by a click on a message's chip, by <code>/thread name</code> (section 2b), and by the widget's filter. The filter is only the widget's: a name in the capsule, a panel row, a block row; the capsule's × (line mode) and "All threads" (panel, block mode) clear it. A filter sets the composer's thread too, as here; the chip's × then drops the composer's thread and leaves the filter. The placeholder is the plain "Steer @ko…" / "Message @ko…" and the foot's thread cell is gone. The messages of the filtered transcript show the time alone in their header.</p>
 <div class="grid"><div class="pane aligned withcaps" data-state="filter"></div><div class="pane aligned withcaps narrow" data-state="filter-narrow"></div></div></section>
 
-<section><h2>3 · Block mode, unfiltered and filtered</h2>
+<section id="new"><h2><a href="#new">2b · Starting a thread explicitly</a></h2>
+<p>The composer alone creates a thread (user, 2026-11-21): its header row always exists and holds either the composer's thread as a chip with an ×, or the same dashed "+ thread" chip as a message's header shows on hover (here it is always visible: it is the route). A click on it opens the naming chip in place (left: the placeholder "thread name", the caret in it); typing a name (a Zulip topic, with spaces and any text: there is no <code>#name</code> syntax, it would collide with Markdown headings) and Enter sets the composer's thread (right): an existing thread's name takes that thread's colour, a new one the next colour; Escape or the × goes back to "+ thread". The keyboard route is the slash command <code>/thread &lt;name&gt;</code>, with the existing names in the completion popup; <code>/thread</code> alone drops the thread. The chip is the composer's thread: the message goes to #name, a new thread or an existing one; the transcript is not filtered, on send either (user, 2026-11-21); the classifier is not asked; the chip stays after the send.</p>
+<div class="grid"><div class="pane aligned withcaps" data-state="new-thread"></div><div class="pane aligned withcaps" data-state="new-thread-named"></div></div>
+<p style="margin-top:14px">From an existing message (user, 2026-11-21): hovering a message's header row shows a dashed "+ thread" chip after its chip (or alone); a click opens it as the naming chip in that row; Enter creates the thread and moves the message's turn into it (the MVP's move), Escape or the × drops it. Left: the hover on the user message "Also look at the Linux flake…"; right: naming it.</p>
+<div class="grid"><div class="pane aligned withcaps" data-state="tag-hover"></div><div class="pane aligned withcaps" data-state="tag-naming"></div></div></section>
+
+<section id="archive"><h2><a href="#archive">2c · Archiving a thread</a></h2>
+<p>User, 2026-11-21: every thread row in the widget (the panel, and block mode's rows) has an × at its right, shown on hover in the age's slot; a click archives the thread. An archived thread stays in the widget, dimmed to 45%, listed after the live threads (newest first within each group), and out of the line-mode capsule's names and "+N"; its hover control is ↺, which restores it. The classifier is not shown archived threads and cannot label into one; a message sent explicitly to an archived thread (its chip in the composer, a filter on it, a turn moved into it) restores it. Filtering to, renaming and merging an archived thread work as for a live one. Left: the panel with the "release-0-32" row hovered and two archived threads; right: block mode.</p>
+<div class="grid"><div class="pane aligned withcaps" data-state="archive"></div><div class="pane aligned withcaps xwide" style="width:1000px" data-state="archive-block"></div></div></section>
+
+<section id="panel"><h2><a href="#panel">3 · The panel: drag to merge, drag onto a reply, rename</a></h2>
+<p>From the classifier MVP, reviewed 2026-11-21 (NOTES, "The classifier MVP, reviewed"). A press on a row and 5px of travel start a drag: the row dims to 50%, the pointer is the grabbing hand, no ghost. The target carries the dragged thread's colour: a 2px outline at 50% and a fill at 6%, inset on a panel row (over the hover fill), 3px outside a transcript message. A drop on a row merges the dragged thread into it; a drop on a message moves its whole turn (user message and replies). A double-click on a row renames it in place: the field takes the row's width ("#" kept in the colour, the summary and the age hidden), the name selected; Enter or a click outside commits, Escape cancels. A single click filters after 250ms.</p>
+<div class="grid"><div class="pane aligned withcaps" data-state="drag-row"></div><div class="pane aligned withcaps" data-state="drag-reply"></div><div class="pane aligned withcaps" data-state="rename"></div></div>
+<div class="grid" style="margin-top:14px"><div class="pane aligned withcaps xwide" data-state="block-drag"></div></div></section>
+
+<section id="block"><h2><a href="#block">4 · Block mode, unfiltered and filtered</a></h2>
 <div class="grid"><div class="pane aligned withcaps xwide" data-state="block"></div></div>
 <div class="grid" style="margin-top:14px"><div class="pane aligned withcaps xwide" data-state="block-filter"></div></div></section>
 
@@ -694,32 +750,33 @@ const foot=(thr)=>`<div class="foot">${thr?`<span class="thr" style="${tc(thr)}"
 const transcript=(inner)=>`<div class="scroll"><div class="transcript">${inner}</div></div>`;
 const tc=(n)=>{const i=T9.findIndex(t=>t.n===n);return `--tc:var(--t${(i<0?0:i)%6})`};
 const pill=(n,time)=>`<span class="pill${n?'':' plain'}" style="${n?tc(n):''}">${n?`<span class="h">#</span><span class="n">${esc(n)}</span>`:''}${time?`<time>${time}</time>`:''}</span>`;
-const sec=(n,html,o={})=>`<div class="sec" style="${n?tc(n):''}">${hd(o.nomark?null:n,o.first?o.pill:null)}${html}</div>`;
+const sec=(n,html,o={})=>`<div class="sec" style="${n?tc(n):''}">${hd(o.nomark?null:n,o.first?o.pill:null,o.first?o:{})}${html}</div>`;
 const dots='<span class="dots"><i></i><i></i><i></i></span>';
 const run=(o)=>`<div class="run${o.open?' open':''}"><div class="line"><span class="chev">›</span><span class="sum"><span class="names">${o.sum}${o.working?dots:''}</span></span><span class="time">${o.time||''}</span></div>${o.steps?`<div class="steps">${o.steps}</div>`:''}</div>`;
 const tool=(o)=>`<div class="step${o.open?' open':''}"><div class="line"><span class="name${o.err?' err':''}">${o.name}</span>${o.cmd?`<span class="sum"><span class="cmd">${esc(o.cmd)}</span>${o.delta?` <span class="delta">${o.delta}</span>`:''}</span>`:''}${o.working?dots:''}<span class="time">${o.time||''}</span></div>${o.detail?`<div class="detail">${o.detail}</div>`:''}</div>`;
 const astep=(o)=>`<div class="step${o.open?' open':''}"><div class="line"><span class="lead${o.err?' err':''}">${esc(o.kind)} ${o.dir} ${who(o.name,{err:o.err,gone:o.gone})}${o.rel?` <span class="rel">${esc(o.rel)}</span>`:''}</span><span class="tx">${esc(o.text.split('\n')[0])}</span>${o.working?dots:''}<span class="time">${o.time||''}</span></div>${o.body?`<div class="detail"><div class="body">${o.body}</div></div>`:''}</div>`;
 const jstep=(o)=>`<div class="step${o.open?' open':''}"><div class="line"><span class="lead${o.err?' err':''}">job <span class="who" style="cursor:default">${esc(o.name)}</span></span><span class="tx ev${o.err?' err':''}">${esc(o.ev)}</span><span class="time">${o.time||''}</span></div>${o.out?`<div class="detail"><div class="jh"><a href="#job:${esc(o.name)}">open</a><span class="log">~/.local/state/koa/jobs/${esc(o.name)}.log</span></div><div class="well">${esc(o.out)}</div></div>`:''}</div>`;
 const chip=(n,o={})=>`<span class="chip" style="${tc(n)}"><span class="h">#</span><span class="n">${esc(n)}</span>${o.x?'<span class="x">×</span>':''}</span>`;
-const hd=(n,time)=>`<div class="hd">${n?chip(n):''}${time?`<time>${time}</time>`:''}</div>`;
-const userMsg=(html,t='09:12',n)=>`<div class="msg user">${hd(n,t)}<div class="t">${html}</div></div>`;
-const assistant=(parts,o={})=>{let out='',cur=null,buf=[],first=true;const flush=()=>{if(buf.length){out+=sec(cur,buf.map(p=>`<p>${p}</p>`).join(''),{...o,pill:o.time||'13:52',first});first=false}buf=[]};for(const p of parts){if(typeof p==='string')buf.push(p);else{flush();cur=p.t}}flush();return `<div class="msg assistant">${out}</div>`};
+const naming=(v)=>`<span class="chip naming" style="--tc:var(--t${(T9.length)%6})"><span class="h">#</span><span class="in">${v===true?'<span class="ph">thread name</span>':esc(v)}</span><span class="x">×</span></span>`;
+const hd=(n,time,o={})=>`<div class="hd${o.hover?' hover':''}">${n?chip(n):''}${o.naming?naming(o.naming):o.hover?'<span class="chip add"><span class="h">+</span><span class="n">thread</span></span>':''}${time?`<time>${time}</time>`:''}</div>`;
+const userMsg=(html,t='09:12',n,o={})=>`<div class="msg user">${hd(n,t,o)}<div class="t">${html}</div></div>`;
+const assistant=(parts,o={})=>{let out='',cur=null,buf=[],first=true;const flush=()=>{if(buf.length){out+=sec(cur,buf.map(p=>`<p>${p}</p>`).join(''),{...o,pill:o.time||'13:52',first});first=false}buf=[]};for(const p of parts){if(typeof p==='string')buf.push(p);else{flush();cur=p.t}}flush();return `<div class="msg assistant${o.drop?' drop':''}"${o.drop?` style="--dc:var(--t${T9.findIndex(x=>x.n===o.drop)%6})"`:''}>${out}</div>`};
 const nrow=(o)=>`<div class="nrow"><div class="hd"><span class="tx">${o.text}</span><time>${o.time}</time></div></div>`;
-const composer=(o={})=>`<div class="composer"><div class="field focus">${o.thread?`<div class="hd">${chip(o.thread,{x:true})}</div>`:''}<div class="text ph">Steer @ko…</div>${foot()}</div></div>`;
+const composer=(o={})=>`<div class="composer"><div class="field focus"><div class="hd">${o.naming?naming(o.naming):o.thread?chip(o.thread,{x:true}):'<span class="chip add"><span class="h">+</span><span class="n">thread</span></span>'}</div><div class="text ph${o.text?' has':''}">${o.text?esc(o.text):'Steer @ko…'}</div>${foot()}</div></div>`;
 const T2=[{n:'sidebar',st:'on',s:'Recording the right-side indicator snapshots; the unit reports in a minute.',w:'2m'},{n:'palette',st:'wait',s:'Should the Theme mode keep the "This session only" row?',w:'14m'}];
 const T9=[{n:'sidebar',st:'on',s:'Recording the right-side indicator snapshots; the unit reports in a minute.',w:'2m'},{n:'palette',st:'wait',s:'Should the Theme mode keep the "This session only" row?',w:'14m'},{n:'remote-mtls-pairing-ios',st:'on',s:'The iOS unit builds the Pair sheet; the scan well is a stand-in without a camera.',w:'20m'},{n:'release-0-32',st:'',s:'Waiting on CI for the rebase; nothing to do until it is green.',w:'35m'},{n:'koa-virtual-transcript',st:'on',s:'Find over the model lands the match in the mounted row; the WebKit check is pending.',w:'1h'},{n:'float-win',st:'',s:'Merged. The child windows pass the full visual stage.',w:'2h'},{n:'threads',st:'wait',s:'Which capsule family for the widget: the view bar\'s, or a new one?',w:'3h'},{n:'docs-cleanup-after-the-sessions',st:'',s:'Deferred until the sessions plan moves into docs/.',w:'5h'},{n:'ci-linux-flake',st:'',s:'Reproduced once under --contend 4; the fix is in the sweep test\'s wait.',w:'1d'}];
 const hn=(n)=>`<span class="hn" style="${tc(n)}"><span class="h">#</span>${esc(n)}</span>`;
-const capAll=(ts,open,k)=>{k=k??ts.length;const shown=ts.slice(0,k).map(t=>hn(t.n)).join('<span class="sp">·</span>');const rest=ts.length-k;return `<div class="cap tcap${open?' open':''}" data-k="${k}">${shown}${rest>0?`<span class="sp">·</span><span class="more">+${rest}</span>`:''}<span class="mb" title="All threads">…</span></div>`};
+const capAll=(ts,open,k)=>{ts=ts.filter(t=>!t.a);k=k??ts.length;const shown=ts.slice(0,k).map(t=>hn(t.n)).join('<span class="sp">·</span>');const rest=ts.length-k;return `<div class="cap tcap${open?' open':''}" data-k="${k}">${shown}${rest>0?`<span class="sp">·</span><span class="more">+${rest}</span>`:''}<span class="mb" title="All threads">…</span></div>`};
 /* as many names as fit, newest first: the capsule is at most the pane's width minus 16pt; a name is dropped from the end (and counted in +N) until the whole capsule with its tail fits; the first name always shows and ellipsizes alone */
 function fitCap(pane){const cap=pane.querySelector('.tcap[data-k]');if(!cap)return;const max=pane.clientWidth-16;let k=+cap.dataset.k;const ts=pane._ts;let cur=cap;while(k>1&&cur.scrollWidth>max){k--;cur.outerHTML=capAll(ts,cur.classList.contains('open'),k);cur=pane.querySelector('.tcap[data-k]')}const c=cur;c.style.maxWidth=max+'px';if(k===1)c.querySelector('.hn').style.cssText+=';overflow:hidden;text-overflow:ellipsis;min-width:0'}
 const capOne=(t)=>`<div class="cap tcap">${hn(t.n)}<span class="x"><svg viewBox="0 0 10 10"><path d="M2 2l6 6M8 2l-6 6"/></svg></span></div>`;
 const viewbar=`<div class="cap"><span class="bk">‹</span><span class="anc">@ko</span><span class="sp">›</span><b>@sidebar-right</b></div>`;
-const panel=(ts,cur,block)=>`<div class="tpanel${block?' block':''}"${block?` style="--bl:${block.left}px;--bw:${block.width}px"`:''}>${ts.map(t=>`<div class="row${t.n===cur?' cur':''}" style="${tc(t.n)}"><span class="n">${hn(t.n)}</span><span class="s">${esc(t.s)}</span><span class="w">${t.w}</span></div>`).join('')}${cur?`<div class="row all"><span class="n">All threads</span></div>`:''}</div>`;
+const panel=(ts,cur,block,o={})=>`<div class="tpanel${block?' block':''}"${block?` style="--bl:${block.left}px;--bw:${block.width}px"`:''}>${ts.map(t=>t.n===o.rename?`<div class="row renaming" style="${tc(t.n)}"><span class="n"><span class="h">#</span></span><span class="input"><span class="sel">${esc(t.n)}</span></span></div>`:`<div class="row${t.n===cur?' cur':''}${t.n===o.drag?' dragging':''}${t.n===o.over?' drop':''}${t.a?' archived':''}${t.n===o.hover?' hov':''}" style="${tc(t.n)}${t.n===o.over?';--dc:var(--t'+(T9.findIndex(x=>x.n===o.drag)%6)+')':''}"><span class="n">${hn(t.n)}</span><span class="s">${esc(t.s)}</span><span class="w">${t.w}</span><span class="x" title="${t.a?'Restore':'Archive'}">${t.a?'↺':'×'}</span></div>`).join('')}${cur?`<div class="row all"><span class="n">All threads</span></div>`:''}</div>`;
 /* the mode: block when a 240pt block, standing 8pt from the left, covers at most 10% of the transcript's width (the transcript is 720pt at most, centred); its width is then the gutter plus that 10%, at most 340pt */
 /* iteration 2: the transcript is left-aligned (720pt at most); the block stands at its right, 20pt from it, 8pt from the pane's edge, when at least 30 cells (30 × the cell width) are free there; it takes that room, at most 360pt */
 const CELL=7.8;
 const blockGeom=(pane)=>{const pw=pane.clientWidth,tw=Math.min(720,pw);const avail=pw-tw-20-8;return avail>=30*CELL?{left:tw+20,width:Math.min(360,Math.floor(avail))}:null};
-const caps=(o,pane)=>{const g=blockGeom(pane);pane.classList.toggle('blockmode',!!g);if(g)return panel(o.ts,o.cur,g);return `<div class="caps">${o.cur?capOne(o.ts.find(t=>t.n===o.cur)):capAll(o.ts,o.open)}</div>${o.open?panel(o.ts,o.cur):''}`};
+const caps=(o,pane)=>{const g=blockGeom(pane);pane.classList.toggle('blockmode',!!g);if(g)return panel(o.ts,o.cur,g,o);return `<div class="caps">${o.cur?capOne(o.ts.find(t=>t.n===o.cur)):capAll(o.ts,o.open)}</div>${o.open?panel(o.ts,o.cur,null,o):''}`};
 const body1=userMsg('Start the sidebar unit on the right-side indicators, and ask the palette unit about the Theme mode\'s session row.','13:50')
   +assistant([{t:'sidebar'},'Spawned <b>@sidebar-right</b> with the indicator spec; it records the snapshots at the end.',{t:'palette'},'Asked <b>@palette</b> whether the Theme mode keeps the "This session only" row; its answer decides the save step.'],{time:'13:51'})
   +run({sum:'to @sidebar-right, to @palette, read x2, bash',time:'6s',steps:astep({kind:'task',dir:'to',name:'sidebar-right',rel:'subagent',text:'Build the right-side indicators from the spec; record the snapshots at the end.',time:'0.1s'})+astep({kind:'message',dir:'to',name:'palette',rel:'subagent',text:'Does the Theme mode keep the "This session only" row, or does the config file always change?',time:'0.1s'})+tool({name:'read',cmd:'app/App/SidebarRow.swift',time:'0.2s'})+tool({name:'read',cmd:'app/design/sidebar/NOTES.md',time:'0.2s'})+tool({name:'bash',cmd:'make -C app build',time:'5s'})})
@@ -742,7 +799,36 @@ const filtered=userMsg('Start the sidebar unit on the right-side indicators.','1
   +run({sum:'job verify-sidebar, bash x2',time:'41s'})
   +assistant(['Verification passed; I merge the unit next.'],{time:'14:45'})
   +userMsg('Also look at the Linux flake in the sweep test when you have a minute.','14:46');
+const dragReply=userMsg('Check both: is the sidebar unit done, and what did the palette unit answer?','14:40')
+  +assistant([{t:'sidebar'},'Done. The unit\'s twelve snapshots changed as expected and the reviewers found nothing to apply.'],{time:'14:41'})
+  +run({sum:'job verify-sidebar, bash x2',time:'41s'})
+  +assistant([{t:'sidebar'},'Verification passed; I merge the unit next.'],{time:'14:45'})
+  +userMsg('Also look at the Linux flake in the sweep test when you have a minute.','14:46','ci-linux-flake')
+  +assistant([{t:'ci-linux-flake'},'I reproduced it once under contention; the test waits for the process, not for the row\'s exit. A fix is in the test\'s wait.'],{time:'14:47',drop:'threads'});
+const tagging=userMsg('Check both: is the sidebar unit done, and what did the palette unit answer?','14:40')
+  +assistant([{t:'sidebar'},'Done. The unit\'s twelve snapshots changed as expected and the reviewers found nothing to apply.',{t:'palette'},'It keeps the "This session only" row; the config file changes only for the other three choices.'],{time:'14:41'})
+  +run({sum:'job verify-sidebar, bash x2',time:'41s'})
+  +assistant([{t:'sidebar'},'Verification passed; I merge the unit next.'],{time:'14:45'})
+  +userMsg('Also look at the Linux flake in the sweep test when you have a minute.','14:46',null,{hover:true})
+  +assistant(['I reproduced it once under contention; the test waits for the process, not for the row\'s exit. A fix is in the test\'s wait.'],{time:'14:47'});
+const tagged=userMsg('Check both: is the sidebar unit done, and what did the palette unit answer?','14:40')
+  +assistant([{t:'sidebar'},'Done. The unit\'s twelve snapshots changed as expected and the reviewers found nothing to apply.',{t:'palette'},'It keeps the "This session only" row; the config file changes only for the other three choices.'],{time:'14:41'})
+  +run({sum:'job verify-sidebar, bash x2',time:'41s'})
+  +assistant([{t:'sidebar'},'Verification passed; I merge the unit next.'],{time:'14:45'})
+  +userMsg('Also look at the Linux flake in the sweep test when you have a minute.','14:46',null,{naming:'Linux sweep fla'})
+  +assistant(['I reproduced it once under contention; the test waits for the process, not for the row\'s exit. A fix is in the test\'s wait.'],{time:'14:47'});
+const T9A=[...T9.filter(t=>!['float-win','docs-cleanup-after-the-sessions'].includes(t.n)),...T9.filter(t=>['float-win','docs-cleanup-after-the-sessions'].includes(t.n)).map(t=>({...t,a:true}))];
 const states={
+  archive:(p)=>caps({ts:T9A,open:true,hover:'release-0-32'},p)+transcript(body1)+composer(),
+  'archive-block':(p)=>caps({ts:T9A,hover:'release-0-32'},p)+transcript(body1+marks)+composer(),
+  'tag-hover':(p)=>caps({ts:T9},p)+transcript(body1+tagging)+composer(),
+  'tag-naming':(p)=>caps({ts:T9},p)+transcript(body1+tagged)+composer(),
+  'new-thread':(p)=>caps({ts:T9},p)+transcript(body1+marks)+composer({naming:true}),
+  'new-thread-named':(p)=>caps({ts:T9},p)+transcript(body1+marks)+composer({thread:'CI macOS timeouts',text:'The macOS runner times out on the e2e stage twice a day; find the test.'}),
+  'drag-row':(p)=>caps({ts:T9,open:true,drag:'palette',over:'sidebar'},p)+transcript(body1)+composer(),
+  'drag-reply':(p)=>caps({ts:T9,open:true,drag:'threads'},p)+transcript(dragReply)+composer(),
+  rename:(p)=>caps({ts:T9,open:true,rename:'palette'},p)+transcript(body1)+composer(),
+  'block-drag':(p)=>caps({ts:T9,drag:'palette',over:'sidebar'},p)+transcript(body1+marks)+composer(),
   two:(p)=>caps({ts:T2,open:true},p)+transcript(body1)+composer(),
   many:(p)=>caps({ts:T9,open:true},p)+transcript(body1)+composer(),
   'many-narrow':(p)=>caps({ts:T9,open:true},p)+transcript(body1)+composer(),
@@ -754,11 +840,12 @@ const states={
   block:(p)=>caps({ts:T9},p)+transcript(body1+marks)+composer(),
   'block-filter':(p)=>caps({ts:T9,cur:p._cur||'sidebar'},p)+transcript(filtered)+composer({thread:p._cur||'sidebar'}),
 };
-function fill(pane){pane._ts=/two/.test(pane.dataset.state)?T2:T9;pane.innerHTML=states[pane.dataset.state](pane);const dock=document.createElement('div');dock.className='dock';for(const k of [...pane.children].filter(c=>c.classList.contains('composer')))dock.appendChild(k);pane.appendChild(dock);pane.style.setProperty('--dock-h',dock.offsetHeight+'px');const sc=pane.querySelector('.scroll');if(/marks|filter|block/.test(pane.dataset.state))sc.scrollTop=sc.scrollHeight;fitCap(pane);}
+function fill(pane){pane._ts=/two/.test(pane.dataset.state)?T2:T9;pane.innerHTML=states[pane.dataset.state](pane);const dock=document.createElement('div');dock.className='dock';for(const k of [...pane.children].filter(c=>c.classList.contains('composer')))dock.appendChild(k);pane.appendChild(dock);pane.style.setProperty('--dock-h',dock.offsetHeight+'px');const sc=pane.querySelector('.scroll');if(/marks|filter|block|tag|drag/.test(pane.dataset.state))sc.scrollTop=sc.scrollHeight;fitCap(pane);}
 for(const pane of document.querySelectorAll('.pane[data-state]'))fill(pane);
 function gallery(){const g=document.getElementById('gallery');g.querySelectorAll('.gcell').forEach(c=>c.remove());for(const s of Object.keys(states))for(const th of ['light','dark']){const cell=document.createElement('div');cell.className='gcell';const p=document.createElement('div');p.className='pane aligned withcaps'+(s.includes('narrow')?' narrow':'');p.dataset.state=s;p.style.cssText='width:100%;height:420px;font-size:12px';if(s.startsWith('block'))cell.style.gridColumn='1/-1';if(th==='dark'){p.setAttribute('data-theme','dark')}cell.appendChild(p);fill(p);const c=document.createElement('div');c.className='cap2';c.textContent=s+' · '+th;cell.appendChild(c);g.appendChild(cell)}}
 gallery();
-for(const id of ['theme','width']){const el=document.getElementById(id);el.value=document.documentElement.dataset[id];el.onchange=e=>{document.documentElement.dataset[id]=e.target.value;for(const pane of document.querySelectorAll('.pane[data-state]'))fill(pane)}}
+document.documentElement.dataset.chip=new URLSearchParams(location.search).get('chip')||'tint';
+for(const id of ['theme','width','chip']){const el=document.getElementById(id);el.value=document.documentElement.dataset[id];el.onchange=e=>{document.documentElement.dataset[id]=e.target.value;for(const pane of document.querySelectorAll('.pane[data-state]'))fill(pane)}}
 document.addEventListener('click',e=>{const st=e.target.closest('.step>.line');if(st){if(st.parentElement.querySelector('.detail'))st.parentElement.classList.toggle('open');return}const rl=e.target.closest('.run>.line');if(rl&&rl.parentElement.querySelector('.steps')){rl.parentElement.classList.toggle('open');return}const pane=e.target.closest('.pane');if(!pane)return;const S=pane.dataset.state,narrow=S.includes('narrow'),blk=S.startsWith('block');
   const setFilter=(n)=>{pane._cur=n;pane.dataset.state=blk?'block-filter':narrow?'filter-narrow':'filter';fill(pane)};
   const clear=()=>{pane._cur=null;pane.dataset.state=blk?'block':narrow?'marks-narrow':'marks';fill(pane)};

@@ -2064,15 +2064,20 @@ light and dark in the gallery.
   faint colour on a reply, the ink at 65% on a user block, its right
   edge on the text edge like every other time. Inside a user block
   the row sits inside the block's padding (8px 16px), above the
-  text; a reply's row is its first line. *The chip*: "# name" as an
-  outlined tag, .8em prose, "#" at 55% of the thread's colour, the
-  name at 600 in it, a 6px gap, 0/8px padding, 999px radius, the
-  fill the page background and a 1px edge in the colour at 30%, so
-  the same chip reads on the page, on the solid user block and in
-  the field; the name ellipsizes at 60% of the row, the full name
-  in its `title`. The chip is the mark's control, as the pill was:
-  the hand over the chip only, hover underlines the name at 50%,
-  pressed 100%, a click filters to the thread. *Multi-section
+  text; a reply's row is its first line. *The chip*: "# name" on a
+  tinted pill (the user's choice, 2026-11-21, over an outlined tag,
+  plain text, a dot, a muted label and a bar: header.html's Chip
+  picker keeps them), .8em prose, "#" at 55% of the thread's
+  colour, the name at 600 in it, a 6px gap, 0/8px padding, 999px
+  radius, no edge, the fill the colour at 10% on the page and in
+  the field; on the solid user block the fill is the page
+  background at 22% and the text the block's ink ("#" at 60%), so
+  the pill reads on the accent; the name ellipsizes at 60% of the row, the full name
+  in its `title`. The chip is a control (user, 2026-11-21: it sets
+  the composer's thread, it does not filter; the filter is only the
+  widget's): the hand over the chip only, hover underlines the name
+  at 50%, pressed 100%, a click puts that thread's chip in the
+  composer's header as the composer's thread. *Multi-section
   replies*: the first section's chip is in the header with the
   time; each later section starts with a row of its own chip and
   no time, 10px above (the time belongs to the message, and it is
@@ -2083,24 +2088,97 @@ light and dark in the gallery.
   pending prompt*: unchanged, no header and no chip (the queue's
   row is one line; the composer's chip already names the thread of
   what the dock holds under a filter). *Narrow*: the row keeps its
-  two ends; the chip ellipsizes first. *Under a filter*: the chip
-  stands at the top left of the field, above the text, in a row of
-  the same metrics, with an × after the name (14px, the muted
-  colour, 0/3px padding, 4px radius, hover the well2) that clears
-  the filter; the placeholder is the plain "Steer @ko…" / "Message
-  @ko…" and the foot's thread cell is removed; the transcript's
-  messages show the time alone in their header (the name would say
-  the same on every row). The line-mode capsule under a filter keeps
-  "# name" (opens the panel) and loses its ×, which lives on the
-  composer's chip now; the panel keeps "All threads"; block mode's
-  current row and "All threads" are unchanged. Decided by the user
-  (2026-11-21): the foot cell and the "in #name" placeholder go;
-  the capsule's × moves to the composer's chip; the queue's rows
-  carry no chip. The reply's pill, the foot cell and the "in #name"
-  placeholder in the bullets above are history.
+  two ends; the chip ellipsizes first. *The composer's thread*
+  (user, 2026-11-21: two things, the composer's thread and the
+  transcript's filter): the composer has at most one thread, shown
+  as its chip at the top left of the field, above the text, in a
+  row of the same metrics, with an × after the name (14px, the
+  muted colour, 0/3px padding, 4px radius, hover the well2) that
+  drops it; without a thread the row holds the "+ thread" chip
+  ("Starting a thread explicitly"), so the row always exists. It is set by a click on a message's chip, by a typed
+  `/thread name` ("Starting a thread explicitly"), and by the widget: a
+  filter sets the composer's thread to the filtered thread. The
+  message goes to that thread (the marker is written, the
+  classifier is not asked); the chip stays after a send, so the
+  next message goes there too, until the × or another chip. The
+  × drops the composer's thread only: the filter, if any, stays,
+  and the next message is classified. The filter is only the
+  widget's: a name in the line-mode capsule, a panel row, a block
+  row; clearing it is the widget's too: the capsule's × in line
+  mode, "All threads" in the panel and in block mode (the × of the
+  composer's chip never clears the filter). The placeholder is the
+  plain "Steer @ko…" / "Message @ko…" and the foot's thread cell is
+  removed; under a filter the transcript's messages show the time
+  alone in their header (the name would say the same on every
+  row). Decided by the user (2026-11-21): the foot cell and the "in
+  #name" placeholder go; the queue's rows carry no chip. The
+  reply's pill, the foot cell and the "in #name" placeholder in the
+  bullets above are history, and so is the move of the capsule's ×
+  to the composer (2026-11-21, earlier the same day).
+- **Starting a thread explicitly** (user, 2026-11-21, approved;
+  header.html section 2b). (1) From the composer alone (user: no panel row;
+  the same "+ thread" as on a message, user, 2026-11-21): the
+  composer's header row always exists (so the field is one row
+  taller than before) and holds either the composer's thread as
+  its chip with the ×, or the "+ thread" chip of (2) below, always
+  visible here, not on hover: it is the route. A click on it turns
+  it into the naming chip in place (the tinted pill in the next
+  colour, "#", a text field of at least 6ch with the placeholder
+  "thread name" in the faint colour, the ×, the caret in the
+  field); typing a name and Enter sets the composer's thread (an
+  existing thread's name takes that thread's colour; Tab and Enter
+  move the caret to the text), Escape or the × returns to "+
+  thread". A thread's name is a Zulip topic, with spaces and any
+  text, so there is no `#name` syntax (it would collide with
+  Markdown headings; user, 2026-11-21). The keyboard route is the
+  slash command `/thread <name>`: it sets the composer's thread to
+  that name, existing (the completion popup offers the existing
+  names after `/thread `) or new, and leaves the text; `/thread`
+  alone drops the composer's thread. The chip is the composer's thread ("The composer's
+  thread" above): the message goes to #name, the transcript is not
+  filtered (user, 2026-11-21: the filter is only the widget's), the
+  × drops it and nothing returns to the text. On send the message
+  carries the marker and the classifier is not asked (plan decision
+  6); the transcript stays unfiltered and the chip stays. (2) From
+  an existing message: hovering a message's
+  header row shows a "+ thread" chip after its chip, or alone when
+  it has none: the chip's metrics with a 1px dashed edge at 30% of
+  the foreground (45% of the ink on a user block), "+" and "thread"
+  in the muted colour at 500, no fill, the hand cursor; it takes no
+  room when hidden (the row's time keeps its place). A click turns
+  it into a naming chip in that row (the tinted pill in the next
+  colour, "#", then a text field of at least 6ch with the
+  placeholder "thread name" in the faint colour, and the ×); Enter
+  creates the thread and moves the message's turn into it (the
+  MVP's move of a turn, so a reply takes its user message along), a
+  name of an existing thread moves the turn there instead; Escape,
+  the × or a click outside drops it. The row's existing chip stays
+  until the move lands; then it is replaced. No slash command.
+- **Archiving a thread** (user, 2026-11-21, approved; header.html
+  section 2c). Every thread row of the widget
+  (the panel's rows and block mode's rows) has an × at its right,
+  in the age's slot: shown on hover of the row in place of the age,
+  16px square, 4px radius, the muted colour, hover the well2 and the
+  foreground, the hand; a click archives the thread, no
+  confirmation. An archived thread stays in the widget: its row
+  dimmed to 45% (70% on hover), listed after the live threads,
+  each group newest first; its hover control is ↺ ("Restore"),
+  which unarchives it. The line-mode capsule shows live threads
+  only, and "+N" counts live ones; the panel lists both. The
+  classifier is not shown archived threads (they leave
+  `threadContext`) and cannot label into one: an answer that names
+  an archived thread counts as a failure (plan decision 3: the
+  message goes without a marker). An explicit message to an
+  archived thread restores it: its chip in the composer (a click
+  on a message's chip, `/thread`, the naming chip), a filter on it
+  (a click on its dimmed row filters as on a live row), a turn
+  moved or a thread merged into it. Rename works as on a live
+  thread. The state is koa's, per session, in the session's thread
+  list (`archived: true`), so it survives a reload and a resume.
 - **The classifier MVP, reviewed** (2026-11-21; the user promoted
   the MVP of plans/koa-thread-classifier.md; the page's panel
-  gained drag, rename and a pending prompt). What agrees with the
+  gained drag, rename and a pending prompt; header.html section 3
+  shows the drag over a row, the drag over a reply and the rename). What agrees with the
   design and stays: the panel's rows (28pt, "# name" ellipsized at
   220pt in line mode and 45% in block mode, the summary muted and
   ellipsized, the age at the right), a click filters, the current
