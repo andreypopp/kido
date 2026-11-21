@@ -699,7 +699,7 @@ fn adhoc_definitions_resolve_in_the_session_and_end_with_it() {
     assert_eq!(done.stdout, b"routed");
     assert_eq!(done.end, json!({"type": "exit", "status": 0}));
     let mut request = sh(
-        "ko api /version; printf 'RUNTIME=%s MARK=%s\\n' \"$KO_RUNTIME\" \"$SESSION_MARK\"; exec cat",
+        "ko api /version; printf '\\nRUNTIME=%s MARK=%s\\n' \"$KO_RUNTIME\" \"$SESSION_MARK\"; exec cat",
     );
     request["runtime"] = json!("dev");
     request["parent"] = json!(a);
