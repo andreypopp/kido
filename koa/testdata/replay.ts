@@ -13,9 +13,10 @@ import { errorText, isRecord } from "../text.ts";
 import type { Batch, Input, Scenarios } from "./scenario.ts";
 
 const argv = process.argv.slice(2);
-const browser = argv[0] === "--browser";
-const [module, method, dir] = browser ? argv.slice(1) : argv;
-if (!module || !method || !dir || argv.length !== (browser ? 4 : 3)) throw Error("usage: replay.ts [--browser] <module> <test-method> <asset-dir>");
+const presentation = argv[0] !== "--browser" ? "pane" : argv[1] === "--headless" ? "headless" : "browser";
+const args = argv.slice(presentation === "pane" ? 0 : presentation === "headless" ? 2 : 1);
+const [module, method, dir] = args;
+if (!module || !method || !dir || args.length !== 3) throw Error("usage: replay.ts [--browser [--headless]] <module> <test-method> <asset-dir>");
 const loaded: { scenarios: Scenarios } = await import(new URL(`./scenarios/${module}.ts`, import.meta.url).href);
 const build = loaded.scenarios[method];
 if (!build) throw Error(`${module} has no scenario ${method}`);
@@ -161,7 +162,7 @@ const handle = async (request: IncomingMessage, response: ServerResponse) => {
 };
 
 const server = createServer((request, response) => { handle(request, response).catch(error => { process.stderr.write(`replay: ${errorText(error)}\n`); if (!response.headersSent) respond(response, 500, JSON.stringify({ error: errorText(error) })); }); });
-const view = await webview(server, { target: browser ? "browser" : "pane", ...(browser ? {} : { ko: findKo() ?? undefined }) });
+const view = await webview(server, { target: presentation === "pane" ? "pane" : "browser", ...(presentation === "pane" ? { ko: findKo() ?? undefined } : {}) });
 if (!view) throw Error("replay requires a Kido pane or --browser");
 const quit = () => {
   attached.close();
@@ -169,5 +170,10 @@ const quit = () => {
 };
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, quit);
 const show = (supported: boolean) => { if (supported) void view.show(); };
-view.on("supported", show); show(view.supported);
-if (view.url) process.stderr.write(`replay: ${view.url}\n`);
+if (presentation === "headless") {
+  if (!view.url) throw Error("headless replay has no URL");
+  process.stdout.write(JSON.stringify({ url: view.url }) + "\n");
+} else {
+  view.on("supported", show); show(view.supported);
+  if (view.url) process.stderr.write(`replay: ${view.url}\n`);
+}

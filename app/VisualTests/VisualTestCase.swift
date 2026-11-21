@@ -9,34 +9,6 @@ import XCTest
 import WebKit
 @testable import Kido
 
-private func imagePixels(_ image: CGImage) -> (width: Int, height: Int, channels: [UInt8])? {
-    let space = CGColorSpaceCreateDeviceRGB()
-    guard let source = image.copy(colorSpace: space),
-          let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
-                                  bytesPerRow: image.width * 4, space: space,
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
-          let bytes = context.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
-    context.draw(source, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-    return (image.width, image.height, Array(UnsafeBufferPointer(start: bytes, count: image.width * image.height * 4)))
-}
-
-private func pixelsDiffing() -> Diffing<NSImage> {
-    let reference = Diffing<NSImage>.image
-    return .init(toData: reference.toData, fromData: reference.fromData) { old, new in
-        if let old = old.cgImage(forProposedRect: nil, context: nil, hints: nil).flatMap(imagePixels),
-           let new = new.cgImage(forProposedRect: nil, context: nil, hints: nil).flatMap(imagePixels),
-           old.width == new.width, old.height == new.height {
-            if old.channels == new.channels { return nil }
-            if zip(old.channels, new.channels).allSatisfy({ abs(Int($0) - Int($1)) <= 1 }) { return nil }
-        }
-        return reference.diff(old, new)
-    }
-}
-
-extension Snapshotting where Value == NSImage, Format == NSImage {
-    static var pixels: Snapshotting { .init(pathExtension: "png", diffing: pixelsDiffing()) }
-}
-
 // A view as every snapshot captures it, with the native windows of the floats that lie over it drawn on top by their screen
 // frames, each captured the same way. The picture is the view's own bitmap unless `extend` lets the union of the frames
 // grow it, so a float past the edge and its shadow are in it.
@@ -126,8 +98,6 @@ extension Snapshotting where Value == NSView, Format == NSImage {
 let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
 let rawEchoScript = "while IFS= read -r -k 1 -u 0 byte; do printf '%s' \"$byte\"; done"
 
-let koaIdle = "!document.querySelector('#field').inert&&document.querySelector('#items [aria-label=working]')===null"
-let koaWorking = "document.querySelector('#items [aria-label=working]')!==null"
 
 @MainActor class VisualTestCase: XCTestCase {
     var serverEnvironment: [String: String] = [:]

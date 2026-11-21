@@ -519,7 +519,10 @@ windows and take focus. The app's test targets (`test`, `ko-test`,
 tests in the visual-test VM through `app/scripts/guest-test.sh`
 (docs/build.md, "The visual-test VM"). Only CI passes `GUEST=0`; an
 agent never does. A new target that launches the app uses the same
-runner.
+runner. `make -C app koa-host` runs on the host because it opens no
+window on the screen and fails if it takes focus; it is for iteration,
+and the guest's visual stage stays the check (docs/verification.md,
+"CI").
 
 **Visual snapshots belong to the guest.** `make -C app visual` builds
 on the host and runs in the visual-test VM on one pinned macOS build

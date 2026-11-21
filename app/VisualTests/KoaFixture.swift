@@ -71,9 +71,3 @@ nonisolated(unsafe) let koaModels: [[String: Any]] = [
     ["provider": "openai-codex", "id": "gpt-6.1-sol", "contextWindow": 200000],
     ["provider": "openai-codex", "id": "gpt-6-astra", "contextWindow": 200000],
 ]
-
-
-@MainActor func koaContentSize(window: NSWindow, width: CGFloat, height: CGFloat) {
-    let chrome = window.frame.height - window.contentLayoutRect.height
-    window.setContentSize(NSSize(width: width, height: height + chrome))
-}

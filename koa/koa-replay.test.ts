@@ -130,7 +130,7 @@ test("every scenario module builds its scenarios", async () => {
       keys.add(method);
     }
   }
-  const swift = await readFile(new URL('../app/VisualTests/KoaWebviewTests.swift', import.meta.url), 'utf8');
+  const swift = await readFile(new URL('../app/KoaSnapshots/Driver.swift', import.meta.url), 'utf8');
   for (const match of swift.matchAll(/\bkey: "([^"]+)"/g)) assert.ok(keys.has(match[1]), `No replay scenario for ${match[1]}`);
 });
 

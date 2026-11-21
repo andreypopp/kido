@@ -532,12 +532,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         guard let parent = copyLabel.superview else { return }
         let chrome = parent.bounds
         if let webviewView, let paneChrome = parent as? PaneChrome {
-            var interior = chrome.insetBy(dx: 1, dy: 1)
-            if paneChrome.runtimeMark != nil {
-                interior.origin.y = max(interior.minY, paneChrome.stripeTop + PaneChrome.stripeBand)
-                interior.size.height = max(0, chrome.maxY - 1 - interior.minY)
-            }
-            webviewView.frame = parent.convert(bounds, from: self).intersection(interior)
+            webviewView.frame = WebviewPaneView.contentFrame(parent.convert(bounds, from: self), chrome: chrome, stripeTop: paneChrome.runtimeMark == nil ? nil : paneChrome.stripeTop)
         }
         let capsule = min(420, max(200, chrome.width - 16))
         find?.frame = NSRect(x: chrome.width - 8 - capsule, y: 8, width: capsule, height: 32)

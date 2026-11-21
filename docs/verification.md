@@ -72,8 +72,8 @@ same lines without the quit check.
 The koa webview snapshots (`app/VisualTests/KoaWebviewTests.swift`)
 crop the WebKit page image to the component under test, so that a
 page-wide CSS change re-records the images that show the changed
-component, not every koa state. `webviewPageSnapshot` in
-`app/VisualTests/AppWindowCase.swift` takes a CSS selector and insets
+component, not every koa state. `KoaCapture.snapshot` in
+`app/KoaSnapshots/Capture.swift` takes a CSS selector and insets
 in CSS pixels, crops the union of the matched elements at the image's
 own backing scale, and fails when the selector matches nothing, when a
 rectangle is empty, or when the padded rectangle leaves the page; it
@@ -90,7 +90,35 @@ one fixture: it drives its states as phases of one replay (`sequence`
 in `koa/testdata/scenario.ts`) and both widths by resizing the page. A
 light capture that shows only data or a transition that its dark
 capture already shows is not recorded, but the test still drives the
-transition.
+transition. A crop whose component can sit at the page's edge first
+scrolls or grows the page until the padded rectangle fits.
+
+The states, their phases, waits, assertions and crops are one driver
+in `app/KoaSnapshots/`, which does not use XCTest. `KoaWebviewTests`
+runs it in the guest against the committed references. `make -C app
+koa-host` runs the same driver on the host, for iteration only: the
+command-line tool `KoaHost` (`app/KoaHost/main.swift`) renders the
+page in an off-screen WKWebView of a process with the activation
+policy `.prohibited`, against a headless `koa/testdata/replay.ts`
+that opens no browser. It fails when another application becomes
+active during the run, so it never takes the user's focus. Its
+references are local and not committed, in
+`app/build/koa-host/<macOS build>/__Snapshots__`, because the host's
+macOS build differs from the guest's. `RECORD=1` writes them;
+`ONLY=<Fixture>` or `ONLY=<Fixture>/<capture>` limits the images that
+it compares or writes, while every phase still runs, and a fixture
+without images (`ScrollbarJumpMountsHistory`) runs only when `ONLY`
+names it;
+`COMPARE=VisualTests/__Snapshots__/KoaWebviewTests` also reports the
+differences from the guest references, for information. The guest
+stays the reference and the final check: a host run that passes does
+not replace the visual stage. The states that need the app around the
+page (pane chrome, native focus and keys, the selection bridge, the
+pasteboard, native find, previews) run only in the guest, and the tool
+names each one that it skips. The host and the guest share the
+comparison of `app/KoaSnapshots/Pixels.swift`, which converts each
+image from its own colour space, because a host capture can carry
+Display P3.
 `scripts/main-watch.sh` watches main and reports each observed head's
 CI. `/gh-watch` starts it through streamed `async_bash`.
 
