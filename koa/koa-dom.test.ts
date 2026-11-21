@@ -7,6 +7,8 @@ import { stripTypeScriptTypes } from "node:module";
 import { markdown, markdownPlain } from "./page/markdown.ts";
 import { markdownLine } from "./markdown-line.ts";
 import { bashCommand } from "./prompt.ts";
+import { answer, current } from "./page/answers.ts";
+import { feedbackFixture, settle, shellReply } from "./testdata/completion-fixture.ts";
 import { pathToken } from './path-token.ts';
 import { promptHistory } from './page/history.ts';
 import { ATTACHMENT_LIMITS, pathArg } from "./koa-records.ts";
@@ -14,7 +16,7 @@ import { jobEndText } from "./records.ts";
 import type { PromptMode } from "./koa-records.ts";
 import { scrollInitial, scrollStored, scrollUpdate, scrollWindow } from "./page/scroll.ts";
 
-test('composer puts queue before attachments and field; footer contains its three facts and no legacy controls', async () => {
+async function pageMarkup() {
   const html = await readFile(new URL('page/page.html', import.meta.url), 'utf8');
   type Element = { tag: string; id: string; classes: string[]; children: Element[] };
   const root: Element = { tag: '', id: '', classes: [], children: [] };
@@ -29,6 +31,11 @@ test('composer puts queue before attachments and field; footer contains its thre
     elements.push(node);
     if (!['meta', 'link', 'img', 'input', 'br', 'hr'].includes(node.tag)) stack.push(node);
   }
+  return { root, elements };
+}
+
+test('composer puts queue before attachments and field; footer contains its three facts and no legacy controls', async () => {
+  const { elements } = await pageMarkup();
   const composer = elements.find(node => node.id === 'composer');
   assert.ok(composer);
   assert.deepEqual(composer.children.map(node => node.id), ['queue', 'attachments', 'field', 'error']);
@@ -39,6 +46,114 @@ test('composer puts queue before attachments and field; footer contains its thre
   assert.ok(model);
   assert.deepEqual(model.children.map(node => node.id), ['model', 'thinking']);
   assert.equal(elements.some(node => ['send', 'notice'].includes(node.id) || node.tag === 'footer' && node.classes.includes('status')), false);
+});
+
+test('completion variants retain selection and suppress empty/pending menus', async t => {
+  const f = await feedbackFixture(t, true);
+  f.key('Tab');
+  t.mock.timers.tick(150);
+  assert.equal(f.layer?.querySelector('.koa-complete > ul'), undefined);
+  assert.equal(f.widgets().length, 1);
+  f.key('Escape');
+  f.replies[0](shellReply([{ label: 'late', insert: 'late' }]));
+  await settle();
+  assert.deepEqual(f.widgets(), []);
+  assert.equal(f.layer?.querySelector('.koa-complete > ul'), undefined);
+  assert.equal(f.state().doc.toString(), '!ls');
+  f.key('Tab');
+  f.replies[1]({ ...shellReply([{ label: 'one', insert: 'one' }, { label: 'two', insert: 'two' }]), more: 37 });
+  await settle();
+  t.mock.timers.tick(50);
+  await settle();
+  const list = f.layer?.querySelector('.koa-complete > ul');
+  assert.ok(list);
+  assert.equal(list.children.at(-1)?.textContent, '… 37 more, type to narrow');
+  f.key('ArrowDown');
+  assert.equal(f.selected(), 'two');
+  const selected = list.children.find(row => row.hasAttribute('aria-selected'));
+  assert.ok(selected);
+  f.dispatch({});
+  assert.equal(f.selected(), 'two');
+  assert.equal(list.children.find(row => row.hasAttribute('aria-selected')), selected);
+  f.dispatch({ changes: { from: 0, to: 3, insert: 'read @fi tail' }, selection: { anchor: 8 } });
+  f.start();
+  t.mock.timers.tick(50);
+  f.replies[2]({ type: 'prompt', from: 5, to: 8, options: [{ kind: 'file', label: 'file.ts', insert: '@file.ts ', cursor: 9 }] });
+  await settle();
+  assert.equal(f.selected(), 'file.ts');
+  f.key('Tab');
+  assert.equal(f.state().doc.toString(), 'read @file.ts  tail');
+  assert.equal(f.state().selection.main.head, 14);
+  f.dispatch({ changes: { from: 0, to: f.state().doc.length, insert: '@missing' }, selection: { anchor: 8 } });
+  f.start();
+  t.mock.timers.tick(50);
+  f.replies[3]({ type: 'prompt', from: 0, to: 8, options: [] });
+  await settle();
+  assert.equal(f.layer?.querySelector('.koa-complete > ul'), undefined);
+});
+
+test('question answers replace quotes and preserve selected options', async () => {
+  const app = await page();
+  const question = '😀 Pick one or two?';
+  let draft = answer('', question, 'one', false);
+  draft = answer(draft, 'Push now?', 'No', false);
+  draft = answer(draft, question, 'two', false);
+  assert.equal(draft, '> 😀 Pick one or two?\ntwo\n\n> Push now?\nNo');
+  assert.equal(current(draft, question), 'two');
+  assert.equal(answer(draft, question, '', false), draft);
+  assert.equal(answer(draft, question, '', true), '> 😀 Pick one or two?\n\n\n> Push now?\nNo');
+  const options = ['one', 'two'].map(value => {
+    const node = app.context.document.createElement('span');
+    Object.assign(node.dataset, { quote: question, answer: value }); return node;
+  });
+  app.context.document.querySelectorAll = () => options;
+  Reflect.get(app.context, 'update')(draft);
+  assert.deepEqual(options.map(node => node.classList.contains('sel')), [false, true]);
+  Reflect.get(app.context, 'update')(answer(draft, 'Push now?', 'Yes', false));
+  assert.deepEqual(options.map(node => node.classList.contains('sel')), [false, true]);
+});
+
+test('footer states retain facts and page order', async () => {
+  const app = await page(), evaluate = app.repl(), { elements } = await pageMarkup();
+  const markup = elements.find(node => node.classes.includes('foot'));
+  assert.ok(markup);
+  const mount = (source: typeof markup): InstanceType<typeof app.context.Node> => {
+    const node = source.id ? app.context.document.getElementById(source.id) : app.context.document.createElement(source.tag);
+    Object.assign(node, { id: source.id });
+    node.className = source.classes.join(' ');
+    node.replaceChildren(...source.children.map(mount));
+    return node;
+  };
+  const foot = mount(markup);
+  app.context.document.getElementById('field').append(foot);
+  evaluate("window.footerState={...state,life:{type:'ready'},model:{provider:'anthropic',id:'claude-opus-5-5'},thinking:'high',context:{tokens:88000,window:200000,percent:44},home:'/home/test',cwd:'/home/test/project'}");
+  for (const change of ["working:false", "working:true", "edit:{editor:'vim'}", "compaction:'running'"]) {
+    evaluate('state={...window.footerState,' + change + '};refreshComposer()');
+    assert.deepEqual(foot.children.filter(node => node.classList.contains('cell')).map(node => Reflect.get(node, 'id') || node.className.split(' ')[0]), ['model-cell', 'ctxc', 'cwd']);
+    assert.deepEqual(['model-name', 'thinking', 'tokens', 'percent'].map(id => app.elements.get(id)?.textContent), ['claude-opus-5-5', '· high', '88k / 200k', '44%']);
+    assert.deepEqual(app.elements.get('cwd')?.children.map(node => node.textContent), ['~/', 'project']);
+  }
+});
+
+test('attachment queue restores chips and separates sent paths', async () => {
+  const app = await page(), evaluate = app.repl(), requests: { path: string; body: unknown }[] = [];
+  const file = { id: 'note', name: 'notes.md', path: '/tmp/uploads/notes.md', kind: 'file', size: 12 };
+  app.context.fetch = async (path = '', options?: { body?: string }) => {
+    requests.push({ path, body: options?.body ? JSON.parse(options.body) : undefined });
+    return { ok: true, json: async () => path === '/queue/clear' ? { steering: [{ text: 'Review', attachments: [file] }], followUp: [] } : { disposition: 'started' } };
+  };
+  evaluate('state={...state,sessionId:"s",life:{type:"ready"},queue:{steering:[{text:"Review",attachments:[' + JSON.stringify(file) + ']}],followUp:[]}};refreshComposer();queue()');
+  assert.equal(evaluate("element('queue').children[0].querySelector('.att').children.at(-1).textContent"), '1');
+  await evaluate('takeBack()');
+  assert.equal(app.text(), 'Review');
+  assert.equal(evaluate("draft.count"), 1);
+  assert.equal(evaluate("element('attachments').querySelector('.attach-name').textContent"), 'notes.md');
+  await evaluate('send()');
+  assert.deepEqual(requests.at(-1), { path: '/prompt', body: { sessionId: 's', text: 'Review', mode: 'prompt', attachments: ['note'] } });
+  assert.equal(evaluate('draft.count'), 0);
+  evaluate('put({kind:"user",seq:0,at:1,revision:0,final:true,text:"Review",images:[],attachments:[' + JSON.stringify(file) + ']})');
+  assert.equal(evaluate("views.get(0).view.querySelector('.attach-chip')===undefined"), true);
+  assert.equal(evaluate("views.get(0).view.querySelector('.paths').textContent"), '/tmp/uploads/notes.md');
 });
 
 async function page() {
@@ -98,7 +213,7 @@ async function page() {
   const listeners = new Map<string, (event: unknown) => void>();
   const windowListeners = new Map<string, (event?: unknown) => void>();
   let activeElement: Node | undefined;
-  const document = { timeline: { currentTime: 100000 }, hidden: false, visibilityState: 'visible', documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { if (activeElement === node) return; const previous = activeElement; activeElement = node; if (previous) listeners.get('focusout')?.({ target: previous }); if (node) listeners.get('focusin')?.({ target: node }); }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : selector === '.lightbox' ? document.body.children.find(node => node.classList.contains('lightbox')) ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); if (id === 'composer') node.hidden = false; } return node; }, createElement: (tag: string) => { const node = new Node(); node.hidden = false; node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
+  const document = { timeline: { currentTime: 100000 }, hidden: false, visibilityState: 'visible', documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { if (activeElement === node) return; const previous = activeElement; activeElement = node; if (previous) listeners.get('focusout')?.({ target: previous }); if (node) listeners.get('focusin')?.({ target: node }); }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : selector === '.lightbox' ? document.body.children.find(node => node.classList.contains('lightbox')) ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); if (id === 'composer') node.hidden = false; } return node; }, createElement: (tag: string) => { const node = new Node(); node.hidden = false; node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: (): Node[] => [] };
   type Handlers = { input(user: boolean): void; send(mode: PromptMode): void; quit(): void };
   let handlers: Handlers | undefined;
   let text = () => '';

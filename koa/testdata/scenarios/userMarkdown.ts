@@ -9,11 +9,7 @@ const recordsFromResetOf3ItemsSecond = (dir: string): PageRecord[] => ([
 
 const stepsFromNextResetOf1Items = (dir: string): Step[] => ([
   next([
-    { type: "reset", epoch: "epoch2", items: [{ seq: 0, revision: 0, at: 1794177120000, final: true, kind: "user", text: "> The breadcrumb test is flaky on Linux. I recommend skipping it on Linux for now.\nYes", images: [], attachments: [] }], more: false },
-    stateIdleThird(dir),
-  ]),
-  next([
-    { type: "reset", epoch: "epoch3", items: [{ seq: 0, revision: 0, at: 1794177120000, final: true, kind: "user", text: "> error[E0599]: no method named `place` found for struct `Model`\n>   --> ko_client/src/model.rs:412:18\nWhy does this appear only on the musl target? The method is `pub(crate)`.\n\n> Should I push now, or wait for CI on the rebase?\nwait for CI", images: [], attachments: [] }], more: false },
+    { type: "reset", epoch: "epoch2", items: [{ seq: 0, revision: 0, at: 1794177120000, final: true, kind: "user", text: "> The breadcrumb test is flaky on Linux. I recommend skipping it on Linux for now.\nYes\n\n> error[E0599]: no method named `place` found for struct `Model`\n>   --> ko_client/src/model.rs:412:18\nWhy does this appear only on the musl target? The method is `pub(crate)`.\n\n> Should I push now, or wait for CI on the rebase?\nwait for CI", images: [], attachments: [] }], more: false },
     stateIdleThird(dir),
   ]),
   next([

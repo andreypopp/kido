@@ -82,15 +82,19 @@ the stream and narrow-stream states, light and dark, compare the whole
 page, and the focus-border states the native pane: they keep the
 composition. A state is captured only when it is stable, never in an
 animation's intermediate phase. A fact of layout that the browser
-computes (fit, gaps, alignment) stays an assertion of the visual test
-beside its capture. A fact of structure, presence or order is a test
+computes (fit, gaps, alignment) stays an assertion of the visual test,
+also in a state that records no image. A fact of structure, presence or order is a test
 of `koa/koa-dom.test.ts` against the real `koa/page/page.html`,
 because that suite's DOM models no CSS layout. One test method starts
 one fixture: it drives its states as phases of one replay (`sequence`
-in `koa/testdata/scenario.ts`) and both widths by resizing the page. A
-light capture that shows only data or a transition that its dark
-capture already shows is not recorded, but the test still drives the
-transition. A crop whose component can sit at the page's edge first
+in `koa/testdata/scenario.ts`) and both widths by resizing the page.
+`KoaFixture.captures` in `app/KoaSnapshots/Cases.swift` gives each
+state its images: light, dark, both, or none (`geometry`). An image
+records one visual treatment: a state that shows only other data, a
+second width or a theme of shared colours, gets no image, but the test
+still drives it. Dark images remain only for the six composition
+anchors and for the components whose dark colours `koa/page/page.css`
+defines on their own. A crop whose component can sit at the page's edge first
 scrolls or grows the page until the padded rectangle fits.
 
 The states, their phases, waits, assertions and crops are one driver

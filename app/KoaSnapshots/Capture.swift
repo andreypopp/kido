@@ -46,12 +46,16 @@ import WebKit
         """
     }
 
+    static func ready(_ browser: WKWebView, within seconds: Double = 5) async throws {
+        browser.window?.contentView?.layoutSubtreeIfNeeded()
+        browser.superview?.layoutSubtreeIfNeeded()
+        _ = try await js(browser, captureReady(within: seconds), within: seconds)
+    }
+
     static func page(_ browser: WKWebView, paintRetry: ((String) async throws -> Void)? = nil, file: StaticString = #filePath, line: UInt = #line) async throws -> NSImage {
         let deadline = Date().addingTimeInterval(5)
         while true {
-            browser.window?.contentView?.layoutSubtreeIfNeeded()
-            browser.superview?.layoutSubtreeIfNeeded()
-            _ = try await js(browser, Self.captureReady(within: max(0.1, deadline.timeIntervalSinceNow)), within: max(0.1, deadline.timeIntervalSinceNow))
+            try await ready(browser, within: max(0.1, deadline.timeIntervalSinceNow))
             let shown = try await js(browser, "Array.from(document.images).filter(i=>i.complete&&i.naturalWidth>0).map(i=>{let r=i.getBoundingClientRect(),box={l:r.left,t:r.top,r:r.right,b:r.bottom};for(let n=i.parentElement;n;n=n.parentElement){if(getComputedStyle(n).overflow==='visible')continue;const c=n.getBoundingClientRect();box={l:Math.max(box.l,c.left),t:Math.max(box.t,c.top),r:Math.min(box.r,c.right),b:Math.min(box.b,c.bottom)}}box={l:Math.max(box.l,0),t:Math.max(box.t,0),r:Math.min(box.r,innerWidth),b:Math.min(box.b,innerHeight)};const w=box.r-box.l,h=box.b-box.t;return{src:i.src,x:box.l+w/4,y:box.t+h/4,w:w/2,h:h/2,ok:w>=16&&h>=16&&document.elementFromPoint(box.l+w/2,box.t+h/2)===i}}).filter(r=>r.ok)")
             let rects = try JSONDecoder().decode([ImageRect].self, from: Data(shown.utf8))
             let page: NSImage = try await withCheckedThrowingContinuation { continuation in

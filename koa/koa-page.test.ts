@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { test, type TestContext } from "node:test";
+import { test } from "node:test";
 import { readFile } from "node:fs/promises";
-import { Script, runInNewContext } from "node:vm";
+import { Script } from "node:vm";
 import { Lexer, Marked } from "marked";
 import remend from "remend";
 
@@ -15,13 +15,8 @@ import { parseThreadName, type JobRef } from "./records.ts";
 import { answer, current, quote } from "./page/answers.ts";
 import { composerLanguage } from "./page/composer.ts";
 import { highlightTree, tags } from '@lezer/highlight';
-import { EditorState, StateEffect, StateField } from '@codemirror/state';
-import { Decoration, EditorView, ViewPlugin, WidgetType, showTooltip, tooltips } from '@codemirror/view';
-import { acceptCompletion, autocompletion, closeCompletion, completionStatus, moveCompletionSelection, pickedCompletion, selectedCompletion, startCompletion } from '@codemirror/autocomplete';
-import { fileToken, slashToken } from './token.ts';
-import { stripTypeScriptTypes } from 'node:module';
-import { bashCommand } from './prompt.ts';
-import { HighlightStyle, syntaxTree } from '@codemirror/language';
+import { HighlightStyle } from '@codemirror/language';
+import { Fake, feedbackFixture, settle, shellReply } from './testdata/completion-fixture.ts';
 
 test('Markdown previews strip first-line syntax and use the first fenced code line', () => {
   for (const [source, expected] of [
@@ -447,71 +442,6 @@ test('windowOf includes every item that the clamped range touches and no other',
     assert.ok(order.includes(result.from) && order.includes(result.to));
   }
 });
-
-class Fake {
-  className = ''; textContent = ''; children: Fake[] = []; attributes = new Map<string, string>(); parent?: Fake; list?: Fake; onmousedown?: unknown; dataset = {};
-  append(...nodes: Fake[]) { for (const node of nodes) { node.remove(); node.parent = this; this.children.push(node); } }
-  remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); this.parent = undefined; }
-  setAttribute(name: string, value: string) { this.attributes.set(name, value); }
-  animate() { return {}; }
-  getBoundingClientRect() { return { left: 0, right: 0, top: 0, width: 0 }; }
-  get lastElementChild() { return this.children.at(-1); }
-  querySelector(selector: string): Fake | undefined {
-    if (selector === '.koa-complete > ul') return this.list;
-    const names = selector.slice(1).split('.');
-    return this.children.find(child => names.every(name => child.className.split(' ').includes(name)));
-  }
-}
-
-async function feedbackFixture(t: TestContext) {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const read = async (name: string) => stripTypeScriptTypes(await readFile(new URL(name, import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
-  const body = new Fake(), replies: ((value: unknown) => void)[] = [], popup = { open: false }, capture: { config?: Parameters<typeof autocompletion>[0] } = {};
-  const context = {
-    StateEffect, StateField, EditorState, Decoration, showTooltip, tooltips, ViewPlugin, EditorView, WidgetType, capture, currentCompletions: () => popup.open ? [{}] : [], autocompletion: (config: Parameters<typeof autocompletion>[0]) => { capture.config = config; return autocompletion(config); }, acceptCompletion, closeCompletion, completionStatus, moveCompletionSelection, pickedCompletion, selectedCompletion, startCompletion, syntaxTree, fileToken, slashToken, bashCommand,
-    document: { createElement: () => new Fake(), body, querySelector: () => undefined, timeline: { currentTime: 0 } },
-    matchMedia: () => ({ matches: false }), window: { innerHeight: 100 }, console, AbortController, Date,
-    setTimeout: (...args: Parameters<typeof setTimeout>) => setTimeout(...args), clearTimeout: (id?: Parameters<typeof clearTimeout>[0]) => clearTimeout(id),
-    fetch: () => new Promise(resolve => replies.push(value => resolve({ ok: true, json: async () => value }))),
-  };
-  const fixture = runInNewContext(await read('page/working.ts') + await read('page/complete.ts') + `
-    const host = { parentElement: { getBoundingClientRect: () => ({ left: 0, right: 0, top: 0, width: 0 }) } };
-    const mode = StateField.define({ create: state => bashCommand(state.doc.toString()), update: (value, transaction) => transaction.docChanged ? bashCommand(transaction.newDoc.toString()) : value });
-    const completions = completion(host, () => {}, mode);
-    const view = {
-      state: EditorState.create({ doc: '!ls', selection: { anchor: 3 }, extensions: [mode, completions.extension] }),
-      dispatch(spec) {
-        const transaction = view.state.update(spec);
-        view.state = transaction.state;
-        for (const listener of view.state.facet(EditorView.updateListener)) listener({ docChanged: transaction.docChanged, selectionSet: !!transaction.selection, state: view.state });
-      },
-    };
-    completions.extension.find(extension => extension instanceof ViewPlugin).create(view);
-    ({
-      view,
-      key: name => completions.keys.find(binding => binding.key === name).run(view),
-      widgets: () => view.state.facet(EditorView.decorations).flatMap(source => {
-        const found = [];
-        for (const cursor = (typeof source === 'function' ? source(view) : source).iter(); cursor.value; cursor.next()) { const dom = cursor.value.spec.widget.toDOM(); found.push({ from: cursor.from, side: cursor.value.spec.side, className: dom.className, label: dom.attributes.get('aria-label') }); }
-        return found;
-      }),
-      prompt: () => { const aborts = []; capture.config.override[0]({ state: view.state, pos: view.state.doc.length, explicit: false, aborted: false, addEventListener: (type, listener) => aborts.push(listener) }); return () => aborts.forEach(listener => listener()); },
-      tooltips: () => view.state.facet(showTooltip).flatMap(tooltip => { if (!tooltip) return []; const { dom } = tooltip.create(view); return [{ className: dom.className, text: dom.textContent }]; }),
-    })
-  `, context);
-  const layer = body.children[0];
-  const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
-  return {
-    key: (name: string): unknown => fixture.key(name),
-    widgets: () => plain(fixture.widgets()),
-    tooltips: () => plain(fixture.tooltips()),
-    dispatch: (spec: object) => fixture.view.dispatch(spec),
-    prompt: (): (() => void) => fixture.prompt(), open: (value: boolean) => { popup.open = value; },
-    layer, replies,
-  };
-}
-const settle = () => new Promise<void>(resolve => setImmediate(resolve));
-const shellReply = (options: { label: string; insert: string }[]) => ({ type: 'shell', from: 3, to: 3, options, common: '', more: 0 });
 
 test('shell Tab shows the dots after the caret once the wait passes 150 ms and drops them with the reply', async t => {
   const f = await feedbackFixture(t);
