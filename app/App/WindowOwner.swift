@@ -18,6 +18,7 @@ class OwnerWindow: NSWindow {
 
     var allowsPaneInput: Bool { isKeyWindow || (NSApp.delegate as? AppDelegate)?.palettePanel == nil }
     override func sendEvent(_ event: NSEvent) {
+        if CommandScope.consumes(event, menu: NSApp.mainMenu) { return }
         if event.type == .otherMouseDown || event.type == .otherMouseUp, event.buttonNumber == 3 || event.buttonNumber == 4 {
             if event.type == .otherMouseDown, allowsPaneInput, attachedSheet == nil { (delegate as? WindowOwner)?.go(event.buttonNumber == 3 ? .back : .forward) }
             return
@@ -26,6 +27,7 @@ class OwnerWindow: NSWindow {
         super.sendEvent(event)
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if CommandScope.consumes(event, menu: NSApp.mainMenu) { return true }
         guard allowsPaneInput else { return false }
         if let pane = PaneView.owner(firstResponder), pane.webviewFocused {
             if pane.performKeyEquivalent(with: event) { return true }
@@ -1184,12 +1186,12 @@ private class AlertEscape: NSView {
             return floatOwner === self
         }
         view.floatsAllowed = { [weak self] in self?.banner.isHidden != false }
-        view.place = { [weak self] window in self?.place(window) }
-        view.showWindow = { [weak self] window in self?.showWindow(window) }
         view.floatTitle = { [weak self] pane, window in
-            guard let self, let place = place(window, includingShown: true) else { return "" }
+            guard let self,
+                  let location = koModel?.layout.layout.sessions.first(where: { $0.windows.contains { $0.id == window } }),
+                  let child = location.windows.first(where: { $0.id == window }) else { return "" }
             let title = projection.items[pane]?.item.rowTitle ?? pane.description
-            return "\(title) — \(place.session) / \(place.window)"
+            return "\(title) — \(location.name) / \(child.name)"
         }
         view.host = host
         view.onURL = { [weak self] in self?.openLink($0) }
@@ -1491,13 +1493,6 @@ private class AlertEscape: NSView {
         }
     }
 
-    private func place(_ window: WindowID, includingShown: Bool = false) -> PanePlace? {
-        guard includingShown || window != model.window,
-              let location = koModel?.layout.layout.sessions.first(where: { $0.windows.contains { $0.id == window } }),
-              let child = location.windows.first(where: { $0.id == window }) else { return nil }
-        return PanePlace(session: location.name, window: child.name, destination: window)
-    }
-
     func showWindow(_ window: WindowID) {
         guard let ko = koModel, ko.layout.layout.window(window) != nil else { return }
         shownWindow = window
@@ -1714,6 +1709,7 @@ private class AlertEscape: NSView {
     }
 
     func paneCommand(_ command: PaneCommand, _ pane: PaneID, _ runtime: NewPaneRuntime = .inherit) {
+        guard CommandScope(command).isAvailable else { return }
         switch command {
         case .close:
             let name = projection.items[pane]?.item.rowTitle ?? pane.description
@@ -1868,7 +1864,7 @@ private class AlertEscape: NSView {
     }
 
     func canGo(_ step: NavigationHistory.Step) -> Bool {
-        guard canNavigate else { return false }
+        guard CommandScope.mainWindow.isAvailable, canNavigate else { return false }
         switch step {
         case .back: return history.canBack
         case .forward: return history.canForward
@@ -1876,12 +1872,13 @@ private class AlertEscape: NSView {
     }
 
     func go(_ step: NavigationHistory.Step) {
-        guard canNavigate, let target = history.target(step) else { return }
+        guard CommandScope.mainWindow.isAvailable, canNavigate, let target = history.target(step) else { return }
         perform(.jump(target), cause: .history(step, to: target))
     }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        switch item.action {
+        guard CommandScope(item).isAvailable else { return false }
+        return switch item.action {
         case #selector(navigateHistoryBack(_:)): canGo(.back)
         case #selector(navigateHistoryForward(_:)): canGo(.forward)
         default: true

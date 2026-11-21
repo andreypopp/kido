@@ -3,6 +3,7 @@ import KoClient
 import KoClientKit
 import KoModel
 import PaneGeometry
+import SidebarFeed
 import XCTest
 @testable import Kido
 
@@ -36,8 +37,8 @@ import XCTest
         return window.convertToScreen(view.convert(view.bounds, to: nil))
     }
 
-    private func mouse(_ type: NSEvent.EventType, _ point: NSPoint, in window: NSWindow) throws -> NSEvent {
-        try XCTUnwrap(NSEvent.mouseEvent(with: type, location: window.convertPoint(fromScreen: point), modifierFlags: [], timestamp: 0,
+    private func mouse(_ type: NSEvent.EventType, _ point: NSPoint, in window: NSWindow, flags: NSEvent.ModifierFlags = []) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.mouseEvent(with: type, location: window.convertPoint(fromScreen: point), modifierFlags: flags, timestamp: 0,
                                          windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
     }
 
@@ -65,13 +66,13 @@ import XCTest
         let view = try XCTUnwrap(session.pane(id)), host = try XCTUnwrap(view.window)
         let start = CGPoint(x: try screen(view).midX, y: try screen(view).midY)
         let terminal = try XCTUnwrap(session.windows.values.first { !$0.isHidden })
-        terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host), from: .frame)
+        terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host))
         for step in 1...4 {
             let host = try XCTUnwrap(view.window)
-            terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, CGPoint(x: start.x + dx * CGFloat(step) / 4, y: start.y + dy * CGFloat(step) / 4), in: host), from: .frame)
+            terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, CGPoint(x: start.x + dx * CGFloat(step) / 4, y: start.y + dy * CGFloat(step) / 4), in: host))
         }
         let end = CGPoint(x: start.x + dx, y: start.y + dy)
-        terminal.visualBeginDrag(id, try mouse(.leftMouseUp, end, in: try XCTUnwrap(view.window)), from: .frame)
+        terminal.visualBeginDrag(id, try mouse(.leftMouseUp, end, in: try XCTUnwrap(view.window)))
     }
 
     func testAMainWindowResizeKeepsTheLocalScreenOriginThroughTheServerClamp() throws {
@@ -375,7 +376,7 @@ import XCTest
         XCTAssertEqual(floats(client).first { $0.pane == id }?.cols, size.cols - 2)
     }
 
-    func testAnOlderEchoThatArrivesAfterANewerDragFrameLeavesTheNewerFrame() throws {
+    func testALayoutDuringALocalMoveLeavesTheNewerDragFrame() throws {
         let (owner, client) = try shown(twoFloats)
         let session = try XCTUnwrap(owner.testSession)
         let id = PaneID(number: 2)
@@ -383,16 +384,16 @@ import XCTest
         let terminal = try XCTUnwrap(session.windows.values.first { !$0.isHidden })
         let host = try XCTUnwrap(view.window)
         let start = CGPoint(x: try screen(view).midX, y: try screen(view).midY)
-        terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host), from: .frame)
-        terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, CGPoint(x: start.x + 120, y: start.y - 120), in: try XCTUnwrap(view.window)), from: .frame)
-        wait("the first edit's echo is shown") { owner.testModel?.layout.layout.windows.first?.floats.first { $0.pane == id }?.x != 2 }
+        terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host))
+        terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, CGPoint(x: start.x + 120, y: start.y - 120), in: try XCTUnwrap(view.window)))
+        XCTAssertEqual(floats(client).first { $0.pane == id }?.x, 2, "a band move does not stream edits")
         let older = try XCTUnwrap(owner.testModel?.layout.layout.windows)
         let end = CGPoint(x: start.x + 240, y: start.y - 240)
-        terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, end, in: try XCTUnwrap(view.window)), from: .frame)
+        terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, end, in: try XCTUnwrap(view.window)))
         let newer = try screen(view)
         session.update(older, shown: terminal.windowID, selected: nil, marks: [:])
         XCTAssertEqual(try screen(view), newer, "an echo of the earlier edit does not move the float under the pointer")
-        terminal.visualBeginDrag(id, try mouse(.leftMouseUp, end, in: try XCTUnwrap(view.window)), from: .frame)
+        terminal.visualBeginDrag(id, try mouse(.leftMouseUp, end, in: try XCTUnwrap(view.window)))
         session.update(older, shown: terminal.windowID, selected: nil, marks: [:])
         XCTAssertEqual(try screen(view), newer, "the released float holds its frame until the edits settle")
         wait("the edit settles") { !session.editing() }
@@ -424,8 +425,8 @@ import XCTest
         let terminal = try XCTUnwrap(session.windows.values.first { !$0.isHidden })
         let host = try XCTUnwrap(view.window)
         let start = CGPoint(x: try screen(view).midX, y: try screen(view).midY)
-        terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host), from: .frame)
-        terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, CGPoint(x: start.x + 40, y: start.y), in: host), from: .frame)
+        terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host))
+        terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, CGPoint(x: start.x + 40, y: start.y), in: host))
         XCTAssertTrue(terminal.visualPaneDragging)
         try client.delete(KO_DELETE_PANE, id)
         wait("the float's window closed") { session.hostWindows.count == 1 && !terminal.visualPaneDragging }
@@ -561,7 +562,7 @@ import XCTest
         let moved = FloatWindow.reachable(frame, in: visible)
         XCTAssertEqual(moved, CGRect(x: -140, y: 594, width: 300, height: 200))
         XCTAssertEqual(FloatWindow.reachable(moved, in: visible), moved)
-        XCTAssertEqual(FloatWindow.reachable(CGRect(x: 200, y: -200, width: 300, height: 200), in: visible), CGRect(x: 200, y: -90, width: 300, height: 200))
+        XCTAssertEqual(FloatWindow.reachable(CGRect(x: 200, y: -200, width: 300, height: 200), in: visible), CGRect(x: 200, y: -78, width: 300, height: 200))
     }
 
     func testAMainWindowMoveDoesNotMoveItsFloats() throws {
@@ -625,72 +626,182 @@ import XCTest
         let view = try XCTUnwrap(session.pane(id))
         let host = try XCTUnwrap(view.window as? FloatWindow)
         let start = CGPoint(x: host.frame.midX, y: host.frame.midY)
-        terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host), from: .frame)
-        terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, CGPoint(x: start.x + 40, y: start.y - 40), in: host), from: .frame)
-        wait("the first move is acknowledged") { self.floats(client).first { $0.pane == id }?.x != 2 }
+        terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host))
         let older = try XCTUnwrap(owner.testModel?.layout.layout.windows)
         let end = CGPoint(x: start.x + 80, y: start.y - 80)
-        terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, end, in: host), from: .frame)
+        terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, end, in: host))
         let origin = host.frame.origin
+        terminal.visualBeginDrag(id, try mouse(.leftMouseUp, end, in: host))
+        XCTAssertEqual(host.frame.origin, origin)
         session.update(older, shown: terminal.windowID, selected: id, marks: [:])
         XCTAssertEqual(host.frame.origin, origin)
         var frame = owner.window.frame
         frame.size.width -= 160
         owner.window.setFrame(frame, display: true)
-        wait("the smaller room is acknowledged") { ((try? client.model().layout.layout.windows.first?.cols) ?? older[0].cols) < older[0].cols && !session.editing() }
+        wait("the smaller room and completed move are acknowledged") {
+            ((try? client.model().layout.layout.windows.first?.cols) ?? older[0].cols) < older[0].cols
+                && self.floats(client).first { $0.pane == id }?.x != older[0].floats.first { $0.pane == id }?.x
+                && !session.editing()
+        }
         XCTAssertEqual(host.frame.origin, origin)
         session.edit(.float(KoSchema.EditFloat(pane: PaneID(number: 3), x: 4)), nil)
         wait("an unrelated update settles") { !session.editing() }
         XCTAssertEqual(host.frame.origin, origin)
     }
 
-    func testThePlaceCapsuleTruncatesSessionThenWindowAndHidesBelowItsMinimum() throws {
-        let (owner, _) = try shown(twoFloats)
-        let capsule = PanePlaceCapsule(runtime: owner.runtime)
-        let place = PanePlace(session: String(repeating: "session", count: 10), window: String(repeating: "window", count: 10), destination: WindowID(number: 1))
-        let natural = try XCTUnwrap(capsule.show(place, available: 2000))
-        let labels = capsule.subviews.compactMap { $0 as? NSTextField }
-        let sessionWidth = labels[0].frame.width, windowWidth = labels[2].frame.width
-        XCTAssertNotNil(capsule.show(place, available: natural - 20))
-        XCTAssertEqual(labels[0].frame.width, sessionWidth - 20)
-        XCTAssertEqual(labels[2].frame.width, windowWidth)
-        XCTAssertNotNil(capsule.show(place, available: 40 + windowWidth + 30))
-        XCTAssertEqual(labels[0].frame.width, 40)
-        XCTAssertEqual(labels[2].frame.width, windowWidth)
-        XCTAssertNotNil(capsule.show(place, available: 120))
-        XCTAssertEqual(labels[0].frame.width, 40)
-        XCTAssertEqual(labels[2].frame.width, 50)
-        XCTAssertNil(capsule.show(place, available: 109))
+    func testThePaletteFindsAFloatingChildWithoutASidebarRow() throws {
+        let (owner, client) = try shown(twoFloats)
+        let session = try XCTUnwrap(owner.testSession)
+        _ = try client.edit(.split(.init(axis: .h, new: .init(parent: PaneID(number: 1)), pane: PaneID(number: 1))))
+        wait("the child is projected") { owner.projection.items.values.contains { $0.item.pane.parent == PaneID(number: 1) } }
+        let child = try XCTUnwrap(owner.projection.items.values.first { $0.item.pane.parent == PaneID(number: 1) }?.item.id)
+        session.edit(.float(.init(pane: child)), nil)
+        wait("the child floats") { !session.editing() && owner.projection.items[child]?.item.placement == .floating }
+        XCTAssertFalse(sidebarRows(owner.snapshot).contains { $0.target?.pane == child })
+        let row = try XCTUnwrap(PaletteEntry.panes(owner).first { if case .pane(let target) = $0.id { target.pane == child } else { false } })
+        XCTAssertEqual(row.detail, "s › w")
+        XCTAssertNil(row.check())
     }
 
-    func testThePlaceCapsuleFollowsCopyAndClearsTheFindAndToolbar() throws {
+    func testAKeyFloatBlocksMainWindowMenusAndTheirKeys() throws {
+        let (owner, _) = try shown(twoFloats)
+        let session = try XCTUnwrap(owner.testSession)
+        let pane = try XCTUnwrap(session.pane(PaneID(number: 2)))
+        let host = try XCTUnwrap(pane.window as? FloatWindow)
+        host.testInput(true)
+        let shell = try XCTUnwrap(PaneCommand.menu.submenu)
+        let allowed = Set(["Close Pane", "Float Pane", "Dock Pane"])
+        for item in shell.items where !item.isSeparatorItem {
+            XCTAssertEqual(pane.canPerformMenuItem(item), allowed.contains(item.title), item.title)
+        }
+        let menus = SessionMenus()
+        menus.update(SessionModel())
+        for item in menus.window.items + menus.session.items where !item.isSeparatorItem {
+            XCTAssertFalse(menus.validateMenuItem(item), item.title)
+        }
+        for action in [#selector(Sidebar.toggleSidebar(_:)), #selector(Sidebar.focusSidebar(_:)), #selector(NSWindow.toggleFullScreen(_:)), #selector(AppDelegate.closeWindow)] {
+            let item = NSMenuItem(title: "main", action: action, keyEquivalent: "")
+            XCTAssertFalse(owner.validateMenuItem(item))
+        }
+        for action in [#selector(PaneView.showFind(_:)), #selector(PaneView.findNext(_:)), #selector(PaneView.toggleCopyMode(_:))] {
+            XCTAssertTrue(pane.canPerformMenuItem(NSMenuItem(title: "pane", action: action, keyEquivalent: "")))
+        }
+        let menu = NSMenu()
+        let windows = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+        windows.submenu = menus.window
+        menu.addItem(windows)
+        let shellItem = NSMenuItem(title: "Shell", action: nil, keyEquivalent: "")
+        shellItem.submenu = shell
+        menu.addItem(shellItem)
+        for (title, action, key, flags) in [("Sidebar", #selector(Sidebar.focusSidebar(_:)), "s", NSEvent.ModifierFlags.command), ("Hide Sidebar", #selector(Sidebar.toggleSidebar(_:)), "S", [.command, .shift]), ("Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control])] {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = flags
+        }
+        let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .shift], timestamp: 0, windowNumber: host.windowNumber, context: nil, characters: "}", charactersIgnoringModifiers: "}", isARepeat: false, keyCode: 30))
+        XCTAssertTrue(CommandScope.consumes(key, menu: menu))
+        let shown = session.windows.first { !$0.value.isHidden }?.key
+        let originalMenu = NSApp.mainMenu
+        NSApp.mainMenu = menu
+        defer { NSApp.mainMenu = originalMenu }
+        for webview in [false, true] {
+            if webview { pane.updateWebview(.init(page: .init(path: "/"), serving: false)) }
+            XCTAssertEqual(pane.webviewView != nil, webview)
+            host.makeFirstResponder(pane.inputResponder)
+            let before = pane.visualKeyEvents
+            let browserBefore = pane.webviewView?.visualKeyEvents
+            if webview { XCTAssertEqual(browserBefore, 0) }
+            let layout = owner.testModel?.layout.layout
+            for (characters, flags, code) in [("}", NSEvent.ModifierFlags.command.union(.shift), UInt16(30)), ("{", [.command, .shift], 33), ("s", .command, 1), ("S", [.command, .shift], 1), ("d", .command, 2), ("\u{f702}", [.command, .option], 123), ("[", [.command, .control], 33), ("f", [.command, .control], 3)] {
+                let blocked = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: host.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
+                XCTAssertTrue(host.performKeyEquivalent(with: blocked), characters)
+                host.sendEvent(blocked)
+            }
+            XCTAssertEqual(owner.testModel?.layout.layout, layout)
+            XCTAssertEqual(session.windows.first { !$0.value.isHidden }?.key, shown)
+            XCTAssertEqual(pane.visualKeyEvents, before)
+            XCTAssertEqual(pane.webviewView?.visualKeyEvents, browserBefore)
+        }
+        var sent = false
+        menus.send = { _ in sent = true }
+        menus.run(try XCTUnwrap(menus.window.items.first))
+        XCTAssertFalse(sent)
+        XCTAssertEqual(session.windows.first { !$0.value.isHidden }?.key, shown)
+        for item in shell.items where item.action == #selector(PaneView.runCommand(_:)) { item.target = pane }
+        let close = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0, windowNumber: host.windowNumber, context: nil, characters: "w", charactersIgnoringModifiers: "w", isARepeat: false, keyCode: 13))
+        XCTAssertFalse(CommandScope.consumes(close, menu: menu))
+        XCTAssertTrue(host.performKeyEquivalent(with: close))
+        XCTAssertTrue(owner.preparedAlert?.host === host)
+        owner.respondToAlert(.alertSecondButtonReturn)
+        wait("the close confirmation is dismissed") { owner.sheet == nil }
+        let dock = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .option], timestamp: 0, windowNumber: host.windowNumber, context: nil, characters: "f", charactersIgnoringModifiers: "f", isARepeat: false, keyCode: 3))
+        XCTAssertFalse(CommandScope.consumes(dock, menu: menu))
+        XCTAssertTrue(host.performKeyEquivalent(with: dock))
+        wait("the allowed shortcut docks the focused float") { owner.projection.items[pane.pane]?.item.placement == .tiled && !session.editing() }
+        (owner.window as? OwnerWindow)?.testInput(true)
+        XCTAssertFalse(CommandScope.consumes(key, menu: menu))
+    }
+
+    func testBandEscapeRestoresTerminalAndWebviewResponders() throws {
+        let (owner, _) = try shown(twoFloats)
+        let session = try XCTUnwrap(owner.testSession)
+        let terminal = try XCTUnwrap(session.windows.values.first { !$0.isHidden })
+        let pane = try XCTUnwrap(session.pane(PaneID(number: 2)))
+        let host = try XCTUnwrap(pane.window as? FloatWindow)
+        host.testInput(true)
+        for webview in [false, true] {
+            if webview { pane.updateWebview(.init(page: .init(path: "/"), serving: false)) }
+            XCTAssertEqual(pane.webviewView != nil, webview)
+            host.makeFirstResponder(pane.inputResponder)
+            let initial = host.frame
+            let start = local(host, CGPoint(x: host.content.chrome.midX, y: host.content.chrome.minY + 12))
+            terminal.visualBeginDrag(pane.pane, try mouse(.leftMouseDown, start, in: host))
+            terminal.continueDrag(try mouse(.leftMouseDragged, CGPoint(x: start.x + 80, y: start.y - 80), in: host))
+            XCTAssertTrue(host.firstResponder === host.content)
+            XCTAssertTrue(PaneView.owner(host.firstResponder) === pane)
+            terminal.updateFocusTreatment()
+            XCTAssertEqual(terminal.visualChromes.first { $0.pane == pane.pane }?.treatment, .focus)
+            XCTAssertNotEqual(host.frame.origin, initial.origin)
+            let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: host.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+            host.sendEvent(escape)
+            XCTAssertFalse(terminal.visualPaneDragging)
+            XCTAssertEqual(host.frame, initial)
+            XCTAssertTrue(host.firstResponder === pane.inputResponder)
+        }
+    }
+
+    func testFloatChromeHasOnlyDockAndCloseAboveTheGrid() throws {
         let (owner, _) = try shown(twoFloats)
         let session = try XCTUnwrap(owner.testSession)
         let view = try XCTUnwrap(session.pane(PaneID(number: 2)))
-        let chrome = try XCTUnwrap(view.placeCapsule.superview as? PaneChrome)
-        session.place = { _ in PanePlace(session: "s", window: "w", destination: WindowID(number: 1)) }
-        session.refreshFloats()
+        let host = try XCTUnwrap(view.window as? FloatWindow)
+        let chrome = try XCTUnwrap(session.windows.values.flatMap(\.visualChromes).first { $0.pane == view.pane })
+        XCTAssertEqual(chrome.content.minY, 22)
         view.layoutSubtreeIfNeeded()
-        XCTAssertEqual(view.placeCapsule.frame.origin, CGPoint(x: chrome.content.minX + 8, y: chrome.content.minY + 8))
-        view.toggleCopyMode(nil)
-        wait("COPY is shown") { view.visualCopyLabel != nil }
-        view.layoutSubtreeIfNeeded()
-        let copy = try XCTUnwrap(chrome.subviews.first { overlay in overlay.subviews.contains { ($0 as? NSTextField)?.stringValue == view.visualCopyLabel } })
-        XCTAssertEqual(view.placeCapsule.frame.minX, copy.frame.maxX + 6)
-        XCTAssertEqual(view.placeCapsule.frame.minY, copy.frame.minY)
+        XCTAssertEqual(try XCTUnwrap(chrome.subviews.first { $0 is RuntimePill }).frame.minY, 30)
+        XCTAssertEqual(chrome.stripeTop, 19)
+        XCTAssertEqual(chrome.toolbarFrame.width, 67)
+        chrome.hover(chrome, CGPoint(x: chrome.toolbarFrame.midX, y: chrome.toolbarFrame.midY))
+        let toolbar = try XCTUnwrap(chrome.subviews.first { $0 is PaneToolbar })
+        XCTAssertEqual(toolbar.subviews.compactMap { $0 as? IconButton }.filter { !$0.isHidden }.map { $0.frame.minX }, [3, 38])
+        host.content.handles.layoutSubtreeIfNeeded()
+        XCTAssertEqual(host.content.handles.layer?.sublayers?.first?.frame, CGRect(x: host.content.chrome.width / 2 - 18, y: 9, width: 36, height: 4))
         view.showFind()
         view.layoutSubtreeIfNeeded()
-        if view.placeVisible { XCTAssertFalse(view.placeCapsule.frame.intersects(try XCTUnwrap(view.find).frame)) }
+        let find = try XCTUnwrap(view.find)
+        XCTAssertEqual(find.frame.minY, 30)
+        XCTAssertEqual(find.frame.maxX, chrome.bounds.width - 8)
+        XCTAssertEqual(chrome.toolbarFrame.minY, 70)
+        let bar = chrome.toolbarFrame.offsetBy(dx: chrome.frame.minX, dy: chrome.frame.minY)
+        XCTAssertNil(FloatContent.zone(at: CGPoint(x: bar.midX, y: bar.midY), in: host.content.chrome, grid: host.content.grid, toolbar: bar))
         view.find?.close()
-        chrome.hover(chrome, CGPoint(x: chrome.toolbarFrame.midX, y: chrome.toolbarFrame.midY))
         view.layoutSubtreeIfNeeded()
-        if view.placeVisible { XCTAssertFalse(view.placeCapsule.frame.insetBy(dx: -6, dy: 0).intersects(chrome.toolbarFrame)) }
+        XCTAssertEqual(chrome.toolbarFrame.minY, 8)
     }
 
     func testTheHandlesHitInPrecedenceOutsideIn() {
         let r = CGRect(x: 27, y: 27, width: 300, height: 200)
-        let grid = CGRect(x: r.minX + 4, y: r.minY + 10, width: r.width - 8, height: r.height - 14)
-        let toolbar = CGRect(x: r.maxX - 176, y: r.minY + 8, width: 171, height: 32)
+        let grid = CGRect(x: r.minX + 4, y: r.minY + 22, width: r.width - 8, height: r.height - 26)
+        let toolbar = CGRect(x: r.maxX - 75, y: r.minY + 8, width: 67, height: 32)
         func zone(_ x: CGFloat, _ y: CGFloat, toolbar: CGRect? = nil) -> FloatContent.Zone? { FloatContent.zone(at: CGPoint(x: x, y: y), in: r, grid: grid, toolbar: toolbar) }
         XCTAssertEqual(zone(r.maxX + 7, r.maxY + 7), .resize(.bottomRight), "the bottom-right corner reaches 8pt out")
         XCTAssertEqual(zone(r.maxX - 3, r.maxY - 3), .resize(.bottomRight), "and 12pt in, outside the grid")
@@ -699,8 +810,8 @@ import XCTest
         XCTAssertEqual(zone(r.minX + 2, r.maxY - 11), .resize(.left), "the corner square ends 6pt in, where the edge band continues")
         XCTAssertEqual(zone(r.midX, r.minY + 3), .resize(.top), "the top edge band wins over the move band in its 4pt")
         XCTAssertEqual(zone(r.midX, r.minY - 5), .move, "the move band reaches 6pt out")
-        XCTAssertEqual(zone(r.midX, r.minY + 9), .move, "and 10pt in")
-        XCTAssertNil(zone(r.midX, r.minY + 11), "below the band is the padding and the grid")
+        XCTAssertEqual(zone(r.midX, r.minY + 21), .move, "and 22pt in")
+        XCTAssertNil(zone(r.midX, r.minY + 23), "below the band is the padding and the grid")
         XCTAssertNil(zone(r.maxX - 50, r.minY + 9, toolbar: toolbar), "the toolbar wins over the move band")
         XCTAssertEqual(zone(r.maxX - 50, r.minY - 5, toolbar: toolbar), .move)
         XCTAssertEqual(zone(r.maxX - 2, r.minY + 9, toolbar: toolbar), .resize(.right), "the edges win over the toolbar")
@@ -719,6 +830,40 @@ import XCTest
     }
 
     private func local(_ host: FloatWindow, _ point: CGPoint) -> CGPoint { host.convertPoint(toScreen: host.content.convert(point, to: nil)) }
+
+    func testBandMovesCancelAndOnlyOptionOffersPaneEdgeDocking() throws {
+        let (owner, client) = try shown(floatLayout(border: false, tree: split))
+        let session = try XCTUnwrap(owner.testSession)
+        let terminal = try XCTUnwrap(session.windows.values.first { !$0.isHidden })
+        let id = PaneID(number: 3)
+        let host = try XCTUnwrap(session.pane(id)?.window as? FloatWindow)
+        let target = try XCTUnwrap(terminal.visualChromes.first { $0.pane == PaneID(number: 1) })
+        let targetPoint = owner.window.convertPoint(toScreen: target.convert(CGPoint(x: 8, y: target.bounds.midY), to: nil))
+        let initial = host.frame
+        let submit = session.edit
+        var edits: [KoSchema.Edit] = []
+        session.edit = { edit, key in edits.append(edit); submit(edit, key) }
+        let start = local(host, CGPoint(x: host.content.chrome.midX, y: host.content.chrome.minY + 12))
+        terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host))
+        terminal.continueDrag(try mouse(.leftMouseDragged, targetPoint, in: host))
+        XCTAssertNil(terminal.visualPreview.rect)
+        XCTAssertNotEqual(host.frame.origin, initial.origin)
+        terminal.cancelDrag()
+        XCTAssertEqual(host.frame, initial)
+        XCTAssertTrue(edits.isEmpty, "a cancelled band move sends no edit")
+        terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host))
+        terminal.continueDrag(try mouse(.leftMouseDragged, targetPoint, in: host, flags: .option))
+        XCTAssertNotNil(terminal.visualPreview.rect)
+        XCTAssertNil(terminal.visualGhost)
+        terminal.continueDrag(try mouse(.leftMouseDragged, targetPoint, in: host))
+        XCTAssertNil(terminal.visualPreview.rect)
+        terminal.continueDrag(try mouse(.leftMouseUp, targetPoint, in: host, flags: .option))
+        XCTAssertEqual(edits, [.dock(.init(edge: .left, pane: id, target: PaneID(number: 1)))])
+        wait("Option docks the float") { !session.editing() && !self.floats(client).contains { $0.pane == id } }
+        XCTAssertFalse(session.editing(), "submitted edits: \(edits)")
+        XCTAssertFalse(floats(client).contains { $0.pane == id }, "server floats: \(floats(client)); client layout: \(String(describing: owner.testModel?.layout.layout.windows))")
+        XCTAssertTrue(session.pane(id)?.window === owner.window)
+    }
 
     func testADragFromTheMoveBandMovesTheFloat() throws {
         let (owner, client) = try shown(twoFloats)

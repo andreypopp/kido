@@ -20,7 +20,7 @@ public struct PaneLayout: Equatable {
         public let chrome: CGRect
         public let insets: RenderInsets
     }
-    public static let floatTop: CGFloat = 10
+    public static let floatTop: CGFloat = 22
     public static let minimumMargin = CGSize(width: 4, height: 12)
     public let client: CGSize
     public let before: CGSize

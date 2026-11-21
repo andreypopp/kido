@@ -35,8 +35,6 @@ final class SessionView: NSView {
     }
     var floatsAllowed: () -> Bool = { true }
     var ownsFloats: () -> Bool = { true }
-    var place: (WindowID) -> PanePlace? = { _ in nil }
-    var showWindow: (WindowID) -> Void = { _ in }
     var floatTitle: (PaneID, WindowID) -> String = { _, _ in "" }
     var hostFocusChanged: (NSResponder?, NSResponder?) -> Void = { _, _ in }
     func contains(_ pane: PaneView) -> Bool { windows.values.contains { $0.contains(pane) } }

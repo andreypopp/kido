@@ -21,6 +21,15 @@ private func windowsFixture(_ state: KoSchema.AgentState = waiting(), mark: KoSc
     #expect(sidebarWindows(nil, projection: PaneProjection(nil), session: nil, surviving: []).statuses.isEmpty)
 }
 
+@Test func floatingAgentsStillMarkTheirWindowTab() throws {
+    guard case .item(var floating) = pane(1, window: 0, lifecycle: agent(waiting()), mark: .waiting) else { return }
+    floating.placement = .floating
+    let snapshot = makeSnapshot([pane(0, children: [.item(floating)])], client: 1, window: 0)
+    let projection = sidebarWindows(snapshot, projection: PaneProjection(snapshot), session: SessionID(number: 0), surviving: [WindowID(number: 0)])
+    #expect(projection.statuses[WindowID(number: 0)] == .waiting)
+    #expect(sidebarRows(snapshot).compactMap { $0.target?.pane.number } == [0])
+}
+
 @Test func aPaneInItsOwnWindowKeepsItsStatusOutOfItsParentsTab() throws {
     let child = pane(1, parent: 0, lifecycle: agent(idle(outcome(1, .failure))), mark: .failed)
     let snapshot = makeSnapshot([pane(0, lifecycle: agent(idle())), child], client: 1)

@@ -58,7 +58,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     var onIntent: () -> Void = {}
     var commandTarget: () -> PaneView? = { nil }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        switch item.action {
+        guard CommandScope(item).isAvailable else { return false }
+        return switch item.action {
         case #selector(showRecord(_:)): recordRow(item)?.pick != nil
         case #selector(closeRecordItem(_:)): recordRow(item).map { $0.closing != nil && closing[$0.id] == nil } ?? false
         case #selector(runCommand(_:)):
@@ -289,9 +290,9 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         let origin = scroll.contentView.bounds.origin
         let first = pin.flatMap { id in items.firstIndex { $0.id == id } } ?? table.rows(in: table.visibleRect).location
         let anchor = first == NSNotFound ? nil : entry(first).map { ($0.id, origin.y - table.rect(ofRow: first).minY) }
-        let recenter = dragging == nil && next.map { $0.client != snapshot?.client } ?? false
-        let previousInstance = snapshot?.serverInstance
         projection = supplied ?? (next == snapshot ? projection : PaneProjection(next))
+        let recenter = dragging == nil && next.map { $0.client != snapshot?.client && projection.items[$0.client.pane]?.item.placement == .tiled } ?? false
+        let previousInstance = snapshot?.serverInstance
         snapshot = next
         clockNow = serverNow
         let previous = items

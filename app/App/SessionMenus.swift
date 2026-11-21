@@ -2,7 +2,7 @@ import AppKit
 import PaneGeometry
 import SidebarFeed
 
-final class SessionMenus: NSObject, NSMenuItemValidation {
+@MainActor final class SessionMenus: NSObject, NSMenuItemValidation {
     var send: (Navigation) -> Void = { _ in }
     var canSend: () -> Bool = { true }
     var rename: () -> Void = {}
@@ -36,8 +36,8 @@ final class SessionMenus: NSObject, NSMenuItemValidation {
         }
     }
 
-    @objc func renameItem() { rename() }
-    @objc func closeItem() { close() }
+    @objc func renameItem() { if CommandScope.mainWindow.isAvailable && canSend() { rename() } }
+    @objc func closeItem() { if CommandScope.mainWindow.isAvailable && canSend() { close() } }
 
     private func item(
         _ title: String, _ key: String, _ command: Navigation?, _ modifiers: NSEvent.ModifierFlags = .command
@@ -49,10 +49,10 @@ final class SessionMenus: NSObject, NSMenuItemValidation {
         return item
     }
 
-    func validateMenuItem(_ item: NSMenuItem) -> Bool { canSend() }
+    func validateMenuItem(_ item: NSMenuItem) -> Bool { CommandScope(item).isAvailable && canSend() }
 
-    @objc private func run(_ sender: NSMenuItem) {
-        guard let command = sender.representedObject as? Navigation else { return }
+    @objc func run(_ sender: NSMenuItem) {
+        guard CommandScope(sender).isAvailable, canSend(), let command = sender.representedObject as? Navigation else { return }
         send(command)
     }
 }

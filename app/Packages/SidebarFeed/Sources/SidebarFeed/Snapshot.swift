@@ -31,6 +31,42 @@ public struct Snapshot: Equatable, Sendable {
         self.sessions = sessions
     }
 
+    public var tiledSessions: [SessionNodes] {
+        sessions.map { session in
+            var preorder: [(Item, PaneID?)] = []
+            func visit(_ nodes: [Node], parent: PaneID?) {
+                for node in nodes {
+                    switch node {
+                    case .window(let group): group.children.forEach { visit([.item($0)], parent: parent) }
+                    case .item(let item):
+                        preorder.append((item, parent))
+                        visit(item.children, parent: item.id)
+                    }
+                }
+            }
+            visit(session.nodes, parent: nil)
+            let tiled: Set<PaneID> = Set(preorder.compactMap { item, _ in
+                switch item.placement { case .tiled: item.id; case .floating: nil }
+            })
+            var children: [PaneID?: [Item]] = [:]
+            for (item, parent) in preorder {
+                switch item.placement {
+                case .tiled: children[parent.flatMap { tiled.contains($0) ? $0 : nil }, default: []].append(item)
+                case .floating: break
+                }
+            }
+            func build(_ parent: PaneID?) -> [Node] {
+                var result: [Node] = []
+                for var item in children[parent] ?? [] {
+                    item.children = build(item.id)
+                    result.appendGrouped(item)
+                }
+                return result
+            }
+            return SessionNodes(id: session.id, name: session.name, nodes: build(nil))
+        }
+    }
+
     public var promptPanes: [(session: SessionID, pane: PaneID, agent: Bool)] {
         var items: [(SessionID, Item)] = []
         func walk(_ nodes: [Node], session: SessionID) {
@@ -90,14 +126,30 @@ public indirect enum Node: Equatable, Sendable {
     }
 }
 
+extension Array where Element == Node {
+    mutating func appendGrouped(_ item: Item) {
+        switch last {
+        case .item(let previous) where previous.window == item.window:
+            self[count - 1] = .window(.init(id: item.window, children: [previous, item]))
+        case .window(var group) where group.id == item.window:
+            group.children.append(item)
+            self[count - 1] = .window(group)
+        default: append(.item(item))
+        }
+    }
+}
+
 public struct Item: Equatable, Sendable {
+    public enum Placement: Equatable, Sendable { case tiled, floating }
+    public var placement: Placement
     public var pane: KoSchema.PaneJson
     public var id: PaneID { pane.id }
     public var window: WindowID
     public var children: [Node]
     public var runtime: RuntimeMark?
 
-    public init(pane: KoSchema.PaneJson, window: WindowID, children: [Node], runtime: RuntimeMark? = nil) {
+    public init(pane: KoSchema.PaneJson, window: WindowID, children: [Node], runtime: RuntimeMark? = nil, placement: Placement = .tiled) {
+        self.placement = placement
         self.pane = pane
         self.window = window
         self.children = children

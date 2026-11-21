@@ -42,6 +42,17 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
     return found
 }
 
+@Test func placementComesFromTheModelsFloatsWithoutRemovingSnapshotItems() throws {
+    var model = try recorded()
+    let id = PaneID(number: 2)
+    model.layout.layout.sessions[0].windows[0].floats = [.init(border: false, cols: 20, pane: id, rows: 6, title: "", x: 1, y: 1, z: 0)]
+    let snapshot = try #require(Snapshot(model: model))
+    #expect(items(snapshot)[id]?.placement == .floating)
+    #expect(items(snapshot)[PaneID(number: 1)]?.placement == .tiled)
+    #expect(!sidebarRows(snapshot).contains { $0.target?.pane == id })
+    #expect(PaneProjection(snapshot).placements[id] != nil)
+}
+
 @Test func theRecordedModelBecomesTheSidebarTree() throws {
     let snapshot = try #require(Snapshot(model: recorded()))
     #expect(snapshot.sessions.map(\.name) == ["main", "other"])

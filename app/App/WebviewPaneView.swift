@@ -17,6 +17,11 @@ import SidebarFeed
 }
 
 private final class WebviewBrowser: WKWebView {
+    #if KIDO_VISUAL
+    private(set) var visualKeyEvents = 0
+    override func keyDown(with event: NSEvent) { visualKeyEvents += 1; super.keyDown(with: event) }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool { visualKeyEvents += 1; return super.performKeyEquivalent(with: event) }
+    #endif
     // Remove this override when the installed WebKit has https://bugs.webkit.org/show_bug.cgi?id=327446 fixed.
     @objc var allowsWritingToolsAffordance: Bool { false }
 }
@@ -27,6 +32,9 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     weak var pane: PaneView?
     private weak var client: KoClient?
     let browser: WKWebView
+    #if KIDO_VISUAL
+    var visualKeyEvents: Int? { (browser as? WebviewBrowser)?.visualKeyEvents }
+    #endif
     private let bridge: WebviewBridge
     private let unavailable = NSTextField(wrappingLabelWithString: "The program is not serving")
     private let retry = NSButton(title: "Retry", target: nil, action: nil)

@@ -56,8 +56,11 @@ final class PaneChrome: NSView {
     var stripeTop: CGFloat = 0 { didSet { if stripeTop != oldValue { needsDisplay = true } } }
     var runtimeMark: RuntimeMark? { didSet { if runtimeMark != oldValue { needsDisplay = true } } }
     var runtimeFocused = true { didSet { if runtimeFocused != oldValue { needsDisplay = true } } }
+    enum Kind { case tiled, floating }
+    var kind = Kind.tiled
     var toolbarFrame: CGRect {
-        NSRect(x: max(0, bounds.width - 179), y: subviews.contains { $0 is PaneFind } ? 48 : 8, width: min(171, bounds.width), height: 32)
+        let width = PaneToolbar.width(for: kind)
+        return NSRect(x: max(0, bounds.width - 8 - width), y: subviews.contains { $0 is PaneFind } ? content.minY + 48 : 8, width: min(width, bounds.width), height: 32)
     }
     var hotZone: CGRect {
         CGRect(x: toolbarFrame.minX - 24, y: toolbarFrame.minY,
@@ -283,58 +286,6 @@ class PaneCapsule: NSView {
     }
 }
 
-struct PanePlace: Equatable {
-    let session: String
-    let window: String
-    let destination: WindowID
-}
-
-final class PanePlaceCapsule: PaneCapsule {
-    private let session = NSTextField(labelWithString: "")
-    private let separator = NSTextField(labelWithString: "›")
-    private let location = NSTextField(labelWithString: "")
-    var invoke: () -> Void = {}
-
-    init(runtime: GhosttyRuntime) {
-        super.init(runtime: runtime, radius: 8)
-        for label in [session, separator, location] {
-            label.font = .systemFont(ofSize: 11)
-            label.lineBreakMode = .byTruncatingMiddle
-            label.isSelectable = false
-            addSubview(label)
-        }
-        setAccessibilityRole(.button)
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-
-    func show(_ place: PanePlace, available: CGFloat) -> CGFloat? {
-        session.stringValue = place.session
-        location.stringValue = place.window
-        setAccessibilityLabel("\(place.session) › \(place.window)")
-        let natural = [session, location].map { ceil(($0.stringValue as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width) + 4 }
-        let fixed: CGFloat = 30
-        var widths = natural
-        var excess = max(0, widths.reduce(fixed, +) - available)
-        for i in widths.indices {
-            let cut = min(excess, max(0, widths[i] - 40))
-            widths[i] -= cut
-            excess -= cut
-        }
-        guard excess == 0 else { return nil }
-        session.frame = CGRect(x: 6, y: 4, width: widths[0], height: 14)
-        separator.frame = CGRect(x: session.frame.maxX + 4, y: 4, width: 10, height: 14)
-        location.frame = CGRect(x: separator.frame.maxX + 4, y: 4, width: widths[1], height: 14)
-        for label in [session, location] { label.textColor = runtime.foreground.mixed(toward: runtime.background, amount: 0.45) }
-        separator.textColor = runtime.foreground.mixed(toward: runtime.background, amount: 0.65)
-        return widths.reduce(fixed, +)
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? { !isHidden && bounds.contains(convert(point, from: superview)) ? self : nil }
-    override func mouseDown(with event: NSEvent) { invoke() }
-    override func accessibilityPerformPress() -> Bool { invoke(); return true }
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
-}
-
 final class PaneToolbar: PaneCapsule {
     private let grip = IconButton("line.3.horizontal", "Drag pane", size: 15)
     private let zoom = IconButton("arrow.up.left.and.arrow.down.right", "Zoom pane", size: 15)
@@ -353,6 +304,8 @@ final class PaneToolbar: PaneCapsule {
         NSImage(systemSymbolName: $0, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 15, weight: .regular))
     }
 
+    static func width(for kind: PaneChrome.Kind) -> CGFloat { kind == .floating ? 67 : 171 }
+
     init(runtime: GhosttyRuntime) {
         super.init(runtime: runtime, radius: 12, separators: 1)
         for (button, x) in [(grip, 3.0), (right, 29.0), (down, 55.0), (zoom, 81.0), (float, 107.0), (close, 142.0)] {
@@ -366,6 +319,11 @@ final class PaneToolbar: PaneCapsule {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func update(command: @escaping (PaneCommand) -> Void, zoomed: Bool, floatState: PaneFloatState?, drag: @escaping (NSEvent) -> Void) {
+        let floating = (superview as? PaneChrome)?.kind == .floating
+        for button in [grip, right, down, zoom] { button.isHidden = floating }
+        float.frame.origin.x = floating ? 3 : 107
+        close.frame.origin.x = floating ? 38 : 142
+        separatorX = [floating ? 33 : 137]
         float.isEnabled = floatState?.isEnabled == true
         float.image = Self.floatImages[floatState == .dock || floatState == .cannotDock ? 1 : 0]
         float.setAccessibilityLabel(floatState == .dock || floatState == .cannotDock ? "Dock pane" : "Float pane")

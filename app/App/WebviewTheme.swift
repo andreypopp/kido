@@ -23,7 +23,7 @@ import AppKit
                           "--ko-font-family": "\"\(family)\", monospace",
                           "--ko-font-size": "\(pane.font)px", "--ko-cell-width": "\(pane.cell.width)px", "--ko-cell-height": "\(pane.cell.height)px",
                           "--ko-appearance": runtime.background.isDark ? "dark" : "light",
-                          "--ko-inset-top": pane.placeVisible ? "30px" : "0px"]
+                          "--ko-inset-top": "0px"]
         for (index, color) in colors.palette.enumerated() { properties["--ko-color-\(index)"] = rgb(color) }
         return Payload(pane: pane.pane.description, theme: properties, cell: .init(width: pane.cell.width, height: pane.cell.height))
     }

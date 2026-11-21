@@ -49,7 +49,7 @@ final class SidebarShadow: NSView {
     }
 }
 
-final class Sidebar: NSSplitViewController, NSToolbarDelegate {
+final class Sidebar: NSSplitViewController, NSToolbarDelegate, NSMenuItemValidation {
     private final class ToolbarButtonCell: NSButtonCell {
         override func hitTest(for event: NSEvent, in cellFrame: NSRect, of controlView: NSView) -> NSCell.HitResult {
             guard isEnabled, cellFrame.contains(controlView.convert(event.locationInWindow, from: nil)) else { return [] }
@@ -351,6 +351,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
     @objc private func newSession() { list.newSession() }
 
     override func toggleSidebar(_ sender: Any?) {
+        guard CommandScope.mainWindow.isAvailable else { return }
         if isFloating {
             isFloating = false
             isCollapsed = true
@@ -379,7 +380,10 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         return sidebar.grantingFocus || sidebar.list.containsFocus
     }
 
+    func validateMenuItem(_ item: NSMenuItem) -> Bool { CommandScope(item).isAvailable }
+
     @objc func focusSidebar(_ sender: Any?) {
+        guard CommandScope.mainWindow.isAvailable else { return }
         if let window = view.window, !window.isKeyWindow, !background { window.makeKey() }
         if isFloating { list.leave(); return }
         if isCollapsed, let root = view.window?.contentView?.superview {

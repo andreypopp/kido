@@ -166,6 +166,12 @@ import XCTest
             host.content.mouseMoved(with: event)
         }
         let chrome = host.content.chrome
+        try await runtimeSnapshot(dark, "float-chrome-rest")
+        (window as? OwnerWindow)?.testInput(true)
+        session.windows.values.forEach { $0.updateFocusTreatment() }
+        try await runtimeSnapshot(dark, "float-chrome-inactive")
+        try focusFloat(pane)
+        XCTAssertFalse(sidebarRows(koModel.flatMap { Snapshot(model: $0) }).contains { $0.target?.pane == pane })
         try hover(CGPoint(x: chrome.midX, y: chrome.minY + 2))
         try await wait("the pill and the mark show") { host.content.handles.visibleMarks == (true, true) }
         try await settle()
@@ -174,6 +180,23 @@ import XCTest
         try await wait("the mark alone shows") { host.content.handles.visibleMarks == (false, true) }
         try await settle()
         try await runtimeSnapshot(dark, "float-handles-mark")
+        let paneView = try XCTUnwrap(session.pane(pane))
+        try await self.hover(paneView, true)
+        try await runtimeSnapshot(dark, "float-two-button-toolbar")
+        try await self.hover(paneView, false)
+        let terminal = try XCTUnwrap(terminal)
+        let target = try XCTUnwrap(terminal.visualChromes.first { $0.pane == PaneID(number: 1) })
+        let start = host.convertPoint(toScreen: host.content.convert(CGPoint(x: chrome.midX, y: chrome.minY + 12), to: nil))
+        let end = window.convertPoint(toScreen: target.convert(CGPoint(x: target.bounds.maxX - 8, y: target.bounds.midY), to: nil))
+        func event(_ type: NSEvent.EventType, _ point: CGPoint) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: host.convertPoint(fromScreen: point), modifierFlags: .option, timestamp: 0, windowNumber: host.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        terminal.visualBeginDrag(pane, try event(.leftMouseDown, start))
+        terminal.continueDrag(try event(.leftMouseDragged, end))
+        XCTAssertNotNil(terminal.visualPreview.rect)
+        XCTAssertNil(terminal.visualGhost)
+        try await runtimeSnapshot(dark, "float-option-drag")
+        terminal.cancelDrag()
     }
 
     // colour-hash and colour-config: four runtimes in four panes; gpu-1 takes its configured colour.

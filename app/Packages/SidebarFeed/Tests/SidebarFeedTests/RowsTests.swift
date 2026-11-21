@@ -6,6 +6,36 @@ private let away = 99
 private func numbers(_ rows: [SidebarRow]) -> [UInt32] { rows.compactMap { $0.target?.pane.number } }
 private func programs(_ rows: [SidebarRow]) -> [String] { rows.filter { if case .program = $0.id { true } else { false } }.map(\.title) }
 
+@Test func floatsHaveNoRowsOrRecordsAndTheirTiledChildrenBecomeRoots() {
+    guard case .item(var floating) = pane(1, window: 0, records: [.blocked(.init(id: "float/task"))], children: [pane(2, window: 0, children: [pane(3, window: 0)])]) else { return }
+    floating.placement = .floating
+    let snapshot = makeSnapshot([pane(0, children: [.item(floating), pane(4, window: 0)])], client: 1, window: 0)
+    let rows = sidebarRows(snapshot)
+    #expect(numbers(rows) == [0, 2])
+    #expect(programs(rows).isEmpty)
+    #expect(rows.allSatisfy { !$0.focused })
+    #expect(rows[1].hidden.count == 1)
+    #expect(rows[2].indent == 0)
+    #expect(visibleSidebarRow(for: floating.id, in: rows, projection: PaneProjection(snapshot)) == nil)
+    let focused = sidebarRows(makeSnapshot([.item(floating)], client: 2, window: 0))
+    #expect(numbers(focused) == [2, 3])
+    #expect(focused[1].indent == 0)
+    #expect(focused[2].indent == 1)
+}
+
+@Test func tiledRootsKeepPreorderAcrossFloatingAncestorsAndLaterWindows() {
+    guard case .item(var inner) = pane(3, window: 0, children: [pane(4, window: 0, children: [pane(5, window: 0)])]),
+          case .item(var outer) = pane(1, window: 0) else { return }
+    inner.placement = .floating
+    outer.placement = .floating
+    outer.children = [pane(2, window: 0, children: [.item(inner)])]
+    let snapshot = makeSnapshot([pane(0, children: [.item(outer)]), pane(9)], client: 5, window: 0)
+    let rows = sidebarRows(snapshot)
+    #expect(numbers(rows) == [0, 2, 4, 5, 9])
+    #expect(rows.filter { $0.target != nil }.map(\.indent) == [0, 0, 0, 1, 0])
+    #expect(rows.filter { $0.target?.window == WindowID(number: 0) }.map(\.block) == [.first, .middle, .middle, .last])
+}
+
 @Test func focusOpensChildrenAndKeepsItsPathOpen() {
     let tree = [pane(0, children: [pane(1, children: [pane(2)]), pane(3)])]
     #expect(numbers(sidebarRows(makeSnapshot(tree, client: away))) == [0])

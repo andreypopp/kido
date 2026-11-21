@@ -41,18 +41,33 @@ struct PaletteEntry {
         guard owner.canNavigate, let snapshot = owner.snapshot else { return [] }
         let instance = snapshot.serverInstance
         let host = owner.host == .local ? [] : [owner.host.label]
-        let resolve: @MainActor (SidebarRow) -> WindowOwner? = { [weak owner] row in
+        let resolve: @MainActor (PaneID) -> WindowOwner? = { [weak owner] pane in
             guard let owner, owner.canNavigate, owner.snapshot?.serverInstance == instance,
-                  sidebarRows(owner.snapshot).contains(where: { $0.id == row.id }) else { return nil }
+                  owner.projection.placements[pane] != nil else { return nil }
             return owner
         }
         let reachable = Set(snapshot.promptPanes.filter(\.agent).map(\.pane))
-        var session = ""
-        return sidebarRows(owner.snapshot).compactMap { row in
-            if case .header = row.id { session = row.title }
-            guard let target = row.topLevel else { return nil }
-            return PaletteEntry(id: .pane(target), title: row.title, detail: (host + [session]).joined(separator: " › "), status: row.status, agent: reachable.contains(target.pane), promptable: reachable.contains(target.pane), check: { resolve(row) == nil ? "That pane is gone" : nil }, operation: .run { let owner = resolve(row); owner?.reveal(); owner?.perform(.jump(target)) })
+        let roots = Set(snapshot.tiledSessions.flatMap { session in session.nodes.flatMap { node -> [PaneID] in
+            switch node { case .window(let group): group.children.map(\.id); case .item(let item): [item.id] }
+        } })
+        var entries: [PaletteEntry] = []
+        func visit(_ nodes: [SidebarFeed.Node], session: SessionNodes) {
+            for node in nodes {
+                let items: [Item] = switch node { case .window(let group): group.children; case .item(let item): [item] }
+                for item in items {
+                    let offered = switch item.placement { case .tiled: roots.contains(item.id); case .floating: true }
+                    if offered, let target = owner.projection.placements[item.id]?.position {
+                        let pane = target.pane
+                        let window = owner.windowName(item.window)
+                        let detail = host + [session.name] + (item.placement == .floating ? [window] : [])
+                        entries.append(PaletteEntry(id: .pane(target), title: item.rowTitle, detail: detail.joined(separator: " › "), status: item.indicator.0, agent: reachable.contains(item.id), promptable: reachable.contains(item.id), check: { resolve(pane) == nil ? "That pane is gone" : nil }, operation: .run { guard let owner = resolve(pane), let target = owner.projection.placements[pane]?.position else { return }; owner.reveal(); owner.perform(.jump(target)) }))
+                    }
+                    visit(item.children, session: session)
+                }
+            }
         }
+        for session in snapshot.sessions { visit(session.nodes, session: session) }
+        return entries
     }
 
     // `Host` when the pane in focus runs in a runtime, then one row for each runtime of the server.
@@ -78,7 +93,7 @@ struct PaletteEntry {
                          check: { [weak owner] in owner?.canNavigate == true ? nil : "Not available now" },
                          operation: .run { [weak owner] in owner?.newWindow(in: nil, target, running: row.1) })
         }
-        if let pane = livePane(owner, responder) {
+        if CommandScope.mainWindow.isAvailable(responder: responder), let pane = livePane(owner, responder) {
             for (index, (title, detail, side)) in [("Split Right", "beside the focused pane", Side.right), ("Split Down", "below the focused pane", Side.down)].enumerated() {
                 rows.append(PaletteEntry(id: .runtimeOpen(index + 2), title: title, detail: detail,
                                          check: { [weak owner, weak pane] in owner?.canNavigate == true && owner?.owns(pane?.window) == true ? nil : "Not available now" },
@@ -137,6 +152,7 @@ struct PaletteEntry {
     }
 
     @MainActor private static func enabled(_ item: NSMenuItem, owner: WindowOwner?, responder: NSResponder?) -> Bool {
+        guard CommandScope(item).isAvailable(responder: responder) else { return false }
         guard item.menu?.autoenablesItems != false else { return item.isEnabled }
         var target: Any? = item.target
         if target == nil, let action = item.action {

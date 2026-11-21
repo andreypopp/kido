@@ -118,10 +118,10 @@ import XCTest
         let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
         XCTAssertTrue(session.reorder.claim(.tab))
-        view.visualBeginDrag(pane, down, from: .grip)
+        view.visualBeginDrag(pane, down)
         XCTAssertFalse(view.visualPaneDragging, "a tab drag holds the gesture")
         session.reorder.release(.tab)
-        view.visualBeginDrag(pane, down, from: .grip)
+        view.visualBeginDrag(pane, down)
         XCTAssertTrue(view.visualPaneDragging)
         XCTAssertFalse(session.reorder.claim(.tab))
         XCTAssertFalse(session.reorder.claim(.sidebar))
@@ -482,6 +482,31 @@ import XCTest
             windowNumber: window.windowNumber, context: nil, characters: "\u{f701}", charactersIgnoringModifiers: "\u{f701}", isARepeat: false, keyCode: 125))
         list.visualTable.keyDown(with: down)
         XCTAssertEqual(list.visualRows[list.visualTable.selectedRow].target?.pane, PaneID(number: 0))
+    }
+
+    func testAKeyFloatHasNoSidebarRowLightAndDark() throws {
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 240), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        window.colorSpace = .displayP3
+        let list = SidebarView()
+        list.captionDelay = 0
+        window.contentView = list
+        let live = sidebarFixture { snapshot in
+            var parent = snapshot.sessions[0].nodes[0].item
+            var floating = parent.children[0].item
+            floating.placement = .floating
+            floating.pane.title = "Draft for @ko"
+            parent.children = [.item(floating)]
+            snapshot.sessions[0].nodes = [.item(parent)]
+            snapshot.sessions = [snapshot.sessions[0]]
+            snapshot.client = .init(session: snapshot.sessions[0].id, window: floating.window, pane: floating.id)
+        }
+        for dark in [false, true] {
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            list.show(live)
+            XCTAssertTrue(list.visualRows.allSatisfy { !$0.focused })
+            XCTAssertEqual(list.visualRows.compactMap { $0.target }.count, 1)
+            sidebarSnapshot(list, dark ? "float-key-dark" : "float-key-light")
+        }
     }
 
     func testSidebarCards() throws {

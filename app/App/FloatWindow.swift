@@ -66,7 +66,7 @@ final class FloatWindow: OwnerWindow {
     static func reachable(_ frame: CGRect, in visible: CGRect) -> CGRect {
         var result = frame
         result.origin.x = min(max(frame.minX, visible.minX + min(60, frame.width) - frame.width), visible.maxX - min(60, frame.width))
-        result.origin.y = min(max(frame.minY, visible.minY + 10 - frame.height), visible.maxY - 6 - frame.height)
+        result.origin.y = min(max(frame.minY, visible.minY + PaneLayout.floatTop - frame.height), visible.maxY - 6 - frame.height)
         return result
     }
 
@@ -128,7 +128,7 @@ final class FloatContent: NSView {
             (.resize(.left), CGRect(x: r.minX - 4, y: r.minY, width: 8, height: r.height)),
             (.resize(.right), CGRect(x: r.maxX - 4, y: r.minY, width: 8, height: r.height)),
         ]
-        return corners + edges + [(.move, CGRect(x: r.minX, y: r.minY - 6, width: r.width, height: 16))]
+        return corners + edges + [(.move, CGRect(x: r.minX, y: r.minY - 6, width: r.width, height: PaneLayout.floatTop + 6))]
     }
 
     static func zone(at point: NSPoint, in r: CGRect, grid: CGRect, toolbar: CGRect?) -> Zone? {
@@ -159,7 +159,7 @@ final class FloatContent: NSView {
         guard let pane, let zone = zone(convert(event.locationInWindow, from: nil)) else { return }
         switch zone {
         case .resize(let edge): logical?.beginEdgeResize(pane, edge, event)
-        case .move: logical?.beginDrag(pane, event, from: .frame)
+        case .move: logical?.beginDrag(pane, event)
         }
     }
     override func mouseDragged(with event: NSEvent) { logical?.continueDrag(event) }
@@ -210,7 +210,7 @@ final class FloatHandles: NSView {
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        pill.frame = CGRect(x: bounds.midX - 18, y: 0, width: 36, height: 4)
+        pill.frame = CGRect(x: bounds.midX - 18, y: (PaneLayout.floatTop - 4) / 2, width: 36, height: 4)
         mark.frame = bounds
         let corner = CGPoint(x: bounds.maxX - 3, y: bounds.maxY - 3), path = CGMutablePath()
         for (gap, length) in [(CGFloat(0), CGFloat(8)), (4, 4)] {

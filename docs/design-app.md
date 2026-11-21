@@ -1287,15 +1287,17 @@ name and the hashed colour and shows no state.
   colour across the top of the chrome, over the top side of the focus
   edge. It is at 55% in an unfocused pane, dashed (8pt on, 6pt at 35%
   of it, still) while the runtime starts, and at full colour when it
-  failed: the pane's screen shows the message. A float's band sits
-  `PaneLayout.floatTop` (10pt) below the card's top edge, directly above
-  the first row, under the move band's handle; a zoomed pane keeps its
+  failed: the pane's screen shows the message. A float's band is the
+  bottom of its top padding (`PaneLayout.floatTop`, 22pt), directly above
+  the first row, below the move band's pill; a zoomed pane keeps its
   band.
 - **The label pill.** `RuntimePill`, in the COPY pill's family, at the
   chrome's top-right (8pt in, 22pt high): a 6pt swatch, the name, then
   ` · tools` for a routed pi, ` · starting` with a spinner, or
   ` · failed: <message>` in red with the whole message as its tooltip.
   It is at most 300pt wide; the state text truncates, never the name.
+  In a float it is measured from the content's top, below the padding,
+  as the COPY pill and Find are.
   It is at 70% in an unfocused pane. It hides while the hover toolbar
   or the find capsule shows, and in copy mode when it would meet the
   COPY pill. It is not in the toolbar's hot zone.
@@ -1538,6 +1540,14 @@ six-point hit areas; [Focus treatment](#focus-treatment) marks the focused pane;
 pane shows the window’s shared glass toolbar only in its top-right hot
 zone: the toolbar frame plus 24pt to its left and below, clipped to the
 pane. It splits, zooms and closes through the same commands as the menus.
+The toolbar's layout is a function of the pane's kind (`PaneChrome.Kind`,
+`PaneToolbar.width(for:)`): a tiled pane's toolbar has the grip, the
+splits, zoom, Float Pane and close in 171pt; a float's has only Dock Pane
+and close in 67pt (design: `app/design/floats/NOTES.md`, section F), because a
+float never splits or zooms and moves by its padding. While Find is open,
+the toolbar sits 48pt below the content's top, under the Find capsule; a
+float's toolbar otherwise rests at 8pt from the frame's top, in the move
+band, and Find stays in the content below the padding.
 The toolbar's grip drags a tiled pane: the target's outer quarters dock
 left, right, above or below; its centre swaps. A 22pt
 band inside the tiled area's outer edges takes precedence, docking across the whole
@@ -1558,22 +1568,35 @@ the pointer after 4pt of movement. Its size is the pane's size, limited to
 keeps its position relative to the grip. Option over a target or over the
 source shows the ghost instead of the bar. The drop sends a `float` edit
 with the ghost's cell geometry (PaneLayout's inverse), and the float becomes
-the active pane. The last tiled pane shows no ghost. Only a float's grip
-docks it: its drag uses the edge targets of the tiled drag, and over a
-pane's outer quarters or the window-edge band it shows the bar and sends no
-move edit; its drop sends `dock` or `dock_window` with the float as the
-source and holds the release frame until the layout shows the dock. A
-pane's centre is no target for a float, so a float still moves over tiled
-panes. A drag by the move band or the padding only moves the float: it has
-no targets, so a float moved near a tiled edge does not dock by accident.
-`PaneDrag` names the float's gesture (move, dock or resize), and only the
-dock gesture asks for a drop target.
-A float's grip, the move band and padding move the float, starting
+the active pane. The last tiled pane shows no ghost. A float has no grip.
+A drag by its move band or padding moves it, with no targets, so a float
+moved over the main window does not dock by accident. Only Option docks
+by drag: while Option is held (read on each move, on a change of the
+modifiers and on the drop) and the pointer is over a tiled pane of the
+float's own ko window shown in the main window, the drag shows the
+bar of that pane's outer quarter and the drop sends `dock` with the
+float as the source, holding the release frame until the layout shows
+the dock. A float has no window-edge zone and no centre target: the
+window-edge test runs only for a tiled source, so a float's outer pane
+edges stay targets; a float never shows the pop-out
+ghost. `PaneDrag` names the float's gesture (move or resize). A move
+keeps its frame local and sends one `float` edit on the drop; a resize
+streams its edits. The band drag makes the float's content first
+responder, so Escape reaches it; Escape or a second click cancels and the
+float returns to its starting position, and the end of every gesture
+gives the first responder back to the pane. While a dock waits
+(`awaitingDock`), the raise of the active float sends no z-order `float`
+edit: the client core applies a `float` edit for a tiled pane as a new
+float, so a late raise would float the docked pane again.
+The move band and padding move the float, starting
 after 4pt of movement; resize edges follow the pointer immediately. A press
 without movement makes the float the active pane, which raises it ([Float
-windows](#float-windows)). A float's top padding is `PaneLayout.floatTop` of
+windows](#float-windows)). A float's top padding is `PaneLayout.floatTop` (22pt) of
 chrome above the grid (`floatFrame` and `floatGeometry` are the float's frame
-and its inverse); the move band straddles the frame's top edge. Draggable
+and its inverse): padding, not border, so the user drags paper and no frame
+of another colour shows. The move band is that padding and 6pt outside the
+frame's top edge, the full width; its pill (36×4pt) is centred in the
+padding. Draggable
 padding is inside the drawn frame but outside the Ghostty grid, including the
 fractional right/bottom remainder. `FloatContent.zones` gives the handles' hit
 rects (design: `app/design/floats/NOTES.md`, section C): their outside halves
@@ -1733,13 +1756,11 @@ width stay inside the visible frame of the screen that holds the float.
 A pop out holds the ghost's frame until the float appears, and a dock
 holds the release frame until the layout shows the dock.
 
-**The place capsule.** While a float's ko window is not the one the
-main window shows, the pane draws `PanePlaceCapsule`
-(`App/PaneChrome.swift`) with "<session> › <window>"; a click shows
-that ko window in the main window and leaves the float key. For a page
-pane the app sets `--ko-inset-top` to 30px while the capsule is
-visible, and koa's page lays out its view bar, threads and transcript
-below it.
+**A window, not a row.** A float's identity is its window title (the
+Dock menu, Mission Control, ⌘\`); nothing is drawn over its content for
+it, and a page's `--ko-inset-top` is 0 in a float. A float has no
+sidebar row ([Sidebar rows of floats](#sidebar-rows-of-floats)). The
+palette, ⌘\`, the Dock menu and Back/Forward are the ways to reach it.
 
 **One drag engine.** The gesture state stays in WindowView. A float
 window's content forwards its press, drag and resize edges to it, and
@@ -1756,7 +1777,7 @@ its pane the active pane; the main window keeps the ko window it shows
 from the shown window, and the sidebar from the server's selection. A
 focus route that lands on a tiled pane switches the main window to it;
 one that lands on a float never does. Dock Pane from a float whose ko
-window is not shown shows it first, and a drag of a float offers drop
+window is not shown shows it first, and an Option drag of a float offers drop
 targets only while its ko window is shown. `WindowOwner.owns` maps a window to its owner
 (the main window or one of its float windows); `inputWindow` and
 `inputResponder` give the key one of them and its first responder. The
@@ -1773,8 +1794,32 @@ places the sheet: on macOS 27 it centres a sheet on a window taller
 than the sheet, so the app does not position it. A key sheet counts as its window being key
 ([Focus treatment](#focus-treatment)): the float keeps the stroke and
 the main window's tiled panes take the shift; the focus report goes false only while
-the input window has a sheet. Hiding or detaching a float aborts its alert. Focus
-Sidebar makes the main window key first.
+the input window has a sheet. Hiding or detaching a float aborts its alert.
+
+**Commands while a float is key.** Nothing acts on the main window
+through a float (design: `app/design/floats/NOTES.md`, section F, which
+gives the table). `CommandScope` (`App/Commands.swift`) classifies each
+command and menu item as app-wide, the input pane's, or the main
+window's; one classifier serves the menu validation of every target
+(`PaneView`, `WindowOwner`, `AppDelegate`, `SessionMenus`, `Sidebar`),
+the pane commands that a Ghostty binding sends, history and the
+palette. A main-window command is unavailable while the input window
+is a float; while the palette is open, the input window is that of its
+saved responder, not the panel's. The main window's commands are the
+splits, Select Pane, Next and Previous Pane, zoom, resize and equalize,
+the Window and Session menus and their lists, Close Window, Hide and
+Focus Sidebar, Back and Forward (also the mouse's buttons on a float)
+and full screen. Close Pane and Dock Pane act on the float's pane;
+New Session, New Window and New Agent create on the float's server and
+show the result in the main window. A disabled item's key does
+nothing in the float's program either: `OwnerWindow` consumes a key
+event that matches the key equivalent of an unavailable main-window
+item of the main menu before a terminal or a page receives it, and
+matches it against the menu items, so a changed key equivalent needs
+no second table. ⌘\` stays AppKit's and is the keyboard's way back to
+the main window. `WindowOwner.perform(.jump)` is not a command of the
+main window: the palette, links and the server's focus still navigate
+to floats.
 
 ### Webview panes
 
@@ -2582,6 +2627,7 @@ default; it does not automatically collapse at narrow widths.
 ### Sidebar focus
 
 Sidebar focus is modal. Only Focus Sidebar (Command-S) enters it, and
+not while a float is key ([Float windows](#float-windows)), and
 Escape, Return, a pane menu command or a click in a pane leaves it. A
 mouse action in the sidebar never takes keyboard focus from a pane: a
 click, a double-click, a context menu (also Control-click), a drag, a
@@ -2670,6 +2716,23 @@ are disabled. The model's events coalesce, so the row cannot wait for a
 `Down` that it may never see: another client can start the runtime
 again before the next model read. The section is disabled while the window
 has no connection.
+### Sidebar rows of floats
+
+The rows of a window are its tiled panes (design:
+`app/design/floats/NOTES.md`, section F). The snapshot keeps every pane
+with its `Item.Placement`, taken from the same layout as the outline, so
+the tab's status aggregate, the notifications, the close scope and the
+history still see floats. `Snapshot.tiledSessions` is the one
+projection of the rows: it walks each session's tree in preorder, drops
+every float, keeps a parent edge only when the immediate parent is
+tiled, and makes a tiled child of a float a root at depth 0 at its
+preorder position. The rows and their folded children come from it, so
+a float's OSC 7501 records and its circles have no row, and the circles
+of a folded pane count only its tiled children. Rows and layout change
+in the same snapshot. While the active pane is a float, no row has the
+focus fill (`visibleSidebarRow` does not climb from a float to its
+parent), and the sidebar keeps its keyboard selection and scroll.
+
 ### Folded children
 
 Focus alone decides which children (child panes of the window and OSC
@@ -2767,7 +2830,8 @@ take them. The toolbar pair, the menu items and the palette commands are
 enabled from the same state. The mouse's back and forward buttons
 (`buttonNumber` 3 and 4) act on the press anywhere in the window, but not
 while the palette or a sheet is up: `OwnerWindow.sendEvent` takes both
-their press and release before a terminal can receive them. The actions are `navigateHistoryBack:` and `navigateHistoryForward:`, not `goBack:` and `goForward:`, because a focused webview implements those two itself and takes a responder-chain action of that name. ko_tui has no history.
+their press and release before a terminal can receive them. On a float
+they do nothing: the history is the main window's. The actions are `navigateHistoryBack:` and `navigateHistoryForward:`, not `goBack:` and `goForward:`, because a focused webview implements those two itself and takes a responder-chain action of that name. ko_tui has no history.
 
 ## Command palette
 
@@ -2811,12 +2875,16 @@ open palette draws a hollow cursor ([Focus treatment](#focus-treatment)).
 
 The root list is built from live state, in this order:
 
-- The top-level panes of the anchor only, in sidebar order. Thus, the palette
+- The top-level panes of the anchor only, in sidebar order, and every
+  float of the anchor, also one whose parent is a tiled pane. Thus, the palette
   never jumps to another owner: not from Local to a remote host, not between
   hosts, and not to another window of the same host. With no anchor, there are
-  no pane rows. A top-level pane is a sidebar pane row at indent 0
-  (`SidebarRow.topLevel`, which the sidebar's drag source also uses): a child pane that the snapshot nests under a pane of its window is
-  not in the list, and neither is an OSC 7501 program record row.
+  no pane rows. A top-level pane is a root of `Snapshot.tiledSessions`
+  ([Sidebar rows of floats](#sidebar-rows-of-floats)): a child pane that the snapshot nests under a pane of its window is
+  not in the list, and neither is an OSC 7501 program record row. The
+  entries come from the snapshot, not from the sidebar's rows, and resolve
+  their pane's current position when they run. A float's detail adds its
+  window's name.
   There are no session rows; the session commands below stay. A pane row has
   its status mark and jumps through one `ko_client_select`, as a sidebar row does. The
   anchor's window comes to the front first. The detail is the session name,
@@ -2838,7 +2906,10 @@ The root list is built from live state, in this order:
   New Agent, Close Window, Back, Forward, Split Right, Split Down, Close Pane, Zoom Pane, Float Pane or Dock Pane, Connect to
   Local Host, Connect to Remote Host…, Hide/Show Sidebar, Focus Sidebar,
   Enter Full Screen, Find…, Copy Mode, Prompt…, Reset Clipboard and Upload
-  Permissions and Theme…. The window
+  Permissions and Theme…. A command that `CommandScope` makes unavailable
+  for the saved responder is not in the list, so the palette over a float
+  has no window, session, sidebar, split or zoom commands
+  ([Float windows](#float-windows)). The window
   commands need an anchor. The pane commands need a live focused pane: a
   connected anchor whose saved responder is a visible pane of that window, or
   a view inside one, such as its Find bar. Prompt… also needs an agent in the

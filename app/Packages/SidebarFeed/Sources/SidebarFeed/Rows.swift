@@ -225,7 +225,7 @@ extension Item {
         quietShell && pane.fixedTitle == nil ? "Terminal" : sidebarTitle(label, messageable: isMessageable)
     }
 
-    var indicator: (status: SidebarRow.Status, description: String) {
+    public var indicator: (status: SidebarRow.Status, description: String) {
         if let departure {
             if case .ended = lifecycle, departure.status == .done { return (.done, "gone, completed") }
             let status: SidebarRow.Status = if case .lingering = lifecycle {
@@ -245,6 +245,7 @@ extension Item {
 
 public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
     guard let snapshot else { return [] }
+    let sessions = snapshot.tiledSessions
     typealias Branch = (row: SidebarRow, following: [SidebarRow], waiting: Bool, summary: SidebarRow.Status, containsFocus: Bool)
     func finish(_ raw: SidebarRow, children: [Branch], open: Bool) -> Branch {
         var row = raw
@@ -327,7 +328,7 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
         }
     }
     var rows: [SidebarRow] = []
-    for session in snapshot.sessions {
+    for session in sessions {
         let header = SidebarRow(id: .header(session.id), kind: .header, indent: 0, title: session.name, second: .none, status: .quiet, focused: false)
         let gap = SidebarRow(id: .gap(session.id), kind: .gap, indent: 0, title: "", second: .none, status: .quiet, focused: false)
         rows.append(header)
@@ -338,7 +339,7 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
     }
     let root = snapshot.client.window
     let block = rows.indices.filter { rows[$0].id.session == snapshot.client.session && rows[$0].root == root }
-    let rootNode = snapshot.sessions.first { $0.id == snapshot.client.session }?.nodes.first { $0.window == root }
+    let rootNode = sessions.first { $0.id == snapshot.client.session }?.nodes.first { $0.window == root }
     if case .window(let window) = rootNode, window.children.count > 1 {
         for (offset, index) in block.enumerated() {
             rows[index].block = offset == 0 ? .first : offset == block.count - 1 ? .last : .middle
@@ -363,6 +364,7 @@ public func sidebarDividers(_ rows: [SidebarRow]) -> [SidebarRow] {
 }
 
 public func visibleSidebarRow(for pane: PaneID, in rows: [SidebarRow], projection: PaneProjection) -> Int? {
+    guard projection.items[pane]?.item.placement != .floating else { return nil }
     var current: PaneID? = pane
     while let id = current {
         if let index = rows.firstIndex(where: { $0.target?.pane == id }) { return index }

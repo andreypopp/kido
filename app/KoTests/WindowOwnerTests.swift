@@ -37,9 +37,6 @@ import KoModel
         paneView.layoutSubtreeIfNeeded()
         XCTAssertTrue(host.isVisible)
         XCTAssertTrue(host.title.hasSuffix(" — second / two"))
-        XCTAssertEqual(paneView.place?.session, "second")
-        XCTAssertEqual(paneView.place?.window, "two")
-        XCTAssertTrue(paneView.placeVisible)
         owner.testAttended = true
         XCTAssertTrue(owner.attendedPanes.contains(id))
         XCTAssertFalse(owner.attendedPanes.contains(PaneID(number: 2)))
@@ -59,9 +56,6 @@ import KoModel
         XCTAssertTrue(PaneView.owner(owner.window.firstResponder) === tiled)
         host.becameKey()
         wait("the float is selected again") { owner.testModel?.selection.pane == id }
-        let destination = try XCTUnwrap(paneView.place?.destination)
-        paneView.placeCapsule.invoke()
-        XCTAssertEqual(session.windows.first { !$0.value.isHidden }?.key, destination)
         XCTAssertTrue(host.isInputWindow)
         owner.showWindow(main)
         owner.paneCommand(.float, id)

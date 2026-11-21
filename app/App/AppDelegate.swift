@@ -40,6 +40,10 @@ import SidebarFeed
     var promptDrafts: [PromptDraft.Key: PromptDraft] = [:]
     private var pendingPrompt: PalettePrompt?
     private var paletteFocus: (owner: WindowOwner, responder: NSResponder?)?
+    var commandInputWindow: NSWindow? {
+        if let paletteFocus { return PaneView.owner(paletteFocus.responder)?.window ?? (paletteFocus.responder as? NSView)?.window ?? paletteFocus.owner.inputWindow }
+        return OwnerWindow.inputWindow
+    }
     private var paletteObservers: [NSObjectProtocol] = []
     private var paletteBusy = false
     enum CloseReason { case dismiss, choice, moved }
@@ -474,7 +478,8 @@ import SidebarFeed
     }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        item.action != #selector(closeWindow) || (paletteFocus?.owner ?? current) != nil
+        guard CommandScope(item).isAvailable else { return false }
+        return item.action != #selector(closeWindow) || (paletteFocus?.owner ?? current) != nil
     }
 
     private func keepPromptDraft(_ owner: WindowOwner) -> (PromptDraft.Key) -> Bool {
