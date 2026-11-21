@@ -36,8 +36,10 @@ enum CommandScope {
                 guard !item.keyEquivalent.isEmpty, CommandScope(item) == .mainWindow,
                       let characters = event.charactersIgnoringModifiers,
                       characters.lowercased() == item.keyEquivalent.lowercased() else { return false }
-                var flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
-                var expected = item.keyEquivalentModifierMask.intersection([.command, .control, .option, .shift])
+                var flags = event.modifierFlags.intersection([.command, .control, .option, .shift, .function])
+                var expected = item.keyEquivalentModifierMask.intersection([.command, .control, .option, .shift, .function])
+                // AppKit sets .function on every arrow and F-key event, whose characters are in U+F700–U+F8FF.
+                if item.keyEquivalent.unicodeScalars.allSatisfy({ (0xF700...0xF8FF).contains($0.value) }) { flags.remove(.function); expected.remove(.function) }
                 if item.keyEquivalent != item.keyEquivalent.lowercased() { expected.insert(.shift) }
                 if item.keyEquivalent.unicodeScalars.allSatisfy({ CharacterSet.punctuationCharacters.contains($0) || CharacterSet.symbols.contains($0) }), !expected.contains(.shift) { flags.remove(.shift) }
                 return flags == expected
