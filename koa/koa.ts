@@ -75,6 +75,8 @@ const commandSourcesMatch: Same<Exclude<CompletionCommand["source"], 'builtin'>,
 void [thinkingLevelsMatch, commandSourcesMatch, statsMatch];
 
 const MAX_PENDING_BASH = 16;
+const QUIT_REPLY_MS = 1000;
+const HOST_STOP_MS = 5000;
 
 async function withRequestSignal(response: ServerResponse, lifetime: AbortSignal, work: (signal: AbortSignal) => Promise<void>) {
   const controller = new AbortController();
@@ -90,9 +92,6 @@ async function main(): Promise<void> {
   process.stderr.on("error", () => {});
   process.stdout.on("error", () => {});
   const pane = process.env.KO_PANE, ko = findKo();
-  const quitReplyMs = Number(process.env.KO_QUIT_REPLY_MS) || 1000;
-  const hostStopMs = Number(process.env.KO_HOST_STOP_MS) || 5000;
-  const searchMs = Number(process.env.KO_COMPLETION_SEARCH_MS) || 2000;
   let crashed = false;
   process.on("uncaughtException", error => {
     if (crashed) return;
@@ -185,9 +184,7 @@ Everything after -- is message text.
   const agentDir = sdk.pi.getAgentDir();
   const { catalog, completion } = await commandCatalog(packageRoot);
   if (resume) {
-    const configured = Number(process.env.KOA_RESUME_READY_MS ?? 10000);
-    const readyMs = Number.isFinite(configured) && configured > 0 ? configured : 10000;
-    const result = await pickSession(executable, pass, fileURLToPath(new URL("./koa-resume.ts", location)), readyMs);
+    const result = await pickSession(executable, pass, fileURLToPath(new URL("./koa-resume.ts", location)), 10000);
     if (result.type === "cancel") { process.stderr.write("No session selected\n"); return; }
     if (result.type === "selected") {
       parsed.values.session = result.path;
@@ -200,10 +197,10 @@ Everything after -- is message text.
   let stopHost: (() => Promise<void>) | undefined;
   const shutdown = () => shutdownPromise ??= (async () => {
     const stopped = Promise.resolve(stopHost?.()).catch(error => { process.stderr.write(`koa: ${errorText(error)}\n`); });
-    await Promise.race([stopped, new Promise<void>(resolve => { later(resolve, hostStopMs).unref(); })]);
+    await Promise.race([stopped, new Promise<void>(resolve => { later(resolve, HOST_STOP_MS).unref(); })]);
     await Promise.allSettled(teardown.reverse().map(async close => close()));
   })();
-  const flushed = () => Promise.all([process.stdout, process.stderr].map(stream => new Promise<void>(resolve => { const timer = later(resolve, quitReplyMs); stream.write("", () => { clearTimeout(timer); resolve(); }); })));
+  const flushed = () => Promise.all([process.stdout, process.stderr].map(stream => new Promise<void>(resolve => { const timer = later(resolve, QUIT_REPLY_MS); stream.write("", () => { clearTimeout(timer); resolve(); }); })));
   const quit = () => shutdown().then(flushed).then(() => process.exit(process.exitCode ?? 0));
   const start = async () => {
     let metricsWrites: Promise<void> | undefined;
@@ -364,9 +361,9 @@ Everything after -- is message text.
         if (reloading) return;
         reloading = true;
         const ended = tree.all().filter(agent => agent.parent).length;
-        void shutdown().then(() => Promise.all([process.stdout, process.stderr].map(stream => new Promise<void>(resolve => { const timer = later(resolve, quitReplyMs); stream.write("", () => { clearTimeout(timer); resolve(); }); })))).then(() => { if (!process.execve) throw Error("this node has no process.execve"); process.execve(process.execPath, [process.execPath, ...process.execArgv, process.argv[1] ?? "", ...restartArgs(parsed, root().view.state.sessionFile, true)], { ...process.env, KOA_RELOAD: String(ended) }); }).catch(error => { process.stderr.write(`koa: reload: ${errorText(error)}\n`); process.exitCode = 1; });
+        void shutdown().then(() => Promise.all([process.stdout, process.stderr].map(stream => new Promise<void>(resolve => { const timer = later(resolve, QUIT_REPLY_MS); stream.write("", () => { clearTimeout(timer); resolve(); }); })))).then(() => { if (!process.execve) throw Error("this node has no process.execve"); process.execve(process.execPath, [process.execPath, ...process.execArgv, process.argv[1] ?? "", ...restartArgs(parsed, root().view.state.sessionFile, true)], { ...process.env, KOA_RELOAD: String(ended) }); }).catch(error => { process.stderr.write(`koa: reload: ${errorText(error)}\n`); process.exitCode = 1; });
       };
-      afterReply(response, quitReplyMs, restart);
+      afterReply(response, QUIT_REPLY_MS, restart);
       respond(response, 200, JSON.stringify({ disposition: "handled", action: { type: "reload" } }));
     };
     const reloadBusy = () => tree.all().some(agent => agent.view.reloadBusy()) || edits.busy();
@@ -474,7 +471,7 @@ Everything after -- is message text.
         await withRequestSignal(response, lifetime.signal, async requestSignal => {
           const bang = bashCommand(query.text), owner = agent.session, ownerSession = v.state.sessionId;
           const signal = AbortSignal.any([requestSignal, v.sessionStop, ...(bang ? [AbortSignal.timeout(2000)] : [])]);
-          const result = bang ? await shellComplete(query.text, query.pos, await (agent.extension?.completionContext(signal) ?? Promise.resolve({ type: 'unavailable' as const })), 'ko', signal, bang) : await complete(query.text, query.pos, { cwd: v.state.cwd, fd, signal, searchMs, agents: token => agentCompletionItems(rowsOf.get(agent) ?? [], rowsOf.get(agent) ?? [], token), commands: async () => {
+          const result = bang ? await shellComplete(query.text, query.pos, await (agent.extension?.completionContext(signal) ?? Promise.resolve({ type: 'unavailable' as const })), 'ko', signal, bang) : await complete(query.text, query.pos, { cwd: v.state.cwd, fd, signal, agents: token => agentCompletionItems(rowsOf.get(agent) ?? [], rowsOf.get(agent) ?? [], token), commands: async () => {
             if (v.life.type !== "ready") return [];
             return [...completion, ...koaAgents.commandList(agent.session).filter(value => !catalog.some(builtin => builtin.name === value.name))];
           } });
@@ -662,7 +659,7 @@ Everything after -- is message text.
       } },
       "/quit": { method: "POST", access: "any", scope: "agent", handle: (_value, response, { agent }) => {
         if (!isRoot(agent)) { respond(response, 409, JSON.stringify({ error: `/quit: only in @${rootName()}'s view` })); return; }
-        afterReply(response, quitReplyMs, () => background(quit()));
+        afterReply(response, QUIT_REPLY_MS, () => background(quit()));
         respond(response, 200, "{}");
       } },
     };

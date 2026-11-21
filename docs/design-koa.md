@@ -106,8 +106,7 @@ commands; `koa-identity.ts`, the hash of koa's installed files;
 `koa-session-dir.ts`, the session directory rule of both pickers;
 `prompt.ts`, the prompt text rules that koa and its page share;
 `koa-fake-provider.ts`, the scripted model provider of its suite
-`koa-*.test.ts`, `koa-fake-picker.ts`, the scripted picker, and
-`koa-fake-tty.ts`, the terminal preload;
+`koa-*.test.ts`;
 `stress/`, the stress workloads and runner (not installed);
 `testdata/replay.ts`, the replay server of the page tests, with its
 scenario types (`testdata/scenario.ts`), their shared records
@@ -361,7 +360,7 @@ show, because they live outside pi's session tree.
 The picker relies on one pi detail: pi awaits an extension's factory
 before it starts its RPC loop, so the factory owns the terminal and
 exits the process. A pi that changes this never hangs koa: koa waits
-for `ready` for `KOA_RESUME_READY_MS` (default 10 s), and an exit or
+for `ready` for 10 s, and an exit or
 an end of fd 3 without a result, an invalid line or a picker that
 does not exit after its result is an error that names `pi
 --version`'s output, with exit code 1. koa forwards `SIGTERM`,
@@ -448,10 +447,10 @@ exists from the moment the SDK's view exists, cancels the open
 dialogs, disposes every agent's runtime first, deepest first (pi
 aborts the turn, emits `session_shutdown` with reason `quit` to the
 extensions and settles its credential writes), bounded by
-`KO_HOST_STOP_MS` (5 s), then starts every other teardown in
+5 s, then starts every other teardown in
 reverse order and waits for all of them. A stuck extension thus never
 keeps koa alive. The reply to the page's own quit request is sent
-before the shutdown starts, with a deadline (`KO_QUIT_REPLY_MS`, 1 s). Every
+before the shutdown starts, with a deadline (1 s). Every
 group signal of koa goes through one function, `signalChild` in
 `koa-child.ts`, which takes a child that koa spawned (`fd`) and
 ignores `ESRCH` and `EPERM`, as `signalJob` does

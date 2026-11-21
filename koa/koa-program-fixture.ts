@@ -74,7 +74,6 @@ export const assistantMessage = { ...assistant("stop"), api: "test", provider: "
 
 const isApiCall = (value: unknown): value is { method: string; path: string; body: string } => typeof value === "object" && value !== null && "method" in value && typeof value.method === "string" && "path" in value && typeof value.path === "string" && "body" in value && typeof value.body === "string";
 export const realPi = fileURLToPath(new URL("./node_modules/.bin/pi", import.meta.url));
-export const realPiPackage = fileURLToPath(new URL("./node_modules/@earendil-works/pi-coding-agent", import.meta.url));
 export type Real = { resources?: boolean; discover?: boolean; panes?: object[]; replies: Reply[]; models?: Model[]; args?: string[]; env?: NodeJS.ProcessEnv; extensions?: Record<string, string>; settings?: object; program?: string; setup?: (paths: { dir: string; cwd: string; sessions: string }) => Promise<string[] | void>; start?: boolean };
 export async function realFixture(t: TestContext, options: Real) {
   const hooks: (() => unknown)[] = [];

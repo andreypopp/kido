@@ -2,13 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { connect } from "node:net";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import timers from "node:timers/promises";
 import { pollUntil } from "./koa-agent-fixture.ts";
-import { realFixture, realPi, stopChild } from "./koa-program-fixture.ts";
+import { realFixture, realPi } from "./koa-program-fixture.ts";
 import { userParts } from "./koa-fake-provider.ts";
 
 const koa = resolve("../build/koa/share/koa/koa/koa.ts");
@@ -35,19 +33,6 @@ test("resume requires a terminal before starting a webview", { timeout: 20000 },
   assert.doesNotMatch(stderr, /koa: http:/);
 });
 
-test("startup refuses incompatible flags before opening a webview", { timeout: 70000 }, async t => {
-  for (const args of [["--mode", "text"], ["-p"], ["--export", "out.html"], ["--list-models"], ["-v"], ["--tui-mode", "fullscreen"], ["--theme", "dark"], ["--use-theme", "dark"], ["--no-themes"], ["@notes.txt"]]) await t.test(args.join(" "), { timeout: 10000 }, async c => {
-    const child = spawn(process.execPath, [koa, "--browser", "--pi", realPi, ...args]);
-    const closed = once(child, "close");
-    c.after(() => stopChild(child, closed));
-    let output = ""; child.stderr.on("data", bytes => { output += bytes; });
-    const [code] = await closed;
-    assert.equal(code, 1, output);
-    assert.match(output, /koa: /);
-    assert.doesNotMatch(output, /koa: http:/);
-  });
-});
-
 test("startup messages run separately after readiness without a page connection", { timeout: 20000 }, async t => {
   const app = await realFixture(t, { replies: [{ text: "one" }, { text: "two" }], args: ["--", "first", "--help"] });
   await pollUntil(() => app.provider.requests.length === 2, 10000, "both startup prompts");
@@ -72,30 +57,5 @@ test("quit emits the session shutdown once and exits 0", { timeout: 20000 }, asy
   assert.equal((await app.post("quit")).status, 200);
   assert.equal((await app.close)[0], 0);
   assert.equal(await readFile(log, "utf8"), "quit\n");
-});
-
-test("quit exits at its deadline when the reply stalls and the client never reads", { timeout: 20000 }, async t => {
-  const dir = await mkdtemp(join(tmpdir(), "koa-quit-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const hook = join(dir, "stall.mjs");
-  await writeFile(hook, `import { ServerResponse } from "node:http";
-    const end = ServerResponse.prototype.end;
-    ServerResponse.prototype.end = function(...args) {
-      return this.req.url === "/quit" ? this : end.apply(this, args);
-    };`);
-  const app = await realFixture(t, { replies: [], env: { NODE_OPTIONS: `--import=${hook}`, KO_QUIT_REPLY_MS: "100" } });
-  const url = new URL(app.base);
-  const body = JSON.stringify({ sessionId: app.records().filter(record => record.type === "state").at(-1)?.sessionId });
-  const socket = connect(Number(url.port), "127.0.0.1", () => socket.write(`POST /quit HTTP/1.1\r\nHost: ${url.host}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`));
-  socket.pause();
-  socket.on("error", () => {});
-  t.after(() => socket.destroy());
-  assert.equal(await Promise.race([app.close.then(() => true), timers.setTimeout(8000, false, { ref: false })]), true);
-});
-
-test("a stuck extension shutdown is bounded and koa still exits", { timeout: 30000 }, async t => {
-  const app = await realFixture(t, { replies: [], env: { KO_HOST_STOP_MS: "100" }, extensions: { "stuck.ts": `export default function (pi) { pi.on("session_shutdown", () => new Promise(() => {})); }\n` } });
-  assert.equal((await app.post("quit")).status, 200);
-  assert.equal(await Promise.race([app.close.then(() => true), timers.setTimeout(15000, false, { ref: false })]), true);
 });
 

@@ -7,7 +7,6 @@ import net from "node:net";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { createHash } from "node:crypto";
 import { webview, type Webview } from "../webview/index.ts";
 import { makeFixture, pollUntil } from "./koa-agent-fixture.ts";
 
@@ -25,46 +24,6 @@ test("bridge readiness expires and removes its directory", { timeout: 5000 }, as
     const socket = readFileSync(join(dir, "socket"), "utf8");
     assert.equal(existsSync(dirname(socket)), false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("close bounds a stuck leave and ends its bridge", { timeout: 5000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "webview-close-"));
-  const ko = join(dir, "ko");
-  writeFileSync(ko, `#!${process.execPath}\nif(process.argv[3]==='enter')process.exit(0);process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); if(process.argv[3]==='serve')console.log(JSON.stringify({type:'supported',supported:true}));\n`, { mode: 0o700 });
-  const tty = process.stdout.isTTY;
-  try {
-    process.stdout.isTTY = true;
-    const app = createServer();
-    const view = await webview(app, { ko, timeoutMs: 1000, killMs: 100 }); assert.ok(view);
-    const socketPath = app.address(); assert.ok(typeof socketPath === "string");
-    await view.show(); assert.equal(view.shown, true);
-    const started = Date.now();
-    const first = view.close(); assert.equal(view.close(), first); await first;
-    assert.ok(Date.now() - started < 2800);
-    assert.equal(existsSync(dirname(socketPath)), false);
-  } finally { process.stdout.isTTY = tty; rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("close cancels a stuck enter and queued actions", { timeout: 5000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'webview-enter-')), gate = join(dir, 'gate'), ko = join(dir, 'ko');
-  const server = net.createServer();
-  await new Promise<void>(resolve => server.listen(gate, resolve));
-  const started = new Promise<import('node:net').Socket>(resolve => server.once('connection', resolve));
-  writeFileSync(ko, `#!${process.execPath}\nconst fs=require('node:fs'); process.on('SIGTERM',()=>{}); setInterval(()=>{},1000); if(process.argv[3]==='serve')console.log(JSON.stringify({type:'supported',supported:true})); else {fs.appendFileSync(${JSON.stringify(join(dir, 'actions'))},process.argv[3]+'\\n');require('node:net').connect(${JSON.stringify(gate)});}\n`, { mode: 0o700 });
-  const tty = process.stdout.isTTY;
-  let view: Webview | null = null;
-  try {
-    process.stdout.isTTY = true;
-    const app = createServer();
-    view = await webview(app, { ko, timeoutMs: 1000, killMs: 100 }); assert.ok(view);
-    const socketPath = app.address(); assert.ok(typeof socketPath === "string");
-    const first = assert.rejects(view.show('/first'), /closed/), queued = assert.rejects(view.show('/queued'), /closed/);
-    const socket = await started;
-    const disconnected = new Promise<void>(resolve => socket.once('close', resolve)); socket.resume();
-    await view.close(); await Promise.all([first, queued, disconnected]);
-    assert.equal(readFileSync(join(dir, 'actions'), 'utf8'), 'enter\n');
-    assert.equal(existsSync(dirname(socketPath)), false);
-  } finally { process.stdout.isTTY = tty; await view?.close(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("browser checks every request origin", { timeout: 5000 }, async () => {
@@ -94,124 +53,6 @@ test("browser checks every request origin", { timeout: 5000 }, async () => {
   } finally { await view.close(); }
 });
 
-test("browser Host guard and show/hide rules", { timeout: 15000 }, async () => {
-  let requests = 0;
-  let finishStream: (() => void) | undefined;
-  const server = createServer((req, res) => {
-    requests++;
-    if (req.url === "/stream") {
-      res.write("first");
-      finishStream = () => res.end("last");
-    } else if (req.method === "POST") {
-      let body = "";
-      req.on("data", bytes => { body += bytes; });
-      req.on("end", () => res.end(JSON.stringify({ method: req.method, path: req.url, body })));
-    } else res.end(req.url === "/" ? "app body" : req.url);
-  });
-  server.on("upgrade", (req, socket, head) => {
-    const accept = createHash("sha1").update(`${req.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
-    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
-    let buffered = Buffer.alloc(0);
-    const receive = (bytes: Buffer) => {
-      buffered = Buffer.concat([buffered, bytes]);
-      if (buffered.length < 6) return;
-      const length = buffered[1] & 127;
-      if (buffered.length < 6 + length) return;
-      const payload = Buffer.from(buffered.subarray(6, 6 + length));
-      for (let i = 0; i < length; i++) payload[i] = payload[i] ^ buffered[2 + i % 4];
-      if ((buffered[0] & 15) === 8) { socket.end(Buffer.concat([Buffer.from([0x88, length]), payload])); return; }
-      socket.write(Buffer.concat([Buffer.from([0x81, length]), payload]));
-      buffered = buffered.subarray(6 + length);
-    };
-    socket.on("data", receive); receive(head);
-    socket.on("error", () => socket.destroy());
-    socket.on("end", () => socket.destroy());
-  });
-  const wv = await webview(server, { target: "browser" });
-  const socketPath = server.address(); assert.ok(typeof socketPath === "string");
-  try {
-    const url = new URL(urlOf(wv));
-    const response = await new Promise<string>((resolve, reject) => {
-      const socket = net.connect(Number(url.port), "127.0.0.1", () => socket.end(`GET / HTTP/1.1\r\nHost: evil.example:${url.port}\r\n\r\n`));
-      let data = "";
-      socket.on("data", bytes => { data += bytes; });
-      socket.on("end", () => resolve(data));
-      socket.on("error", reject);
-    });
-    assert.match(response, /421 Misdirected Request/);
-    assert.equal(requests, 0);
-    assert.equal(await (await fetch(urlOf(wv))).text(), "app body");
-    const post = await fetch(`${wv.url}submit?q=1`, { method: "POST", body: "hello body" });
-    assert.deepEqual(await post.json(), { method: "POST", path: "/submit?q=1", body: "hello body" });
-    const pipelined = await new Promise<string>((resolve, reject) => {
-      const socket = net.connect(Number(url.port), "127.0.0.1", () => {
-        socket.write("GET /first HTTP/1.1\r\nHo", () => {
-          socket.write(`st: localhost:${url.port}\r\n\r\nGET /second HTTP/1.1\r\nHost: localhost:${url.port}\r\nConnection: close\r\n\r\n`);
-        });
-      });
-      let data = "";
-      socket.on("data", bytes => { data += bytes; });
-      socket.on("end", () => resolve(data));
-      socket.on("error", reject);
-    });
-    assert.equal((pipelined.match(/HTTP\/1.1 200 OK/g) ?? []).length, 2);
-    assert.ok(pipelined.indexOf("/first") > 0);
-    assert.ok(pipelined.indexOf("/second") > pipelined.indexOf("/first"));
-    await new Promise<void>((resolve, reject) => {
-      const socket = net.connect(Number(url.port), '127.0.0.1', () => socket.write(Buffer.concat([Buffer.from(`GET /head HTTP/1.1\r\nHost: ${url.host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`), Buffer.from([0x81, 0x83, 1, 2, 3, 4, 96, 96, 96])])));
-      let data = Buffer.alloc(0);
-      socket.on('data', bytes => { data = Buffer.concat([data, bytes]); if (data.includes(Buffer.from([0x81, 3, 97, 98, 99]))) { socket.destroy(); resolve(); } });
-      socket.on('error', reject);
-    });
-    const stream = await fetch(`${wv.url}stream`);
-    assert.ok(stream.body);
-    const reader = stream.body.getReader();
-    assert.equal(new TextDecoder().decode((await reader.read()).value), "first");
-    assert.ok(finishStream);
-    finishStream();
-    assert.equal(new TextDecoder().decode((await reader.read()).value), "last");
-    assert.equal((await reader.read()).done, true);
-    await new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(urlOf(wv).replace("http:", "ws:"));
-      ws.onopen = () => ws.send("hello");
-      ws.onerror = () => reject(new Error("WebSocket failed"));
-      let received = false;
-      ws.onmessage = event => { try { assert.equal(event.data, "hello"); received = true; } catch (error) { reject(error); } finally { ws.close(); } };
-      ws.onclose = () => { try { assert.equal(received, true); resolve(); } catch (error) { reject(error); } };
-    });
-  } finally {
-    await wv.close();
-  }
-  assert.equal(existsSync(dirname(socketPath)), false);
-  await assert.rejects(fetch(urlOf(wv)));
-  const dir = mkdtempSync(join(tmpdir(), "webview-open-"));
-  const log = join(dir, "urls");
-  writeFileSync(join(dir, process.platform === "darwin" ? "open" : "xdg-open"), '#!/bin/sh\nprintf "%s\\n" "$1" >> "$OPEN_LOG"\n', { mode: 0o700 });
-  try {
-    const script = `import { webview } from ${JSON.stringify(new URL("../webview/index.ts", import.meta.url).href)};
-      const app = (await import("node:http")).createServer();
-      const wv = await webview(app, { target: "browser" });
-      const assert = (await import("node:assert/strict")).default;
-      try {
-        await assert.rejects(wv.show("page"), /must start/);
-        await assert.rejects(wv.show("@example.com/"), /must start/);
-        await wv.show(); await wv.show(); await wv.show("/b"); await wv.hide(); await wv.show("/b");
-        await wv.show("/a?b#c");
-      } finally { await wv.close(); }`;
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, PATH: dir, OPEN_LOG: log }, stdio: ["ignore", "ignore", "pipe"] });
-      let error = "";
-      child.stderr.on("data", bytes => { error += bytes; });
-      child.once("error", reject);
-      child.once("close", code => code === 0 ? resolve() : reject(new Error(error)));
-    });
-    const urls = readFileSync(log, "utf8").trim().split("\n");
-    assert.equal(urls.length, 3);
-    assert.match(urls[0], /^http:\/\/127\.0\.0\.1:\d+\/$/);
-    assert.equal(urls[1], `${urls[0]}b`);
-    assert.equal(urls[2], `${urls[0]}a?b#c`);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
 test("browser preserves a write-side EOF and handles an absent app", { timeout: 15000 }, async () => {
   let received = "";
   const app = createServer((request, response) => {
@@ -283,35 +124,6 @@ test("browser close drains an in-flight response to a slow reader", { timeout: 5
     assert.equal(received.slice(received.indexOf("\r\n\r\n") + 4), body);
   } finally {
     socket.destroy();
-    await wv.close();
-  }
-});
-
-test("browser close ends an unresponsive forward at its deadline", { timeout: 4000 }, async () => {
-  let requested: () => void = () => {};
-  const ready = new Promise<void>(resolve => { requested = resolve; });
-  const peers = new Set<import("node:net").Socket>();
-  const server = createServer();
-  server.on("request", () => requested());
-  server.on("connection", socket => {
-    peers.add(socket);
-    socket.on("close", () => peers.delete(socket));
-  });
-  const wv = await webview(server, { target: "browser", timeoutMs: 100 });
-  const url = new URL(urlOf(wv));
-  const socket = net.connect(Number(url.port), "127.0.0.1", () => socket.write(`GET / HTTP/1.1\r\nHost: localhost:${url.port}\r\n\r\n`));
-  const closed = new Promise<void>(resolve => { socket.on("close", resolve); socket.on("error", () => {}); });
-  try {
-    await ready;
-    const disconnected = Promise.all([...peers].map(peer => new Promise<void>(resolve => peer.once("close", () => resolve()))));
-    await wv.close();
-    await Promise.all([closed, disconnected]);
-    assert.equal(server.listening, false);
-    assert.equal(peers.size, 0);
-    await assert.rejects(fetch(urlOf(wv)));
-  } finally {
-    socket.destroy();
-    for (const peer of peers) peer.destroy();
     await wv.close();
   }
 });

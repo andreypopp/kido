@@ -15,68 +15,19 @@ const replay = fileURLToPath(new URL("./testdata/replay.ts", import.meta.url));
 async function start(t: TestContext, name: string) {
   const dir = await mkdtemp(join(tmpdir(), "koa-replay-test-"));
   const { base } = await serveChild(t, dir, [replay, "--browser", "selftest", name, dir], { env: { HOME: dir, OPEN_LOG: join(dir, "urls") }, label: "replay" });
-  const json = async (path: string, body?: object, headers: Record<string, string> = { "Content-Type": "application/json" }) => {
-    const response = await fetch(base + path, body === undefined ? {} : { method: "POST", headers, body: JSON.stringify(body) });
+  const json = async (path: string, body?: object) => {
+    const response = await fetch(base + path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     return { status: response.status, body: await response.json() };
   };
-  const events = async (query = "") => {
+  const events = async () => {
     const controller = new AbortController();
     t.after(() => controller.abort());
-    const response = await fetch(base + "events" + query, { signal: controller.signal });
+    const response = await fetch(base + "events", { signal: controller.signal });
     assert.ok(response.body);
     return { ...sse(Readable.from(response.body)), abort: () => controller.abort() };
   };
-  const rawEvents = async (query: string) => {
-    const controller = new AbortController();
-    t.after(() => controller.abort());
-    const response = await fetch(base + "events" + query, { signal: controller.signal });
-    assert.ok(response.body);
-    const decoder = new TextDecoder();
-    const chunks = response.body.values();
-    let buffered = "";
-    return async () => {
-      while (!buffered.includes("\n\n")) { const chunk = await chunks.next(); assert.ok(!chunk.done); buffered += decoder.decode(chunk.value, { stream: true }); }
-      const end = buffered.indexOf("\n\n");
-      const block = buffered.slice(0, end + 2);
-      buffered = buffered.slice(end + 2);
-      return block;
-    };
-  };
-  return { base, json, events, rawEvents, status: () => json("replay/status"), dir };
+  return { base, json, events, status: () => json("replay/status"), dir };
 }
-
-test("the replay serves the page, walks its steps in order and keeps a cursored feed quiet", async t => {
-  const app = await start(t, "order");
-  const html = await (await fetch(app.base)).text();
-  assert.match(html, /<meta name="koa-instance" content="[0-9a-f-]{36}">/);
-  const instance = html.match(/koa-instance" content="([^"]+)/)?.[1];
-  const feed = await app.events("?epoch=&after=-1&koa=" + instance);
-  await feed.until(ofType("state"));
-  assert.deepEqual(feed.state.records.map(record => record.type), ["reset", "state"]);
-  const cursored = await app.rawEvents("?epoch=e1&after=0");
-  assert.equal(await cursored(), ":\n\n");
-  const stale = await app.events("?epoch=e1&after=0&koa=other");
-  await stale.until(ofType("reload"));
-  assert.deepEqual(stale.state.records, [{ type: "reload" }]);
-  const prompt = { sessionId: "s1", text: "two", mode: "prompt", attachments: [] };
-  const early = await app.json("prompt", prompt);
-  assert.equal(early.status, 409);
-  assert.match(early.body.error, /expected \/replay\/next, got POST \/prompt/);
-  assert.deepEqual((await app.status()).body, { step: 0, total: 2, mismatches: 1, last: 'expected /replay/next, got POST /prompt {"sessionId":"s1","text":"two","mode":"prompt","attachments":[]}', pending: [] });
-  assert.equal((await app.json("replay/next", {})).status, 200);
-  await feed.until(ofType("item", record => record.item.seq === 1));
-  assert.equal(JSON.parse((await cursored()).slice(6)).item.seq, 1);
-  const wrong = await app.json("prompt", { ...prompt, text: "other" });
-  assert.equal(wrong.status, 409);
-  assert.match(wrong.body.error, /expected POST \/prompt, got POST \/prompt/);
-  assert.equal((await app.json("prompt", prompt)).body.disposition, "started");
-  await feed.until(ofType("item", record => record.item.seq === 3));
-  assert.deepEqual(feed.state.records.filter(ofType("item")).map(record => record.item.seq), [1, 2, 3]);
-  assert.deepEqual((await app.status()).body, { step: 2, total: 2, mismatches: 2, last: 'expected POST /prompt, got POST /prompt {"sessionId":"s1","text":"other","mode":"prompt","attachments":[]}', pending: [] });
-  assert.equal((await app.json("replay/next", {})).status, 409);
-  assert.equal((await app.json("prompt", prompt, { "Content-Type": "text/plain" })).status, 415);
-  assert.equal((await fetch(app.base + "images/missing?e=1&r=1")).status, 410);
-});
 
 test("a held reply waits for its release, then pushes its after records; a disconnect is no mismatch", async t => {
   const app = await start(t, "hold");

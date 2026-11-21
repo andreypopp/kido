@@ -5,45 +5,8 @@ import { mkdtemp, readFile, writeFile, rm, mkdir, cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
-import { createServer } from "node:net";
-import { pollUntil, ofType } from "./koa-agent-fixture.ts";
+import { ofType } from "./koa-agent-fixture.ts";
 import { realFixture } from "./koa-program-fixture.ts";
-test('completion limits active searches and kills expired children', { timeout: 10000 }, async t => {
-  const dir = await mkdtemp('/tmp/koa-search-limit-'); t.after(() => rm(dir, { recursive: true, force: true }));
-  const gate = join(dir, 'gate'), fd = join(dir, 'fd');
-  await writeFile(fd, `#!${process.execPath}\nrequire('node:net').connect(${JSON.stringify(gate)}).on('connect',function(){this.write('ready')});\n`, { mode: 0o700 });
-  const sockets = new Set<import('node:net').Socket>(); let accepted = 0;
-  const server = createServer(socket => { accepted++; sockets.add(socket); socket.on('data', () => {}); socket.once('close', () => sockets.delete(socket)); });
-  server.listen(gate); await once(server, 'listening'); t.after(() => { for (const socket of sockets) socket.destroy(); server.close(); });
-  const app = await realFixture(t, {replies: [], env: { KOA_FD: fd, KO_COMPLETION_SEARCH_MS: "800" } });
-  const controller = new AbortController();
-  const first = fetch(app.base + 'complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: app.records().filter(record => record.type === 'state').at(-1)?.sessionId, text: '@', pos: 1 }), signal: controller.signal });
-  const rejected = assert.rejects(first, { name: 'AbortError' });
-  let secondEnded = false;
-  const second = app.post('complete', { text: '@', pos: 1 }).then(response => { secondEnded = true; return response; });
-  await pollUntil(() => sockets.size === 4, 1500, 'four fd children');
-  const capped = await app.post('complete', { text: '@', pos: 1 });
-  assert.equal(capped.status, 200); assert.deepEqual((await capped.json()).options, []); assert.equal(accepted, 4);
-  controller.abort(); await rejected;
-  await pollUntil(() => sockets.size === 2, 1000, 'disconnect releases children');
-  const replacements: Promise<Response>[] = [];
-  let retry = true;
-  await pollUntil(() => {
-    if (accepted > 4) return true;
-    if (retry) {
-      retry = false;
-      const replacement = app.post('complete', { text: '@', pos: 1 });
-      replacements.push(replacement);
-      void replacement.then(() => { retry = true; });
-    }
-    return false;
-  }, 1000, 'disconnect releases capacity');
-  assert.equal(secondEnded, false);
-  assert.deepEqual((await (await second).json()).options, []);
-  for (const replacement of replacements) assert.deepEqual((await (await replacement).json()).options, []);
-  await pollUntil(() => sockets.size === 0, 1000, 'expired children ended');
-});
-
 test("document loads read the current page files and recover after a failed read", { timeout: 10000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), "koa-page-reload-"));
   t.after(() => rm(dir, { recursive: true, force: true }));

@@ -1,5 +1,5 @@
 import type { Attachment, Block, PageRecord, State, WireItem } from '../../koa-records.ts';
-import { expect, same, type Scenarios, type Scenario } from '../scenario.ts';
+import { expect, type Scenarios, type Scenario } from '../scenario.ts';
 
 const state: State = { pathEditor: false, compaction: 'idle', view: { id: "s1", path: [{ id: "s1", name: "ko", type: "agent" }], type: 'root' }, threads: [], agents: [], bash: [], working: false, aborted: false, name: 'pi', levels: ['off'], cwd: '/work', home: '/home', sessionId: 's1', sessionFile: '/work/s1.jsonl', queue: { steering: [], followUp: [] }, dialogs: [], statuses: {}, life: { type: 'ready' } };
 const user = (seq: number, text: string, attachments: Attachment[] = []): WireItem => ({ seq, revision: 0, at: 1, final: true, kind: 'user', text, images: [], attachments });
@@ -13,14 +13,6 @@ export const scenarios: Scenarios = {
   file: (dir): Scenario => ({
     open: [{ type: 'reset', epoch: 'e1', more: false, items: [reading(dir)] }, { type: 'state', ...state }],
     steps: [{ on: 'next', records: [{ type: 'patch', seq: 0, baseRevision: 0, revision: 1, blocks: [{ index: 0, block: read(`${dir}/b.txt`) }], final: false, stop: '', error: '' }] }],
-    files: {},
-  }),
-  order: (): Scenario => ({
-    open,
-    steps: [
-      { on: 'next', records: [{ type: 'item', item: user(1, 'one') }] },
-      expect({ on: { method: 'POST', path: '/prompt', body: value => same(value, { sessionId: 's1', text: 'two', mode: 'prompt', attachments: [] }) }, before: [{ type: 'item', item: user(2, 'two') }], reply: { status: 200, json: { disposition: 'started' } }, after: [{ type: 'item', item: user(3, 'three') }] }),
-    ],
     files: {},
   }),
   wait: (): Scenario => ({

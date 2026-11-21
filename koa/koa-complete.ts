@@ -120,19 +120,19 @@ export function output(command: string, args: string[], signal: AbortSignal, cwd
 }
 
 let fdProcesses = 0;
-async function walk(fd: string, base: string, query: string, signal: AbortSignal, searchMs: number, depth?: number): Promise<{ path: string; directory: boolean }[]> {
+async function walk(fd: string, base: string, query: string, signal: AbortSignal, depth?: number): Promise<{ path: string; directory: boolean }[]> {
   const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = query.includes("/") ? query.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean).map(escape).join("[\\\\/]") + (query.endsWith("/") ? "[\\\\/]" : "") : escape(query);
   const args = ["--base-directory", base, "--max-results", "100", "--type", "f", "--type", "d", "--follow", "--hidden", "--exclude", ".git", "--exclude", ".git/*", "--exclude", ".git/**", ...(depth === undefined ? [] : ["--max-depth", String(depth)]), ...(query.includes("/") ? ["--full-path"] : []), ...(query ? ["--", pattern] : [])];
   if (fdProcesses >= 4) return [];
   fdProcesses++;
   let text: string | undefined;
-  try { text = (await output(fd, args, AbortSignal.any([signal, AbortSignal.timeout(searchMs)])))?.toString('utf8'); }
+  try { text = (await output(fd, args, AbortSignal.any([signal, AbortSignal.timeout(2000)])))?.toString('utf8'); }
   finally { fdProcesses--; }
   return text === undefined ? [] : text.trim().split("\n").filter(Boolean).map(path => ({ path: path.replace(/\\/g, "/"), directory: /[\\/]$/.test(path) })).filter(entry => !/(^|\/)\.git(\/|$)/.test(entry.path));
 }
 
-async function files(query: string, cwd: string, fd: string | undefined, signal: AbortSignal, searchMs: number): Promise<{ display: string; directory: boolean }[]> {
+async function files(query: string, cwd: string, fd: string | undefined, signal: AbortSignal): Promise<{ display: string; directory: boolean }[]> {
   if (!fd || signal.aborted) return [];
   const normalized = query.replace(/\\/g, "/"), slash = normalized.lastIndexOf("/");
   let base = "", wanted = normalized, directory = cwd;
@@ -140,7 +140,7 @@ async function files(query: string, cwd: string, fd: string | undefined, signal:
     const prefix = normalized.slice(0, slash + 1), scoped = prefix.startsWith("~/") ? join(homedir(), prefix.slice(2)) : resolve(cwd, prefix);
     try { if (statSync(scoped).isDirectory()) { base = prefix; wanted = normalized.slice(slash + 1); directory = scoped; } } catch {}
   }
-  const [shallow, deep] = await Promise.all([walk(fd, directory, wanted, signal, searchMs, 1), walk(fd, directory, wanted, signal, searchMs)]);
+  const [shallow, deep] = await Promise.all([walk(fd, directory, wanted, signal, 1), walk(fd, directory, wanted, signal)]);
   const seen = new Set<string>();
   return [...shallow, ...deep].filter(entry => { if (seen.has(entry.path)) return false; seen.add(entry.path); return true; }).map(entry => {
     const path = entry.directory ? entry.path.slice(0, -1) : entry.path;
@@ -153,7 +153,7 @@ async function files(query: string, cwd: string, fd: string | undefined, signal:
   });
 }
 
-export async function complete(text: string, pos: number, options: { cwd: string; commands(): Promise<readonly CompletionCommand[]>; fd: string | undefined; signal: AbortSignal; searchMs?: number; agents?: (token: string) => ReturnType<typeof agentCompletionItems> }): Promise<PromptCompletion> {
+export async function complete(text: string, pos: number, options: { cwd: string; commands(): Promise<readonly CompletionCommand[]>; fd: string | undefined; signal: AbortSignal; agents?: (token: string) => ReturnType<typeof agentCompletionItems> }): Promise<PromptCompletion> {
   const result: PromptCompletion = { type: 'prompt', from: pos, to: pos, options: [] };
   if (options.signal.aborted) return result;
   const lineStart = text.lastIndexOf("\n", pos - 1) + 1, before = text.slice(lineStart, pos);
@@ -163,7 +163,7 @@ export async function complete(text: string, pos: number, options: { cwd: string
     const { quoted, agent: token } = mention;
     if (quoted && text[pos] === '"') result.to++;
     const agents = token === undefined ? [] : options.agents?.(token) ?? [];
-    result.options = [...agents.map(item => ({ kind: "agent" as const, label: item.label, detail: item.description, insert: item.value + " ", matched: fuzzyMatch(token ?? "", item.label.slice(1)).positions.map(index => index + 1) })), ...(await files(mention.text.slice(quoted ? 2 : 1), options.cwd, options.fd, options.signal, options.searchMs ?? 2000)).map((entry): CompletionOption => {
+    result.options = [...agents.map(item => ({ kind: "agent" as const, label: item.label, detail: item.description, insert: item.value + " ", matched: fuzzyMatch(token ?? "", item.label.slice(1)).positions.map(index => index + 1) })), ...(await files(mention.text.slice(quoted ? 2 : 1), options.cwd, options.fd, options.signal)).map((entry): CompletionOption => {
       const needsQuotes = quoted || pathSeparator.test(entry.display), insert = '@' + (needsQuotes ? '"' + entry.display + '"' : entry.display) + (entry.directory ? '' : ' ');
       return { label: entry.display, insert, kind: entry.directory ? 'directory' : 'file', ...(entry.directory && needsQuotes ? { cursor: insert.length - 1 } : {}) };
     })];

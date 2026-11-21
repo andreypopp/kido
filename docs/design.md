@@ -925,10 +925,7 @@ that the process under test reads when it uses it:
   between two batches of a streamed job), `KO_JOB_MOVE_MS`
   (when a `bash` call becomes a job), `KO_JOB_KILL_MS` (a job's `SIGTERM` to
   `SIGKILL`) and `KO_JOB_RECORD_LINGER_MS` (how long a finished job's
-  status record stays), read by the extension;
-- `KO_HOST_STOP_MS` and `KO_QUIT_REPLY_MS` (design-koa.md,
-  "Shutdown") and `KO_COMPLETION_SEARCH_MS` (the deadline of one
-  file search of `@` completion), read by koa.
+  status record stays), read by the extension.
 
 The extension's tests set them in the environment of the process under
 test. The e2e suite sets the server's through its environment. The

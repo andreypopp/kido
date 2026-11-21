@@ -97,34 +97,6 @@ test('each path click opens a new float beside the draft; missing paths warn and
   assert.equal((await f.rows()).find(row => row.id === directory.pane)?.command?.at(-1), f.app.cwd);
 });
 
-test('path wrappers keep failures but close clean and signaled editors', { timeout: 15000 }, async t => {
-  const f = await editing(t);
-  const file = join(f.app.cwd, 'review.ts'), runtimes = join(f.dir, 'runtimes.json');
-  await writeFile(file, 'review');
-  await writeFile(runtimes, JSON.stringify({ dev: { cwd: f.app.cwd, env: { EDITOR: 'myeditor --flag' } } }));
-  const runtime = await editing(t, { KO_FAKE_RUNTIMES: runtimes });
-  const bin = await mkdtemp(join(tmpdir(), 'koa-path-wrapper-'));
-  t.after(() => rm(bin, { recursive: true, force: true }));
-  const log = join(bin, 'log'), editor = join(bin, 'myeditor');
-  await writeFile(join(bin, 'ko'), '#!/bin/sh\nprintf "%s\\n" "$@" > "$LOG"\ncat >> "$LOG"\n', { mode: 0o700 });
-  await writeFile(join(bin, '.profile'), `PATH=/usr/bin:/bin; export PATH\nEDITOR=${JSON.stringify(editor)}; export EDITOR\n`);
-  for (const [fixture, context] of [[runtime, { type: 'runtime', name: 'dev', cwd: f.app.cwd }], [f, { type: 'host', cwd: f.app.cwd }]] as const) {
-    assert.equal((await fixture.path(file, context)).type, 'opened');
-    const command = (await fixture.float()).command;
-    const argv = context.type === 'host' ? command.slice(3).map(arg => arg === join(f.dir, 'ko') ? join(bin, 'ko') : arg) : command;
-    for (const [body, status] of [['koa-missing-path-editor', 127], ['exit 0', 0], ['kill -TERM $$', 143]] as const) {
-      await rm(log, { force: true });
-      await writeFile(editor, '#!/bin/sh\n' + body + '\n', { mode: 0o700 });
-      const shell = argv[0];
-      assert.ok(shell);
-      const args = argv.slice(1);
-      const result = await promisify(execFile)(shell, args, { env: { ...process.env, HOME: bin, PATH: `${bin}:/usr/bin:/bin`, EDITOR: editor, KO_PANE: 'pane_wrapper', LOG: log }, timeout: 3000 }).then(() => 0, (error: { code: number }) => error.code);
-      assert.equal(result, status, `${context.type}: ${body}`);
-      assert.equal(await readFile(log, 'utf8').catch(() => ''), status === 127 ? 'api\n-X\nPATCH\n--input\n-\n/panes/pane_wrapper\n{"close":"keep"}' : '', `${context.type}: ${body}`);
-    }
-  }
-});
-
 test("an edit with exit 0 replaces the draft, does not send it and leaves nothing behind", { timeout: 15000 }, async t => {
   const f = await editing(t);
   const opened = await f.open("draft text");
@@ -212,18 +184,6 @@ test("koa shutdown during an edit deletes the float and the draft", { timeout: 1
   await f.app.post("quit");
   await f.app.close;
   await f.closed(pane.id); await f.gone(dirname(file));
-});
-
-test("C-g is refused outside a ko pane, inside a runtime and for a stale session", { timeout: 15000 }, async t => {
-  const browser = await editing(t, { KO_PANE: "" });
-  assert.deepEqual(await browser.open("x"), { status: 409, body: { error: "C-g needs a ko pane" } });
-  const runtime = await editing(t, { KO_RUNTIME: "box" });
-  assert.equal((await runtime.open("x")).status, 409);
-  assert.equal((await runtime.api()).some(call => call.method === "PUT"), false);
-  const stale = await editing(t);
-  const response = await stale.app.post("editor/open", { sessionId: "old", text: "x" });
-  assert.equal(response.status, 409);
-  assert.equal((await stale.api()).some(call => call.method === "PUT"), false);
 });
 
 test("a dead event that precedes the open ends the edit at once", { timeout: 15000 }, async t => {

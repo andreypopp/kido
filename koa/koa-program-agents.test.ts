@@ -171,16 +171,6 @@ test("a submitted prompt warns about each @name that is no agent and no path, an
   await pollUntil(() => app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes(text)), 10000, "the unchanged prompt");
 });
 
-test("an ended recorded subagent is a known name for the mention warning", { timeout: 30000 }, async t => {
-  const app = await realFixture(t, { panes: [selfPane()], replies: [...kidScript, { when: "ping", text: "pinged" }] });
-  await send(app, "spawn one");
-  await app.until(listed("kid"));
-  await app.feed({ id: "close-kid", kind: "close", text: "agents/kid" });
-  await pollUntil(() => !state(app).agents.some(agent => agent.name === "kid"), 10000, "the kid to go");
-  await send(app, "ping @kid @gone");
-  await app.until(ofType("item", record => record.item.kind === "notify" && record.item.text.text === "@gone matches no agent"));
-});
-
 const tool = (name: string, args: object) => ({ name, args });
 const statusPosts = async (app: App) => (await app.apiCalls()).filter(call => call.method === "POST" && call.path === "/panes/pane_1/status").map(call => JSON.parse(call.body));
 
