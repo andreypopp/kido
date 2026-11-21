@@ -17,13 +17,19 @@ import XCTest
         NSApp.appearance = NSAppearance(named: .aqua)
         let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
         let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 1), font: 13))
+        // Cell metrics depend on machine font rendering; fixtures pin them for the page tool, so this test excludes them.
+        func theme(_ payload: WebviewTheme.Payload) -> [String: String] {
+            payload.theme.filter { $0.key != "--ko-cell-width" && $0.key != "--ko-cell-height" }
+        }
         for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             NSApp.appearance = NSAppearance(named: appearance)
             wait("theme appearance updates") { runtime.background.isDark == (name == "dark") }
             ghostty_surface_set_color_scheme(pane.surface, runtime.colorScheme)
             let resource = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "theme-" + name, withExtension: "json"))
             let expected = try JSONDecoder().decode(WebviewTheme.Payload.self, from: Data(contentsOf: resource))
-            XCTAssertEqual(WebviewTheme.data(pane), expected)
+            let actual = WebviewTheme.data(pane)
+            XCTAssertEqual(actual.pane, expected.pane)
+            XCTAssertEqual(theme(actual), theme(expected))
         }
     }
 }
