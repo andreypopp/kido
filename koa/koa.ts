@@ -12,10 +12,10 @@ import type { AgentSession, SlashCommandSource } from "@earendil-works/pi-coding
 import { bashResult } from "./koa-transcript.ts";
 import { later } from "./koa-timer.ts";
 import { afterReply, respond, readBody, serveFile, wrongPostType } from "./koa-http.ts";
-import type { ViewAddress } from "./koa-feed.ts";
+import { reloadPages, type ViewAddress } from "./koa-feed.ts";
 import { isRecord, errorText, cleanLine, replaceControlCharacters, utf8Prefix } from "./text.ts";
 import { webview } from "../webview/index.ts";
-import { assemblePage } from "./koa-assemble.ts";
+import { assemblePage, readPage, type PageSource } from "./koa-assemble.ts";
 import { complete, findFd } from "./koa-complete.ts";
 import { pickSession, piPackage } from "./koa-child.ts";
 import { loadSdk } from "./koa-sdk.ts";
@@ -165,10 +165,15 @@ Everything after -- is message text.
   if (metricsMode && !metricsFile) throw new Error("--metrics-mode requires --metrics");
   const executable = parsed.values.pi ?? "pi";
   const pass = restartArgs(parsed, undefined);
-  const reloadPage = process.env.KOA_PAGE_RELOAD === '1';
-  const instance = randomUUID();
   const metrics = metricsFile ? metricsMode ?? "frame" : undefined;
-  const page = reloadPage ? undefined : await assemblePage(location, instance, metrics);
+  type Served = { html: string; instance: string; hash: string };
+  const source = await readPage(location), instance = randomUUID();
+  let served: Served = { html: assemblePage(source, instance, metrics), instance, hash: source.hash };
+  const swapPage = (source: PageSource) => {
+    const instance = randomUUID();
+    served = { html: assemblePage(source, instance, metrics), instance, hash: source.hash };
+    reloadPages();
+  };
   const identity = await installedIdentity(location).catch(() => undefined);
   const uploadIdleMs = Number(process.env.KOA_UPLOAD_IDLE_MS ?? UPLOAD_IDLE_MS);
   if (!Number.isFinite(uploadIdleMs) || uploadIdleMs <= 0) throw Error("KOA_UPLOAD_IDLE_MS must be positive");
@@ -385,31 +390,41 @@ Everything after -- is message text.
     };
     let started = false;
     const reload = async (agent: Agent, response: ServerResponse) => {
-      const release = tree.freeze();
-      const agents = tree.all();
-      for (const member of agents) { member.view.cancelDialogs(); member.view.newSessionScope(); member.view.begin(); member.view.state.statuses = {}; }
-      const v = root().view;
-      v.life = { type: "reloading" }; v.publish();
+      const busy = reloadBusy();
       let failure: unknown;
-      try {
-        for (const member of agents) {
-          if (!member.runtime || member.stopping) continue;
-          await member.session.reload();
-          member.view.refresh();
-        }
-      } catch (error) { failure = error ?? Error("reload failed"); }
-      finally { release(); }
-      if (v.life.type === "reloading") { v.life = { type: "ready" }; v.publish(); }
-      for (const member of agents) member.view.replaySwitching();
+      if (!busy) {
+        const release = tree.freeze();
+        const agents = tree.all();
+        for (const member of agents) { member.view.cancelDialogs(); member.view.newSessionScope(); member.view.begin(); member.view.state.statuses = {}; }
+        const v = root().view;
+        v.life = { type: "reloading" }; v.publish();
+        try {
+          for (const member of agents) {
+            if (!member.runtime || member.stopping) continue;
+            await member.session.reload();
+            member.view.refresh();
+          }
+        } catch (error) { failure = error ?? Error("reload failed"); }
+        finally { release(); }
+        if (v.life.type === "reloading") { v.life = { type: "ready" }; v.publish(); }
+        for (const member of agents) member.view.replaySwitching();
+      }
       const answer = () => respond(response, 200, JSON.stringify({ disposition: "handled", action: { type: "none" } }));
       const feed = agent.view.feed;
       if (failure !== undefined) { feed.notify(errorText(failure), "error"); answer(); return; }
+      const page = await readPage(location).catch(() => undefined);
       const now = await installedIdentity(location).catch(() => undefined);
-      if (identity === undefined || now === undefined || now === identity) { feed.notify("reloaded", "info"); answer(); return; }
-      const deferral = deferred();
-      if (deferral) feed.notify(deferralText(deferral), "info");
-      else if (reloadBusy()) feed.notify("reloaded", "info");
-      else { restartKoa(response); return; }
+      const blocked = "a turn, a command, a queue, a dialog or an editor is open";
+      if (identity !== undefined && now !== undefined && now !== identity) {
+        const deferral = deferred();
+        if (deferral) feed.notify(deferralText(deferral), "info");
+        else if (busy || reloadBusy()) feed.notify(`reload: not while ${blocked}`, "warning");
+        else { restartKoa(response); return; }
+      } else if (!page) feed.notify("page could not be read · keeping the current page", "warning");
+      else if (identity !== undefined && now === identity && page.hash !== served.hash) {
+        feed.notify(busy ? `new page · agents not reloaded: ${blocked}` : "reloaded · new page", busy ? "warning" : "info");
+        swapPage(page);
+      } else feed.notify(busy ? `reload: not while ${blocked}` : "reloaded", busy ? "warning" : "info");
       answer();
     };
     const owned = ({ agent, valid }: Req, owner: AgentSession) => { if (agent.session !== owner || agent.torn.has(owner) || !valid()) throw new Error("pi session changed"); };
@@ -544,7 +559,6 @@ Everything after -- is message text.
               const request = { ended: false }; v.compactRequest = request;
               v.background(agent.session.compact(instructions).catch(error => { if (!request.ended) v.finishCompaction({ type: 'failed', message: errorText(error) }); }).finally(() => { if (v.compactRequest === request) v.compactRequest = undefined; }));
             },
-            reloadBusy: () => !!reloadBusy(),
           });
           if (action.type === 'quit') { await routes['/quit']?.handle({}, response, req); return; }
           if (action.type === 'reload') { await reload(agent, response); return; }
@@ -686,7 +700,7 @@ Everything after -- is message text.
           respond(response, 200, "{}"); return;
         }
         if (request.method === "GET") {
-          const stale = url.pathname === "/events" && url.searchParams.has("koa") && url.searchParams.get("koa") !== instance;
+          const stale = url.pathname === "/events" && url.searchParams.has("koa") && url.searchParams.get("koa") !== served.instance;
           if (stale) { const record: PageRecord = { type: "reload" }; respond(response, 200, `data: ${JSON.stringify(record)}\n\n`, "text/event-stream"); return; }
         }
         if (await attached.handle(request, response, () => { if (stopping) throw new Error("koa is stopping"); })) return;
@@ -713,10 +727,7 @@ Everything after -- is message text.
           return;
         }
         if (request.method === "GET" && url.pathname === "/") {
-          try {
-            const html = page ?? await assemblePage(location, instance, metrics);
-            respond(response, 200, html, "text/html; charset=utf-8");
-          } catch (error) { respond(response, 500, errorText(error), "text/plain; charset=utf-8"); }
+          respond(response, 200, served.html, "text/html; charset=utf-8");
           return;
         }
         if (!route || route.method !== request.method) { respond(response, 404, "{}"); return; }

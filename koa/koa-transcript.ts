@@ -649,7 +649,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
         }
       } else { if (counters) counters.resets++; body(req, reset(), true); }
       if (req.writableEnded || req.destroyed) return true;
-      follow(subscribers, req, address);
+      follow(subscribers, req, address, undefined, url.searchParams.has("koa"));
       if (counters) body(req, frame(JSON.stringify(flushRecord(counters.bytes, counters.flushes))), true);
       if (currentState) broadcast(currentState);
     } else return false;

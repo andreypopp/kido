@@ -28,7 +28,7 @@ test('page assets stay with the running program', { timeout: 10000 }, async t =>
   await writeFile(join(dir, 'koa/page.html'), '<head><!-- style --></head><body>original<!-- script --></body>');
   await writeFile(join(dir, 'koa/page.css'), 'original-style');
   await writeFile(join(dir, 'koa/page.js'), 'original-script');
-  const app = await realFixture(t, {replies: [], env: { KOA_PAGE_RELOAD: '0' }, program: join(dir, 'koa/koa.ts') });
+  const app = await realFixture(t, {replies: [], program: join(dir, 'koa/koa.ts') });
   const original = await (await fetch(app.base)).text();
   assert.match(original, /original-script/);
   await writeFile(join(dir, 'koa/page.html'), '<head><!-- style --></head><body>replacement<!-- script --></body>');

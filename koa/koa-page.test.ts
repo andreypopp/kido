@@ -5,7 +5,7 @@ import { Script } from "node:vm";
 import { Lexer, Marked } from "marked";
 import remend from "remend";
 
-import { assemblePage } from "./koa-assemble.ts";
+import { assemblePage, readPage } from "./koa-assemble.ts";
 import { markdown, type Mark } from "./page/markdown.ts";
 import { markdownLine } from "./markdown-line.ts";
 import { revealHeight, type Unit } from "./page/reveal.ts";
@@ -90,7 +90,7 @@ const full = (source: string, final = false) => {
 
 test("page assembly inlines the built document, style and module once", async () => {
   const location = new URL("../build/koa/share/koa/koa/koa.ts", import.meta.url);
-  const page = (await assemblePage(location, "instance")).replace(/<meta name="koa-instance"[^>]*>/, "");
+  const page = (assemblePage(await readPage(location), "instance")).replace(/<meta name="koa-instance"[^>]*>/, "");
   assert.equal(page.match(/<script type="module">/g)?.length, 1);
   const [document, style, bundle] = await Promise.all(["page.html", "page.css", "page.js"].map(name => readFile(new URL(name, location), "utf8")));
   for (const part of document.split(/<!-- (?:style|script) -->/)) assert.equal(page.split(part).length - 1, 1);

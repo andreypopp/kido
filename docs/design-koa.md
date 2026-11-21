@@ -142,17 +142,47 @@ is not a second harness.
 inbox stays open but holds delivery. The tree, jobs, status records
 and event subscriptions survive replacement of the extension
 instances. koa refreshes each view and replays buffered UI updates.
-A reload requires every agent to be ready and idle, with no pending
-user queue, dialog, user shell command or external editor.
+The session reload requires every agent to be ready and idle, with no
+pending user queue, dialog, user shell command or external editor.
+When one is busy, `/reload` does not reload the sessions, but it
+still does the page step below: a page load is safe at any time.
 
-After that reload, `koa/koa-identity.ts` compares the installed
-program, page and webview SDK with their startup content hash. A failed hash
-read does not trigger a restart. If files changed, koa restarts only
-with a saved root session, no running jobs, no child that owes a
-report, and no new busy state. Services also block this restart.
-Otherwise a notice explains the deferral, and a later reload can try
-again. Node's module cache makes a process replacement necessary for
-a change to koa's own extension factory.
+The rule that pairs the page with the program is: one install is one
+build, and koa serves a page only beside the program that it was
+built with. The page bundle compiles the shared modules into itself,
+and `koa/Makefile` copies the same sources as the program, so equal
+program files mean a page of the running program. There is no page
+protocol version and no hash of the wire types: those find a changed
+type, not a changed meaning, and would permit a new page beside an
+old program.
+
+After the session reload, koa reads the installed page, then
+`koa/koa-identity.ts` hashes the installed program and webview SDK
+without the page files. The order matters: an install that runs
+during the read cannot pair a new page with the old program, because
+the program is read last.
+
+- If the program changed, koa restarts only with a saved root
+  session, no running jobs, no child that owes a report, and no busy
+  state. Services also block this restart. Otherwise a notice
+  explains the deferral, and a later reload can try again. The old
+  document stays while the old program runs. A failed program read
+  does not trigger a restart.
+- If the program is equal and the page changed, koa swaps the served
+  document ("One document, one instance"). The notice says when the
+  agents were not reloaded because one was busy.
+- If the page cannot be read, the old document stays, with a warning
+  notice.
+
+`make -C koa install` is atomic for a running koa: it copies to
+`share/koa.new` and renames, so a read sees the old files, the new
+files or no files, never half of a file.
+
+A process replacement is the only way to load new program code.
+Node's ESM cache has no eviction, and the state that must survive
+(the tree, jobs, inbox, status records, feeds and the HTTP server)
+is held by closures that new code cannot adopt. A hand-over of that
+state as data would be a migration path from an older program.
 
 `/restart` bypasses the identity, idle and deferral checks. It ends
 running work and replaces koa on the root session file when one
@@ -228,16 +258,31 @@ nor its page bridge.
 
 `koa/koa-assemble.ts` combines HTML, CSS and JavaScript into one
 response. Remote page loads otherwise pay a round trip for each
-asset. koa assembles the document at startup and serves that copy for
-its lifetime. It also reads the shell-completion script at startup.
-An install must not pair a running program with new page code.
-The development reload option is described below.
+asset. It hashes the exact bytes that it reads, so the page identity
+and the document cannot come from two reads. It reads the files twice
+and refuses the page when the two hashes differ: one install rename
+can mix at most one of the reads, so equal hashes mean a page of one
+build. koa assembles the
+document at startup and serves that copy until `/reload` swaps it
+("Reload, restart and failure"); a page load never reads the files.
+koa also reads the shell-completion script at startup.
 
-The document carries koa's instance identity. Each event stream open
-sends it back. A different identity gets a reload record rather than
-new state for an old page. This also covers hidden pages and browser
-back/forward restoration. It is a reload boundary, not support for
-old record formats.
+The document carries an instance identity. It identifies the served
+document, not the process: a swap makes a new instance. Each event
+stream open sends it back. A different identity gets a reload record
+rather than new state for an old page. This also covers hidden pages
+and browser back/forward restoration. It is a reload boundary, not
+support for old record formats.
+
+A swap writes the reload record to each open event stream that named
+an instance, agent feeds and job feeds, selected and named, and ends
+it (`reloadPages` in `koa/koa-feed.ts`). A stream that named no
+instance belongs to no document and is not touched. The page that
+sent `/reload` gets its reload on its stream as every other page
+does; the notice is a koa-owned item, so the new document shows it.
+Browser mode keeps its port and tab. The swap takes no cause, so a
+later caller (a UI extension's page files, a session switch) can use
+it.
 
 ### Requests and delivery
 
@@ -1033,8 +1078,8 @@ tell users to upgrade both. koa has no version gate or compatibility
 fallback for a mismatched API.
 
 New panes resolve koa from the login PATH. Existing panes can reload
-extensions in place and replace their process when the installed koa
-files changed, subject to the reload rules above. An explicit restart
+extensions and the page in place and replace their process when the
+installed koa program changed, subject to the reload rules above. An explicit restart
 also reloads the installed pi SDK. A pi-only upgrade does not change
 koa's content hash and therefore does not itself trigger automatic
 process replacement on reload.

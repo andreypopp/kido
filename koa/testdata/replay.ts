@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { webview } from "../../webview/index.ts";
-import { assemblePage } from "../koa-assemble.ts";
+import { assemblePage, readPage } from "../koa-assemble.ts";
 import { attachments, stepFile } from "../koa-attach.ts";
 import { readBody, respond, serveFile, wrongPostType } from "../koa-http.ts";
 import { pathArg, type Attachment, type PageRecord, type WireItem } from "../koa-records.ts";
@@ -23,7 +23,7 @@ if (!build) throw Error(`${module} has no scenario ${method}`);
 const { open, steps, files } = build(dir);
 
 const instance = randomUUID();
-const page = await assemblePage(new URL("../../build/koa/share/koa/koa/koa.ts", import.meta.url), instance);
+const page = assemblePage(await readPage(new URL("../../build/koa/share/koa/koa/koa.ts", import.meta.url)), instance);
 const store = mkdtempSync(join(tmpdir(), `koa-replay-${process.pid}-`));
 const attached = attachments(store);
 

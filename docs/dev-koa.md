@@ -69,10 +69,11 @@ For page-only iteration:
 make -C koa watch
 ```
 
-In another terminal, start the built launcher with
-`KOA_PAGE_RELOAD=1`. Reload Page then assembles from the rebuilt
-assets. The watcher updates page assets, not a running Node module
-cache. Program or extension changes need a build and process restart.
+In a pane, run the built launcher `build/koa/bin/koa`. After the
+watcher rebuilds the page, `/reload` swaps the document in every open
+page of that koa, without a process restart. The watcher does not
+copy program files; a program change needs `make -C koa`, and then
+`/reload` restarts koa when it is safe.
 
 For an installed preview, install into a preview prefix and put its
 bin directory before Homebrew in the login shell's PATH. New Agent

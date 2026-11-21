@@ -100,7 +100,7 @@ export function jobView(source: Source, empty: () => void = () => {}) {
       response.once("close", () => { clearInterval(keepalive); forget(response); });
       response.writeHead(200, { "Content-Type": "text/event-stream" });
       response.flushHeaders();
-      follow(subscribers, response, address, empty);
+      follow(subscribers, response, address, empty, url.searchParams.has("koa"));
       const after = Number(url.searchParams.get("after") ?? "");
       if (url.searchParams.get("epoch") === epoch && Number.isSafeInteger(after) && after >= 0 && after <= source.logged()) {
         cursors.set(response, { sent: after, busy: false, stateDue: true });

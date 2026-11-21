@@ -10,7 +10,7 @@ type Model = ReturnType<AgentSession['modelRuntime']['getAvailableSnapshot']>[nu
 export async function commandCatalog(root: string) {
   const { BUILTIN_SLASH_COMMANDS }: { BUILTIN_SLASH_COMMANDS: { name: string; description: string }[] } = await import(pathToFileURL(join(root, 'dist/core/slash-commands.js')).href);
   const entries = [...BUILTIN_SLASH_COMMANDS, ...['debug', 'arminsayshi', 'dementedelves'].map(name => ({ name, description: 'Not available in koa' }))];
-  const catalog: Builtin[] = [...SUPPORTED.flatMap(name => name === 'restart' ? [{ name, description: 'Restart koa on this session' }] : entries.filter(value => value.name === name)), ...entries.filter(value => !SUPPORTED.some(name => name === value.name))].map(value => ({ ...value, description: value.name === 'export' ? 'Export session as HTML' : value.name === 'reload' ? 'Reload extensions, settings and koa' : value.description, source: 'builtin', action: SUPPORTED.find(name => name === value.name) ?? 'refuse' }));
+  const catalog: Builtin[] = [...SUPPORTED.flatMap(name => name === 'restart' ? [{ name, description: 'Restart koa on this session' }] : entries.filter(value => value.name === name)), ...entries.filter(value => !SUPPORTED.some(name => name === value.name))].map(value => ({ ...value, description: value.name === 'export' ? 'Export session as HTML' : value.name === 'reload' ? 'Reload extensions, settings and the page' : value.description, source: 'builtin', action: SUPPORTED.find(name => name === value.name) ?? 'refuse' }));
   return { catalog, completion: catalog.filter(value => value.action !== 'refuse') };
 }
 
@@ -40,7 +40,6 @@ export async function dispatchCommand(input: NonNullable<ReturnType<typeof parse
   compact(instructions?: string): void;
   thinking(level: string): Promise<void>;
   setModel(model: Model): Promise<void>;
-  reloadBusy(): boolean;
 }): Promise<CommandAction | { type: 'restart' }> {
   const { command, args } = input;
   const { session } = host;
@@ -79,10 +78,7 @@ export async function dispatchCommand(input: NonNullable<ReturnType<typeof parse
     }
     case 'resume': case 'new': return { type: 'session', kind: command.action };
     case 'quit': return { type: 'quit' };
-    case 'reload':
-      if (!host.reloadBusy()) return { type: 'reload' };
-      host.notify('reload: not while a turn, a command, a queue, a dialog or an editor is open', 'warning');
-      break;
+    case 'reload': return { type: 'reload' };
     case 'restart':
       return { type: 'restart' };
   }

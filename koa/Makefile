@@ -43,5 +43,9 @@ watch: build
 install: build
 	mkdir -p $(PREFIX)/bin $(PREFIX)/share
 	cp $(OUT)/bin/koa $(PREFIX)/bin/koa
-	rm -rf $(PREFIX)/share/koa
-	cp -R $(OUT)/share/koa $(PREFIX)/share/koa
+	rm -rf $(PREFIX)/share/koa.new
+	cp -R $(OUT)/share/koa $(PREFIX)/share/koa.new
+	rm -rf $(PREFIX)/share/koa.old
+	if test -d $(PREFIX)/share/koa; then mv $(PREFIX)/share/koa $(PREFIX)/share/koa.old; fi
+	mv $(PREFIX)/share/koa.new $(PREFIX)/share/koa || { if test -d $(PREFIX)/share/koa.old; then mv $(PREFIX)/share/koa.old $(PREFIX)/share/koa; fi; exit 1; }
+	rm -rf $(PREFIX)/share/koa.old

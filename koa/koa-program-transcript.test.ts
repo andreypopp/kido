@@ -1,37 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, writeFile, rm, mkdir, cp } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
 import { ofType } from "./koa-agent-fixture.ts";
 import { realFixture } from "./koa-program-fixture.ts";
-test("document loads read the current page files and recover after a failed read", { timeout: 10000 }, async t => {
-  const dir = await mkdtemp(join(tmpdir(), "koa-page-reload-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  await cp(resolve("../build/koa/share/koa/koa"), dir, { recursive: true });
-  const program = join(dir, "koa.ts");
-  await writeFile(program, `import ${JSON.stringify(resolve('../build/koa/share/koa/koa/koa.ts'))};`);
-  const app = await realFixture(t, {replies: [], env: { KOA_PAGE_RELOAD: '1' }, program });
-  for (const name of ["page.html", "page.css", "page.js"]) {
-    const file = join(dir, name), marker = `reload-${name}`;
-    assert.doesNotMatch(await (await fetch(app.base)).text(), new RegExp(marker));
-    const original = await readFile(file, "utf8");
-    await writeFile(file, original + `\n/* ${marker} */`);
-    assert.match(await (await fetch(app.base)).text(), new RegExp(marker));
-  }
-  const file = join(dir, "page.css"), style = await readFile(file, "utf8");
-  await rm(file);
-  const failed = await fetch(app.base);
-  assert.equal(failed.status, 500);
-  assert.match(await failed.text(), /ENOENT.*page\.css/);
-  await writeFile(file, style);
-  const restored = await fetch(app.base);
-  assert.equal(restored.status, 200);
-  assert.match(await restored.text(), /reload-page\.css/);
-});
-
 test("metrics are opt-in and record frame samples with stream counters", { timeout: 10000 }, async t => {
   const off = await realFixture(t, { replies: [] });
   assert.equal((await off.post("metrics", { samples: [], observations: [] })).status, 404);
