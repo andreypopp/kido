@@ -687,6 +687,20 @@ async function testKoaWebviewRunStepsTransitions() {
         const failedNames = await webviewJS(web, "(()=>{const names=[...document.querySelectorAll('.run .names .err .who')],live=names.find(name=>!name.classList.contains('gone')),gone=names.find(name=>name.classList.contains('gone'));const probe=document.createElement('span');probe.style.color='var(--ko-color-1)';document.body.append(probe);const error=getComputedStyle(probe).color;probe.remove();return !!live&&!!gone&&getComputedStyle(live).color===error&&getComputedStyle(gone).color===error})()")
         equal(failedNames, true, "Live and gone names in a failed summary use the error colour")
     }
+async function testKoaWebviewReloadKeepsView() {
+        const web = await scrollPage("scroll-follow", "ReloadKeepsView")
+        await web.emulateMedia({ reducedMotion: "reduce" });
+        await webviewJS(web, "(async()=>{" + followHelpers + "await until(()=>gap()<=1);moveTo(400);await until(()=>Math.abs(s.scrollTop-400)<=1);window.composer.setText('draft after reload');return true})()")
+        await webviewUntil(web, "!!document.querySelector('#items>[data-seq=\"0\"]')&&" + koaIdle)
+        const before = await webviewJS<number>(web, "document.querySelector('#items>[data-seq=\"0\"]').getBoundingClientRect().top")
+        await Promise.all([
+            web.waitForEvent('load'),
+            webviewJS(web, "scrollSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'reload'})}))"),
+        ])
+        await webviewUntil(web, "window.composer&&window.composer.text()==='draft after reload'&&Math.abs((document.querySelector('#items>[data-seq=\"0\"]')?.getBoundingClientRect().top??Infinity)-(" + before + "))<=1&&" + koaIdle)
+        const after = await webviewJS<number>(web, "document.querySelector('#items>[data-seq=\"0\"]').getBoundingClientRect().top")
+        near(after, before, 1, "Reload keeps the reader row offset")
+    }
 async function testKoaWebviewScrollbarJumpMountsHistory() {
         const web = await scrollPage( "scroll-follow", "testKoaWebviewScrollbarJumpMountsHistory")
         const result = await webviewJS<{ atEnd: number; rows: number; usable: boolean; top: number; start: number; viewport: number }>(web, "(async()=>{" + followHelpers + `          const sentence='The quick brown fox jumps over the lazy dog and keeps running across the field. ';
@@ -1655,6 +1669,7 @@ echo release
         }
     }
 const entries: Record<string, () => Promise<void>> = {
+  "ReloadKeepsView": testKoaWebviewReloadKeepsView,
   "Dots": testKoaWebviewDots,
   "RunStepsTransitions": testKoaWebviewRunStepsTransitions,
   "ScrollbarJumpMountsHistory": testKoaWebviewScrollbarJumpMountsHistory,

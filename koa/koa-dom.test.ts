@@ -12,9 +12,9 @@ import { feedbackFixture, settle, shellReply } from "./testdata/completion-fixtu
 import { pathToken } from './path-token.ts';
 import { promptHistory } from './page/history.ts';
 import { ATTACHMENT_LIMITS, pathArg } from "./koa-records.ts";
-import { jobEndText } from "./records.ts";
+import { jobEndText, parseThreadName } from "./records.ts";
 import type { PromptMode } from "./koa-records.ts";
-import { scrollInitial, scrollStored, scrollUpdate, scrollWindow } from "./page/scroll.ts";
+import { scrollInitial, scrollMemory, scrollStored, scrollUpdate, scrollWindow } from "./page/scroll.ts";
 
 async function pageMarkup() {
   const html = await readFile(new URL('page/page.html', import.meta.url), 'utf8');
@@ -240,7 +240,8 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, pathToken, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const history: { state: unknown; replaceState(state: unknown): void } = { state: null, replaceState(state) { this.state = state; } };
+  const context = { history, parseThreadName, ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, pathToken, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update,head,quote})', context));
@@ -264,7 +265,7 @@ async function page() {
   Object.assign(context, { markdownPlain }, runInNewContext(findSource + '\n({findSegments,matchesIn})', context));
   const workingSource = stripTypeScriptTypes(readFileSync(new URL('page/working.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   Object.assign(context, runInNewContext(workingSource + '\n({dots})', context));
-  Object.assign(context, { scrollInitial, scrollStored, scrollUpdate, scrollWindow });
+  Object.assign(context, { scrollInitial, scrollMemory, scrollStored, scrollUpdate, scrollWindow });
   const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\nfunction put(item) { accept(item); renderDirty(); return views.get(item.seq)?.view; }\nlet agentTestSeq=10000;function agentStep(card,at,key,slots=new Map()){let seq=slots.get(key);if(seq===undefined){seq=agentTestSeq++;slots.set(key,seq)}const base={seq,revision:0,at,final:true};put(card.direction==='in'?{...base,kind:'agent',...card}:{...base,kind:'assistant',stop:'stop',error:'',blocks:[{type:'tool',id:key,name:'spawn_agent',args:{text:'{}'},state:{type:'done',error:false,result:{text:'',images:[]}},agent:card}]});const owner=runOwner(runContext(),card.direction==='in'?{kind:'item',seq}:{kind:'block',seq,index:0});return openers.get(sourceKey(card.direction==='in'?{kind:'item',seq}:{kind:'block',seq,index:0})).view;}";
   return { observers, repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
 }

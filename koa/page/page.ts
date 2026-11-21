@@ -1,6 +1,6 @@
 import { annotations, update } from './annotations.ts';
 import { head, quote } from './answers.ts';
-import { scrollInitial, scrollStored, scrollUpdate, scrollWindow, type ItemId, type ScrollEvent, type Measure, type Decision, type Row, type Lookup } from './scroll.ts';
+import { scrollInitial, scrollMemory, type Saved, scrollStored, scrollUpdate, scrollWindow, type ItemId, type ScrollEvent, type Measure, type Decision, type Row, type Lookup } from './scroll.ts';
 import { pathToken } from '../path-token.ts';
 import { markdown, type Tail } from './markdown.ts';
 import { markdownLine } from '../markdown-line.ts';
@@ -18,6 +18,7 @@ import { install } from './metrics.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
 import type { State, WireJob, WireItem, QueuedPrompt, Block, Patch, PageRecord, MetricsSample, Stages, PromptMode, ImageRef, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
 import type { ThreadName, AgentRef, Relation } from '../records.ts';
+import { parseThreadName } from '../records.ts';
 
 type Step = StepInput & { key: string; slots: Map<string, Slot> };
 type Slot = { type: 'image'; view: HTMLButtonElement } | { type: 'run'; view: HTMLDivElement };
@@ -45,9 +46,18 @@ const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, clas
   if (className) result.className = className;
   return result;
 };
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+type PageMemory = { scroll: Saved[]; drafts: [view: string, text: string][]; filters: [scope: string, thread: ThreadName][] };
+const stored: unknown = history.state;
+const pageMemory = (stored: unknown): stored is PageMemory => isRecord(stored) && Array.isArray(stored.scroll) && stored.scroll.every(saved => {
+  if (!isRecord(saved) || !isRecord(saved.scope) || typeof saved.scope.view !== 'string' || saved.scope.sessionId !== undefined && typeof saved.scope.sessionId !== 'string' || !Number.isInteger(saved.last) || !isRecord(saved.anchor) || typeof saved.anchor.offset !== 'number' || !Number.isFinite(saved.anchor.offset) || !isRecord(saved.anchor.item)) return false;
+  const item = saved.anchor.item;
+  return item.kind === 'message' && Number.isInteger(item.seq) && (item.row === undefined || typeof item.row === 'string') || item.kind === 'job' && Number.isInteger(item.byte);
+}) && Array.isArray(stored.drafts) && stored.drafts.every(entry => Array.isArray(entry) && entry.length === 2 && entry.every(value => typeof value === 'string')) && Array.isArray(stored.filters) && stored.filters.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && parseThreadName(entry[1]) !== undefined) ;
+const memory = pageMemory(stored) ? stored : undefined;
 const threadItems = new Map<number, Extract<WireItem, { kind: 'threads' }>>();
 const projections = new Map<number, WireItem | undefined>();
-const threadFilters = new Map<string, ThreadName>();
+const threadFilters = new Map<string, ThreadName>(memory?.filters);
 const threadCell = Object.assign(node('span', undefined, 'thread-cell'), { id: 'thread-cell' });
 const threadMeasure = node('span', '0', 'thread-measure');
 threadMeasure.setAttribute('aria-hidden', 'true'); document.body.append(threadMeasure);
@@ -260,7 +270,7 @@ function renderThreads() {
     if (thread) mark.style.setProperty('--thread-color', threadColour(thread.name));
   }
 }
-let scrolling = scrollInitial({ view: '', sessionId: undefined });
+let scrolling = scrollInitial({ view: '', sessionId: undefined }, memory?.scroll);
 let scrollDecision: Decision = { glideOffset: 0, latest: { show: false, count: 0 }, windowTop: 0, frame: 'none' };
 let lastMeasurement: Measure | undefined;
 let divider: HTMLElement | undefined;
@@ -1559,7 +1569,7 @@ function restoreQueued(entries: QueuedPrompt[]) {
   refreshComposer(); editor.focus();
 }
 let takingBack: Promise<void> | undefined;
-const drafts = new Map<string, string>();
+const drafts = new Map<string, string>(memory?.drafts);
 function takeBack(): Promise<void> {
   if (state.life.type !== 'ready' || state.dialogs.length) return Promise.resolve();
   return takingBack ??= (async () => {
@@ -1731,8 +1741,7 @@ function leaveView(next: string) {
   editor.resetCompletion(); historyRequest = undefined; editorId = undefined; escaped = false; takingBack = undefined;
   element('error').textContent = '';
   draft.view(next);
-  if (!previous) return;
-  drafts.set(previous, editor.text());
+  if (previous) drafts.set(previous, editor.text());
   editor.setText(drafts.get(next) ?? ''); drafts.delete(next);
 }
 function rescopeImages() {
@@ -2237,7 +2246,13 @@ document.addEventListener('click', event => {
   if (view) viewTo(view);
   else if (pane) window.ko?.focus?.(pane);
 });
-window.addEventListener('pagehide', () => { decide({ type: 'visibility' }); stopFrames(); });
+window.addEventListener('pagehide', () => {
+  decide({ type: 'visibility' }); stopFrames();
+  const current = new Map(drafts);
+  current.set(state.view.id, editor.text());
+  const memory: PageMemory = { scroll: scrollMemory(scrolling), drafts: [...current].filter(([view, text]) => !!view && !!text), filters: [...threadFilters] };
+  history.replaceState(memory, '');
+});
 document.addEventListener('visibilitychange', () => { decide({ type: 'visibility' }); cancelPending(); if (!document.hidden) { revealDirty ||= revealing.size > 0; windowDirty = true; armCap(); } schedule(); });
 document.addEventListener('focusin', composerFocus);
 document.addEventListener('focusout', composerFocus);

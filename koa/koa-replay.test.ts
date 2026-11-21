@@ -83,7 +83,7 @@ test("every scenario module builds its scenarios", async () => {
   }
   const driver = await readFile(new URL('./visual/driver.ts', import.meta.url), 'utf8');
   const calls = [...driver.matchAll(/\bkoaWebview\("([^"]+)"|\bscrollPage\(\s*"[^"]+",\s*"([^"]+)"/g)];
-  assert.equal(calls.length, 40);
+  assert.equal(calls.length, 41);
   for (const match of calls) {
     const key = match[1] ?? match[2];
     assert.ok(keys.has(key), `No replay scenario for ${key}`);

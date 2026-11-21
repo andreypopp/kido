@@ -333,8 +333,20 @@ The page keeps drafts and scroll positions by view, with session
 identity for a saved scroll position. A switch cancels uploads and
 pending completion/history requests and closes transient UI. Returning
 to a reader position loads older content until its anchor is present;
-a missing anchor opens at the end. A page load clears this local
-memory. Selection is not persistent session state.
+a missing anchor opens at the end. Selection is not persistent
+session state.
+
+A reload of the same document entry keeps this memory: the saved
+positions with the current reader anchor, the non-empty drafts and
+the thread filters. The page writes them to `history.state` on
+`pagehide`, so a `reload` record and the app's Reload Page keep them,
+and reads them once at start. `history.state` needs no storage
+permission or origin and ends with its entry. A following view saves
+nothing. Restoration is the `restoring` path of a switch, so a
+position of another session is not used. Folds do not survive,
+because their keys depend on the loaded range. Attachments, pickers
+and dialogs do not survive. A process replacement loads a new entry,
+so the memory is gone.
 
 A client with its own navigation can name a view on each request.
 Named requests do not change the pane's selection. Only the selection

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { scrollInitial, scrollStored, scrollUpdate, type State, type ScrollEvent, type Measure, type Row, type ItemId, type Lookup } from './page/scroll.ts';
+import { scrollInitial, scrollMemory, scrollStored, scrollUpdate, type State, type ScrollEvent, type Measure, type Row, type ItemId, type Lookup } from './page/scroll.ts';
 
 const scope = { view: 'root', sessionId: 's' };
 const row = (seq: number, top: number, bottom = top + 100): Row => ({ item: { kind: 'message', seq }, top, bottom });
@@ -30,6 +30,28 @@ function fixture() {
   step();
   return { step, state: () => state, store: (top: number) => { state = scrollStored(state, top); measurement.top = top; } };
 }
+test('view memory restores readers, excludes following and rejects another session', () => {
+  const f = fixture();
+  f.step([intent, item(7)], { top: 500, anchor: { item: { kind: 'message', seq: 1 }, offset: -400 } });
+  const memory = scrollMemory(f.state());
+  assert.deepEqual(memory, [{ scope, anchor: { item: { kind: 'message', seq: 1 }, offset: -400 }, last: 7 }]);
+  const m: Measure = { now: 1000, top: 0, max: 900, viewport: 300, width: 700, dock: 250, origin: 0, focused: true, visible: true, reducedMotion: true, lookup: () => ({ kind: 'unloaded' }) };
+  const restored = scrollUpdate(scrollInitial({ view: '', sessionId: undefined }, memory), [{ type: 'switch', scope }], m);
+  assert.equal(restored.state.kind, 'restoring');
+  if (restored.state.kind === 'restoring') assert.deepEqual(restored.state.target, memory[0]);
+  const missing = scrollUpdate(restored.state, [{ type: 'reset' }, { type: 'frame' }], { ...m, lookup: () => ({ kind: 'removed' }) });
+  assert.equal(missing.state.kind, 'following');
+  assert.equal(missing.decision.scrollTop, 900);
+  assert.equal(scrollUpdate(scrollInitial({ view: '', sessionId: undefined }, memory), [{ type: 'switch', scope: { ...scope, sessionId: 'other' } }], m).state.kind, 'following');
+  assert.deepEqual(scrollMemory(fixture().state()), []);
+  assert.deepEqual(scrollMemory({ ...f.state(), kind: 'following' }), []);
+  const current = memory[0];
+  assert.ok(current);
+  const other = { ...current, scope: { view: 'other', sessionId: 's' } };
+  const travelling: State = { ...f.state(), kind: 'reader', anchor: current.anchor, travel: { from: 500, start: 1000 }, saved: new Map([[scope.view, current], ['other', other]]) };
+  assert.deepEqual(scrollMemory(travelling), [other]);
+});
+
 test('a toggle holds its anchor, cancels travel and glide, and follows only at the bottom', () => {
   for (const mode of ['following', 'glide', 'reader', 'travel'] as const) {
     const f = fixture();

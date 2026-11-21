@@ -3,7 +3,7 @@ import type { PromptResult } from '../koa-records.ts';
 export type ItemId = { kind: 'message'; seq: number; row?: string } | { kind: 'job'; byte: number };
 export type Anchor = { item: ItemId; offset: number };
 type Scope = { view: string; sessionId: string | undefined };
-type Saved = { scope: Scope; anchor: Anchor; last: number };
+export type Saved = { scope: Scope; anchor: Anchor; last: number };
 type Glide = { from: number; start: number; offset: number };
 type Travel = { from: number; start: number };
 type Geometry = { top: number; max: number; viewport: number; width: number; origin: number };
@@ -66,11 +66,18 @@ export type Decision = {
   request?: { type: 'mount'; item: ItemId } | { type: 'load'; item: ItemId; generation: number };
   frame: 'none' | 'animation' | 'measure';
 };
-export function scrollInitial(scope: Scope): State {
+export function scrollMemory(state: State): Saved[] {
+  const saved = new Map(state.saved);
+  if (state.kind === 'reader' && !state.travel && state.anchor) saved.set(state.scope.view, { scope: state.scope, anchor: state.anchor, last: state.lastSeq });
+  else if (state.kind === 'restoring') saved.set(state.scope.view, state.target);
+  else saved.delete(state.scope.view);
+  return [...saved.values()];
+}
+export function scrollInitial(scope: Scope, memory: Saved[] = []): State {
   return {
     kind: 'following',
     scope,
-    saved: new Map(),
+    saved: new Map(memory.map(saved => [saved.scope.view, saved])),
     candidates: new Map(),
     threshold: false,
     generation: 0,
@@ -200,13 +207,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
       }
       case 'switch': {
         if (state.kind === 'reader' && state.travel) reader();
-        if (state.kind === 'reader' && state.anchor) {
-          state.saved = new Map(state.saved);
-          state.saved.set(state.scope.view, { scope: state.scope, anchor: state.anchor, last: state.lastSeq });
-        } else if (state.kind !== 'restoring' && state.saved.has(state.scope.view)) {
-          state.saved = new Map(state.saved);
-          state.saved.delete(state.scope.view);
-        }
+        state.saved = new Map(scrollMemory(state).map(saved => [saved.scope.view, saved]));
         const target = state.saved.get(event.scope.view);
         state.scope = event.scope;
         state.pendingSend = undefined;
