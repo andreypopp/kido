@@ -2144,8 +2144,12 @@ light and dark in the gallery.
   carries the marker and the classifier is not asked (plan decision
   6); the transcript stays unfiltered and the chip stays. (2) From
   an existing message: hovering a message's
-  header row shows a "+ thread" chip after its chip, or alone when
-  it has none: the chip's metrics with a 1px dashed edge at 30% of
+  header row shows a "+ thread" chip only when the message has no
+  thread (user, 2026-11-22; for a multi-section reply: none when
+  any section has a thread); a threaded message shows no "+
+  thread", and its thread changes by a drag of a thread row from
+  the widget onto the message ("The classifier MVP, reviewed"). The
+  chip's metrics with a 1px dashed edge at 30% of
   the foreground (45% of the ink on a user block), "+" and "thread"
   in the muted colour at 500, no fill, the hand cursor; it takes no
   room when hidden (the row's time keeps its place). A click turns
