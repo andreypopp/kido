@@ -441,7 +441,8 @@ the Option drag, and the sidebar without the float's row.
   (2026-11-21, the floatf unit's question: ko refuses a split of a
   float and zoom hides it, so they would be buttons that never
   enable): Dock Pane, separator, Close pane, at the tiled toolbar's
-  spacing (x 3, separator, 38), 67×32pt at (paneWidth − 8 − 67, 8);
+  spacing (Dock at x 3, the separator at x 33, Close at x 38), 67×32pt
+  at (paneWidth − 8 − 67, 8);
   the tiled toolbar keeps its six buttons and its 171pt. Instead the top
   padding, the chrome above the grid with no cells under it, grows
   from 10pt to 22pt (`PaneLayout.floatTop`): padding, not border,
@@ -535,8 +536,9 @@ the Option drag, and the sidebar without the float's row.
   a float's records and cluster are absent, a tiled child of a float
   is a depth-0 row, the cluster count omits a floating child, the
   tab's aggregate includes the float, no row is focused while the
-  float is the active pane. Chrome: a float's toolbar has five
-  buttons at 67pt, the pill is at y 9–13, the stripe at 19–22, the
+  float is the active pane. Chrome: a float's toolbar has two
+  buttons (Dock Pane, Close pane) at 67pt, the pill is at y 9–13, the
+  stripe at 19–22, the
   grid starts at 22pt. Menu: with a float key, validate returns false
   for every item of the disabled list and true for the others, and
   ⌘} with a float key leaves the shown window unchanged; an Option
