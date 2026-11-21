@@ -625,9 +625,11 @@ the Option drag, and the sidebar without the float's row.
     the Kido window that received the drop becomes key (it shows the
     pane; the user dropped there). The owner's float window closes
     in the layout pass that shows the pane tiled. The source ko
-    window's focus goes to its last-focused tiled pane (the server
-    moves it when the focused pane leaves; the app's per-window
-    memory of section A agrees). The ownership of the floats does
+    window's focus follows the server's usual repair when a focused
+    pane leaves (`settle`: the parent, else the nearest pane in the
+    window's order, possibly another float), the same as a close of
+    a focused float; the app sends no focus with the dock (the
+    crossdock unit, 2026-11-21). The ownership of the floats does
     not change.
   - *Dock Pane without a target* (⌥⌘F, the toolbar button, the
     palette, the menu) docks the float back into the window it came
