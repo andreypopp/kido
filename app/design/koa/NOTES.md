@@ -2110,8 +2110,12 @@ light and dark in the gallery.
   and the next message is classified. The filter is only the
   widget's: a name in the line-mode capsule, a panel row, a block
   row; clearing it is the widget's too: the capsule's × in line
-  mode, "All threads" in the panel and in block mode (the × of the
-  composer's chip never clears the filter). The placeholder is the
+  mode, "All threads" in the panel and in block mode, a click on
+  the current row (the × of the composer's chip never clears the
+  filter). Clearing the filter also drops the composer's thread
+  when it is the filtered thread (user, 2026-11-22: the filter set
+  it, the clear takes it back); a different composer thread, set
+  after the filter, stays. The placeholder is the
   plain "Steer @ko…" / "Message @ko…" and the foot's thread cell is
   removed; under a filter the transcript's messages show the time
   alone in their header (the name would say the same on every
