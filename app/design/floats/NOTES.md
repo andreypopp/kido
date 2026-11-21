@@ -536,6 +536,41 @@ the Option drag, and the sidebar without the float's row.
   Session, Close Session, Hide Sidebar, Focus Sidebar, Zoom Pane,
   Split Right/Down),
   and keeps the sessions, panes, recent hosts and app-wide commands.
+- **Float again, same place** (user, 2026-11-21). A pane that is
+  docked and then floated again comes back where it was and at the
+  size it had. What is remembered: for each pane, by its pane id, in
+  the Kido window that owns the server's floats (section E): the
+  float's last screen origin and its last cell size (cols × rows;
+  the size is the server's, in cells, section E "Size"), taken from
+  the frame the float showed when the layout turned it tiled, by any
+  route: Dock Pane, the Option drop, another client's `unfloat`.
+  How long: for the run of the app, while the pane lives; across a
+  reconnect in a running window (as the frames are) and across an
+  adoption (the memory moves with the float frames); not across a
+  relaunch (section E: no position memory beyond the run), and gone
+  when the pane goes. What uses it: Float Pane (the menu, ⌥⌘F, the
+  toolbar button, the palette) on a pane with a memory sends
+  `Edit::Float` with the remembered cols and rows and with x and y
+  as a move would send them, the remembered origin mapped into the
+  ko window's cell grid and clamped (the server clamps the cells
+  into the window's room as on any float edit, so the size may come
+  back smaller when the room shrank); when the layout shows the
+  float, the app gives it the remembered screen origin as a local
+  frame, the way a pop out holds its ghost's frame until the float
+  appears, then applies the screen rule of section E (the move band
+  and 60pt of the width inside the visible frame of the screen that
+  held it, else of the main window's screen; a move, never a
+  resize). So a display that went away or shrank moves the float
+  the least amount and keeps its size, and a smaller pane area
+  shrinks it through the server's clamp, as section E has it. The
+  memory is used once: the layout that shows the float again clears
+  it, whichever client floated the pane (a float that another client
+  creates appears at its cells, as today, and the memory is cleared
+  then too). A pop out by drag (the tiled grip's ghost, section A)
+  is an explicit placement: it uses the ghost's frame and clears the
+  memory. A pane that was never a float, or whose memory is gone, is
+  unchanged: Float Pane sends `Edit::Float` without geometry, and
+  the server places it.
 - **Tests.** Rows: a window with a float lists its tiled panes only,
   a float's records and cluster are absent, a tiled child of a float
   is a depth-0 row, the cluster count omits a floating child, the
@@ -547,4 +582,10 @@ the Option drag, and the sidebar without the float's row.
   for every item of the disabled list and true for the others, and
   ⌘} with a float key leaves the shown window unchanged; an Option
   band drag over the shown ko window's tiled pane shows the bar and
-  docks, the same drag without Option moves.
+  docks, the same drag without Option moves. Float again: a dock
+  then Float Pane sends the remembered cols, rows, x and y and the
+  float shows at its old screen origin; a second Float Pane after
+  another dock in a smaller pane area comes back clamped in size
+  and moved the least amount; a pop out by drag ignores the memory;
+  a never-floated pane sends no geometry; the memory does not
+  survive a relaunch.
