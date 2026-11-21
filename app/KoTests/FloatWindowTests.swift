@@ -363,6 +363,10 @@ import XCTest
         XCTAssertEqual(repaints, 1)
         center.post(name: NSWindow.didBecomeKeyNotification, object: sheet)
         XCTAssertEqual(repaints, 1, "an unchanged key sheet must not repaint again")
+        center.post(name: NSWindow.didResignKeyNotification, object: sheet)
+        wait("leaving the key sheet clears its owner focus") { OwnerWindow.inputWindow == nil }
+        XCTAssertTrue(pane.shiftedBackground)
+        XCTAssertEqual(repaints, 2)
     }
 
     func testKeyHandoffDoesNotRepaintTheIntermediateNotKeyState() throws {

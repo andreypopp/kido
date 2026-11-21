@@ -147,7 +147,7 @@ extension NSColor {
     }
     nonisolated private let wakeProbe = OSAllocatedUnfairLock<WakeProbe?>(initialState: nil)
     static func observeWakeups(_ surface: ghostty_surface_t, _ probe: (@Sendable () -> Void)?) {
-        let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(ghostty_app_userdata(ghostty_surface_app(surface)!)!).takeUnretainedValue()
+        let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(ghostty_app_userdata(ghostty_surface_app(surface))!).takeUnretainedValue()
         runtime.wakeProbe.withLock { $0 = probe.map(WakeProbe.init) }
     }
     #endif

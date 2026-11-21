@@ -779,9 +779,13 @@ import XCTest
         NSApp.mainMenu = app.mainMenu()
         app.togglePalette()
         let rootPanel = try XCTUnwrap(app.palettePanel)
-        owner.window.makeFirstResponder(owner.window)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: rootPanel)
         layoutWindow()
         rootPanel.palette.layoutSubtreeIfNeeded()
+        XCTAssertTrue(OwnerWindow.inputWindow === owner.window)
+        XCTAssertEqual(OwnerWindow.focusedPane?.pane, second)
+        XCTAssertFalse(windowView.displayedPanes.first { $0.pane == second }?.shiftedBackground ?? true)
+        XCTAssertTrue(windowView.displayedPanes.allSatisfy { !$0.visualSurfaceFocused })
         try await wait("complete native pane layout and matching surface sizes") {
             windowView.visualGeometryReady && windowView.displayedPanes.allSatisfy { pane in
                 pane.visualReady && pane.visualInstalledPixels == CGSize(width: pane.frame.width * 2, height: pane.frame.height * 2)

@@ -67,15 +67,15 @@ typealias AppWindow = StressWindow
     private func log(_ fields: [String: Any]) {
         var fields = fields
         fields.merge(["visible": window.isVisible, "key": window.isKeyWindow, "main": window.isMainWindow,
-                      "active": NSApp.isActive, "onScreenWindows": onScreen()]) { _, current in current }
+                      "active": NSApp.isActive, "mainWindowOnScreen": onScreen()]) { _, current in current }
         guard let data = try? JSONSerialization.data(withJSONObject: fields, options: .sortedKeys) else { return }
         FileHandle.standardError.write(data + Data("\n".utf8))
-        if window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive || fields["onScreenWindows"] as? Int != 0 { exit(1) }
+        if window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive || fields["mainWindowOnScreen"] as? Bool == true { exit(1) }
     }
 
-    private func onScreen() -> Int {
+    private func onScreen() -> Bool {
         let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
-        return list.count { ($0[kCGWindowOwnerPID as String] as? Int32) == getpid() }
+        return list.contains { ($0[kCGWindowNumber as String] as? Int) == window.windowNumber }
     }
 
     private func event(_ type: NSEvent.EventType, _ point: NSPoint) -> NSEvent {
@@ -102,11 +102,12 @@ typealias AppWindow = StressWindow
             NSApp.terminate(nil)
             return
         }
-        var nodes = (owner.stressState.3?.sessions.flatMap(\.nodes) ?? []).map { ($0, false) }
-        while let (node, nested) = nodes.popLast() {
-            let childNested = if case .item = node { true } else { nested }
-            nodes += node.children.map { ($0, childNested) }
-            if nested, case .item(let item) = node, case .live(let kind) = item.lifecycle,
+        var nodes = owner.stressState.3?.sessions.flatMap(\.nodes) ?? []
+        while let node = nodes.popLast() {
+            nodes += node.children
+            if case .item(let item) = node, item.placement == .tiled, let parent = item.pane.parent,
+               let parentWindow = owner.stressModel?.layout.layout.locate(parent)?.window.id,
+               parentWindow != item.window, case .live(let kind) = item.lifecycle,
                case .terminal = kind.local, childWindows.insert(item.window).inserted {
                 counts["child-window-seen", default: 0] += 1
                 log(["event": "child-window-seen", "window": item.window.description, "pane": item.id.description])
@@ -135,7 +136,7 @@ typealias AppWindow = StressWindow
         counts[action.rawValue, default: 0] += 1
         log(["step": step, "action": action.rawValue, "pane": pane?.pane.description ?? "", "panes": panes.count,
              "visible": window.isVisible, "key": window.isKeyWindow, "main": window.isMainWindow,
-             "active": NSApp.isActive, "onScreenWindows": onScreen()])
+             "active": NSApp.isActive, "mainWindowOnScreen": onScreen()])
         if [.tabs, .sidebarJump, .sidebarMode].contains(action) { performUI(action) }
         else if let pane { perform(action, pane, all) }
         if step % 5 == 0 { verifyUI() }
@@ -278,12 +279,18 @@ typealias AppWindow = StressWindow
         if !passed { exit(1) }
     }
 
-    // The window that the client selected is the one shown, and the tabs and shortcuts follow the navigation.
     private func verifyUI(_ attempt: Int = 0) {
         guard let app = NSApp.delegate as? AppDelegate, let model = owner.stressModel else { return }
         let (current, navigation, session, _) = owner.stressState
         let shown = session?.windows.filter { !$0.value.isHidden }.keys.map { $0 } ?? []
-        let matched = model.selection.window == current.window && shown == [current.window].compactMap { $0 }
+        let selectedFloat = model.selection.pane.flatMap { pane in
+            model.layout.layout.locate(pane)?.window.floats.contains { $0.pane == pane } == true ? pane : nil
+        }
+        let selectionShown = selectedFloat.map { pane in
+            guard let view = session?.pane(pane), let host = view.window as? FloatWindow else { return false }
+            return host.isVisible && !host.content.isHidden && !view.isHiddenOrHasHiddenAncestor && view.isDescendant(of: host.content)
+        } ?? (model.selection.window == current.window)
+        let matched = selectionShown && shown == [current.window].compactMap { $0 }
         if !matched, attempt < 10 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self.verifyUI(attempt + 1) }
             return

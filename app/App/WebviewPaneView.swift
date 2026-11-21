@@ -263,7 +263,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         switch document {
         case .waiting:
             unavailable.stringValue = "The program is not serving"
-            unavailable.isHidden = false
+            unavailable.isHidden = serving
             retry.isHidden = true
             browser.isHidden = true
         case .loading, .loaded:

@@ -867,6 +867,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
 }
 
 final class PalettePanel: NSPanel {
+    weak var focusWindow: NSWindow?
     let palette: PaletteView
     private let closed: () -> Void
     override var canBecomeKey: Bool { true }

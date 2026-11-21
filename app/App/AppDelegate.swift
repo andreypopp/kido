@@ -544,6 +544,7 @@ import SidebarFeed
             guard let self, !paletteBusy else { return }
             closePalette(.moved)
         }
+        panel.focusWindow = commandInputWindow
         palettePanel = panel
         panel.toggle = { [weak self] in self?.closePalette() }
         panel.connect = { [weak self] in self?.connectRemoteHost() }

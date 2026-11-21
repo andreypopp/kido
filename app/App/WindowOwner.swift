@@ -40,13 +40,23 @@ class OwnerWindow: NSWindow {
     private(set) static weak var keyWindow: NSWindow?
     static var inputWindow: OwnerWindow? {
         var host = keyWindow
-        while let window = host, !(window is OwnerWindow) { host = window.sheetParent }
+        while let window = host, !(window is OwnerWindow) { host = (window as? PalettePanel)?.focusWindow ?? window.sheetParent }
         return host as? OwnerWindow
     }
     private static var pendingResign: DispatchWorkItem?
     private static let keyObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { note in
         let window = note.object as? NSWindow
         MainActor.assumeIsolated { changeKeyWindow(window) }
+    }
+    private static let resignObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: nil, queue: .main) { note in
+        let window = note.object as? NSWindow
+        MainActor.assumeIsolated {
+            guard let window, window === keyWindow else { return }
+            pendingResign?.cancel()
+            let repaint = DispatchWorkItem { changeKeyWindow(NSApp.keyWindow) }
+            pendingResign = repaint
+            DispatchQueue.main.async(execute: repaint)
+        }
     }
     static var focusedPane: PaneView? { PaneView.owner(inputWindow?.firstResponder) }
     var isInputWindow: Bool { Self.inputWindow === self }
@@ -59,7 +69,7 @@ class OwnerWindow: NSWindow {
         if input { Self.keyWindow = self }
         #endif
         _ = Self.keyObserver
-        NotificationCenter.default.addObserver(self, selector: #selector(keyChanged), name: NSWindow.didResignKeyNotification, object: self)
+        _ = Self.resignObserver
     }
     #if KIDO_VISUAL || KIDO_STRESS
     func testInput(_ input: Bool) {
@@ -67,13 +77,6 @@ class OwnerWindow: NSWindow {
         else if isInputWindow { Self.keyWindow = nil }
     }
     #endif
-    @objc private func keyChanged(_ note: Notification) {
-        guard isInputWindow else { return }
-        Self.pendingResign?.cancel()
-        let repaint = DispatchWorkItem { Self.changeKeyWindow(NSApp.keyWindow) }
-        Self.pendingResign = repaint
-        DispatchQueue.main.async(execute: repaint)
-    }
     private static func changeKeyWindow(_ window: NSWindow?) {
         pendingResign?.cancel()
         pendingResign = nil

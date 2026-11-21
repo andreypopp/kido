@@ -391,7 +391,7 @@ final class WindowView: NSView {
         displayedPaneIDs = nextDisplayedPaneIDs
         for (id, host) in floatWindows { host.content.subviews = floating[id] ?? [] }
         syncHosts()
-        for view in views.values where existing[view.pane] == nil {
+        for view in views.values where !view.isHiddenOrHasHiddenAncestor {
             view.updateWebview(session?.webview(view.pane))
         }
         updateFocusTreatment()

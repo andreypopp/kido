@@ -3,7 +3,7 @@
 
 The window stays off screen (KIDO_APP_BACKGROUND=1); see docs/design-app.md, "Stress harness".
 """
-import argparse, base64, collections, glob, json, os, random, re, signal, socket, struct, subprocess, sys, tempfile, threading, time
+import argparse, base64, collections, glob, json, os, random, re, resource, signal, socket, struct, subprocess, sys, tempfile, threading, time
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--app', required=True)
@@ -13,6 +13,11 @@ ap.add_argument('--duration', type=float, default=60)
 ap.add_argument('--find', type=int, default=1)
 ap.add_argument('--out', required=True)
 args = ap.parse_args()
+
+soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+limit = 4096 if hard == resource.RLIM_INFINITY else min(4096, hard)
+if soft != resource.RLIM_INFINITY and soft < limit:
+    resource.setrlimit(resource.RLIMIT_NOFILE, (limit, hard))
 
 out = os.path.abspath(args.out)
 os.makedirs(out + '/config/ko', exist_ok=True)
@@ -36,26 +41,37 @@ class log:
         sys.stdout.flush()
 
 
-def ko(*a, body=None):
+def ko(*a, body=None, layout_deadline=None):
     """One request to the private server; the parsed answer, or None when it failed."""
-    command = [args.ko, *a, '--server', server]
-    log.write(json.dumps(dict(event='ko', command=a, body=body, uptime=time.monotonic())) + '\n')
-    if body is not None:
-        path = server + '/stress-body.json'
-        open(path, 'w').write(json.dumps(body))
-        command += ['--input', path]
-    try:
-        p = subprocess.run(command, capture_output=True, text=True, timeout=8, env=helper_env)
-    except subprocess.TimeoutExpired:
-        log.write(json.dumps(dict(command=a, error='timeout')) + '\n')
-        return None
-    if p.returncode:
-        log.write(json.dumps(dict(command=a, error=p.stderr.strip())) + '\n')
-        return None
-    try:
-        return json.loads(p.stdout) if p.stdout.strip() else {}
-    except ValueError:
-        return p.stdout
+    new_sessions = [session for session in body['layout']['sessions'] if 'id' not in session] if layout_deadline is not None else []
+    while True:
+        command = [args.ko, *a, '--server', server]
+        log.write(json.dumps(dict(event='ko', command=a, body=body, uptime=time.monotonic())) + '\n')
+        if body is not None:
+            path = server + '/stress-body.json'
+            open(path, 'w').write(json.dumps(body))
+            command += ['--input', path]
+        timeout = 8 if layout_deadline is None else min(8, layout_deadline - time.monotonic())
+        if timeout <= 0:
+            log.write(json.dumps(dict(command=a, error='layout conflict deadline')) + '\n')
+            return None
+        try:
+            p = subprocess.run(command, capture_output=True, text=True, timeout=timeout, env=helper_env)
+        except subprocess.TimeoutExpired:
+            log.write(json.dumps(dict(command=a, error='timeout')) + '\n')
+            return None
+        if p.returncode:
+            log.write(json.dumps(dict(command=a, error=p.stderr.strip(), response=p.stdout.strip())) + '\n')
+            if layout_deadline is not None and p.stderr.strip() == 'ko api: HTTP 409':
+                current = json.loads(p.stdout)
+                body['revision'] = current['revision']
+                body['layout']['sessions'] = current['layout']['sessions'] + new_sessions
+                continue
+            return None
+        try:
+            return json.loads(p.stdout) if p.stdout.strip() else {}
+        except ValueError:
+            return p.stdout
 
 
 def api(method, path, body=None):
@@ -163,7 +179,10 @@ def setup(full):
     sessions[0]['windows'].append({'name': 'images', 'tree': pane('exec /usr/bin/python3 -I ' + out + '/image.py')})
     sessions[1]['windows'].append({'name': 'seq', 'tree': pane('seq 2000000; sleep 3600')})
     sessions[2]['windows'].append({'name': 'yes', 'tree': pane('yes | head -50000000; sleep 3600')})
-    if api('PUT', '/layout', {'revision': 0, 'layout': {'sessions': sessions}}) is None:
+    current = api('GET', '/layout')
+    if current is None:
+        raise RuntimeError('the stress layout could not be read')
+    if ko('api', '-X', 'PUT', '/layout', body={'revision': current['revision'], 'layout': {'sessions': current['layout']['sessions'] + sessions}}, layout_deadline=time.monotonic() + 5) is None:
         raise RuntimeError('the stress layout was refused')
     log.write(json.dumps(dict(event='server-started')) + '\n')
 
@@ -418,7 +437,7 @@ for l in lines:
 done = next((l for l in app if l.get('done')), None)
 steps_logged = [l for l in app if 'step' in l]
 bad = [l for l in lines if any(w in l for w in ('Sanitizer', 'SUMMARY:', 'panic', 'Fatal error', 'Assertion failed', 'Main Thread Checker:', 'UI API called on a background thread'))]
-shown = [l for l in steps_logged if l['visible'] or l['key'] or l['main'] or l['active'] or l['onScreenWindows']]
+shown = [l for l in steps_logged if l['visible'] or l['key'] or l['main'] or l['active'] or l['mainWindowOnScreen']]
 new = sorted(path for path in reports() - before
              if report_matches(open(path).read(), p.pid))
 problems = list(server_problems)
