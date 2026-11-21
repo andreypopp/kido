@@ -1480,9 +1480,7 @@ mod tests {
         out
     }
 
-    // libghostty-vt panics `increaseCapacity OutOfSpace` and aborts the test process.
     #[test]
-    #[ignore]
     fn a_region_scroll_across_a_page_full_of_hyperlinks_keeps_the_terminal() {
         let mut terminal = make(80, 24);
         let mut bytes = String::new();
@@ -1494,7 +1492,22 @@ mod tests {
         }
         bytes.push_str("\x1b]8;;\x1b\\\x1b[2;24r\x1b[24;1H\n");
         terminal.write(bytes.as_bytes());
-        assert_eq!(terminal.memory().unwrap().pages, 2);
+        let top = u32::try_from(terminal.total_rows().unwrap() - 24).unwrap();
+        for y in 0..24 {
+            let row = top + y;
+            let text = terminal
+                .text_between(Span {
+                    start: Cell { row, col: 0 },
+                    end: Cell { row, col: 79 },
+                    shape: Shape::Rectangle,
+                })
+                .unwrap();
+            assert_eq!(text, if y < 22 { b"X".as_slice() } else { b"" });
+        }
+        let screen = String::from_utf8(terminal.dump(Format::Vt).unwrap()).unwrap();
+        for i in 1777..1787 {
+            assert!(screen.contains(&format!(";{i}\x1b\\")), "link {i}");
+        }
     }
 
     fn osc8(i: usize) -> String {
