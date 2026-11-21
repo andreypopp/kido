@@ -2051,6 +2051,64 @@ light and dark in the gallery.
   foreground, then the separator; at the narrow breakpoints the cell
   stays and the model goes first. The prompt carries the thread and
   koa writes the marker; the queue and steers the same.
+- **The classifier MVP, reviewed** (2026-11-21; the user promoted
+  the MVP of plans/koa-thread-classifier.md; the page's panel
+  gained drag, rename and a pending prompt). What agrees with the
+  design and stays: the panel's rows (28pt, "# name" ellipsized at
+  220pt in line mode and 45% in block mode, the summary muted and
+  ellipsized, the age at the right), a click filters, the current
+  row's well2 fill, "All threads", both modes. Accepted from the
+  MVP, now the rule: a thread name is a topic, 1 to 200 characters
+  of any text (the model is asked for 60 at most), no longer the
+  32-character slug; the name is never cut except by the ellipsis
+  of its box, and every ellipsized name (panel, pill, capsule, the
+  foot's cell) carries the full name in its `title`. The summary is
+  the newest non-empty first line of a user or assistant message of
+  the thread (the "last section" wording above is superseded). The
+  unit of a move is the turn: a drop on a user message or on any
+  section of its reply moves the message and its replies. The rules
+  the MVP lacked:
+  - *Drag.* A press on a row and 5pt of travel start the drag, in
+    both modes; the row dims to 50%, the pointer is the grabbing
+    hand over the whole page, no ghost (the dimmed row and the
+    target's highlight are the feedback). Escape during the drag
+    cancels it. The scroller autoscrolls within 48pt of its edges,
+    as the MVP has it. At rest a row keeps the hand cursor; there is
+    no grab cursor at rest and no handle.
+  - *Drop target.* One highlight for both targets, in the dragged
+    thread's colour (not `--thread-0`): a 2px outline at 50% of the
+    colour and a fill at 6%, with 6pt radius; on a panel row the
+    outline is inset (offset −2px, inside the row's radius, over the
+    hover fill), on a transcript message it is 3px outside the
+    message's box. A row is a target only for another thread; a
+    message only when its turn is not already in the dragged
+    thread. Nothing else highlights; the pointer stays the grabbing
+    hand over a non-target.
+  - *Merge.* A drop on a row merges the dragged thread into it
+    (from → to), no confirmation; the dragged thread leaves the
+    panel in the next state, and a filter on it becomes a filter on
+    the target. A rename to the name of an existing thread is the
+    same merge.
+  - *Rename.* A double-click on a row; a single click filters after
+    250ms, so a double-click does not filter first (needed in line
+    mode, where the click closes the panel; one rule for both
+    modes). The field replaces the name in place and takes the
+    row's whole width (the summary and the age hide while renaming):
+    the row's font (.88em prose) in the foreground, the thread's "#"
+    kept before it in the colour, a 1px edge at the hairline, 4pt
+    radius, 2pt/6pt padding, the row's 28pt height unchanged, the
+    name selected on open. Enter and a click outside commit, Escape
+    cancels; an empty or unchanged name reverts silently; an
+    invalid one (over 200 characters) is cut to 200. No keyboard
+    route to rename or merge yet (a palette command later).
+  - *The pending prompt.* A prompt that waits for the classifier
+    shows at once in the queue dock as a queued row (the user
+    block's style, one ellipsized line, the attachment count): its
+    kind label is the mode word as for a queued row ("sending",
+    "steer", "follow-up") followed by the page's working dots, and
+    it has no remove control; it becomes a transcript item when the
+    label arrives. A prompt whose thread is decided without the
+    classifier (a filter, a typed marker) shows no pending row.
 - **Narrow pane**: the page's existing narrow breakpoint (the
   transcript's narrow padding rule), not a new one: the panel is the
   pane's width minus 16pt and the section's edge sits 8pt left of
