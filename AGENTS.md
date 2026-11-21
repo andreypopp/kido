@@ -843,7 +843,9 @@ delegates as its brief says and does not write code.
   visual ONLY="<Class>/<test> ..."`), never a whole class. Record
   only those (`RECORD=1` with `ONLY`). A whole class runs at most
   once, at the end. The full visual stage runs only through the final
-  `scripts/checks.sh`. A manager states in its report how many visual
+  `scripts/checks.sh`. A whole suite, class or stage never runs
+  again: after a failure and its fix, only the failing tests and the
+  tests that the fix touches run, by name. A manager states in its report how many visual
   runs the unit made, and the reason for each run of a whole class or
   stage beyond the one at the end. Revert a
   snapshot that a run rewrote without an intended change (identical,

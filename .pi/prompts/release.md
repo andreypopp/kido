@@ -39,7 +39,9 @@ it.
 3. When Kido.app must release first, send @kido-app (message_agent) the commit, the
    changes since the last release, and whether the schemas or the pin
    changed. Ask it to run its checks on that commit of main (make test, the
-   whole make visual and make stress, in app/), release Kido.app with
+   whole make visual and make stress, in app/; each whole target runs once:
+   after a fix, only the failing tests and the tests that the fix touches
+   run again, by name), release Kido.app with
    app/scripts/release.sh, and tell you the tag and tap commit. Then end the
    turn. Its reply wakes you. Otherwise go to step 4 at once.
 4. When kido-app reports the release, or no app release is needed,
