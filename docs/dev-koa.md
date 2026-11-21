@@ -1,11 +1,7 @@
 # koa: development
 
-This file is koa's development workflow: the source layout, the
-build, installation and runs from a checkout, the tests and their
-fixtures, the page's visual checks and measurement. The design of
-koa, its page and its agent extension is in
-[design-koa.md](design-koa.md). The repository's rules for agents,
-tests and waits are in `AGENTS.md`.
+This doc describes workflow developing code inside `koa/`. The design of koa
+is in [design-koa.md](design-koa.md).
 
 ## Source layout and types
 
@@ -13,21 +9,21 @@ Start at these owners rather than duplicating their contracts:
 
 - `koa/koa.ts`: program startup, HTTP dispatch and view selection.
 - `koa/koa-agents.ts`, `koa/koa-view.ts`, `koa/koa-inbox.ts`: agent
-  lifetime, session projection and pane message delivery.
+  lifetime, session projection and message delivery.
 - `koa/koa-agent.ts`: tools, registry, routed operations and jobs.
 - `koa/koa-records.ts`, `koa/records.ts`: page records and extension
-  details. `webview/ko-api.d.ts` is generated from ko's schema
-  (`make schemas`).
-- `koa/page/`: page composition, editor, Markdown and pure rendering
-  models. `koa/page/page.html` is the real DOM structure used by tests.
-- `webview/index.ts`: pane and browser transports.
-- `koa/scripts/`: the check entry `test.sh`, the Node gate `node.sh`,
-  the lint `lint.py` and the prompt dump `dump-prompts.ts`.
-- `koa/testdata/`: fixtures, replay, scenarios, fake ko, themes and
-  the prompt snapshot.
+  details. 
+- `koa/page/`: page composition, editor, Markdown and pure rendering models.
+  `koa/page/page.html` is the real DOM structure used by tests.
+- `koa/scripts/`: the check entry `test.sh`, the Node gate `node.sh`, the
+  lint `lint.py` and the prompt dump `dump-prompts.ts`.
+- `koa/testdata/`: fixtures, replay, scenarios, fake ko, themes and the
+  prompt snapshot.
 - `koa/visual/`: the page's visual checks, a TypeScript runner on
-  Playwright's WebKit, with its references in
-  `koa/visual/__Snapshots__/`.
+  Playwright's WebKit, with its references in `koa/visual/__Snapshots__/`.
+
+- `webview/ko-api.d.ts` is generated from ko's schema (`make schemas`).
+- `webview/index.ts`: pane and browser transports.
 
 `koa/package.json` and its lockfile pin the build and test
 dependencies, including the real pi used by tests. Each target that
@@ -44,8 +40,7 @@ Install the released harness with Homebrew:
 brew install andreypopp/tap/koa
 ```
 
-A checkout needs Node 24 or newer with npm. koa builds independently
-of cargo and git:
+A checkout needs Node 24 or newer with npm:
 
 ```sh
 make -C koa
@@ -89,32 +84,15 @@ stop or change the live server that runs the developer's pane.
 
 ## Checks
 
-A koa unit (a change only under `koa/`) runs only koa's checks,
-through `koa/Makefile`. It never runs a check outside `koa/`: no
-`make lint`, `make test`, `scripts/checks.sh`, `scripts/verify.sh`,
-cargo or Swift. Its fast gate is `make -C koa check`; its final
-verification is `make -C koa verify` when it changes the page or its
-visual checks, else `make -C koa check`. The one Rust build is the
-fake ko that `make -C koa test` builds. CI runs the rest.
+`koa/Makefile` is the one entry point of koa's checks:
 
-`koa/Makefile` is the one entry point of koa's checks, and
-`koa/scripts/test.sh` runs them:
-
-- `make -C koa typecheck` checks both TypeScript projects (`koa/` and
-  `koa/page/`).
-- `make -C koa lint` runs `koa/scripts/lint.py` (TS hygiene, the
-  `process.kill` sites, history comments, also in `webview/`) and
-  compares `koa/testdata/ko-prompts.txt` with the output of
-  `koa/scripts/dump-prompts.ts`.
-- `make -C koa test` builds fake ko (`make build-fake-ko`) and koa
-  and runs the Node suite; `koa/testdata/run-tests.mjs` schedules it
-  with the long files first. `FILE=` runs only the named files.
-- `make -C koa check` runs these three.
-- `make -C koa prompts` (or the root `make prompts`) regenerates
-  `koa/testdata/ko-prompts.txt` when the extension's prompt text
-  changes on purpose.
-- `make -C koa visual` runs the page's visual checks ("Host visual
-  checks"). `make -C koa verify` runs `check` and `visual`.
+- `make -C koa typecheck` checks all TypeScript code in `koa/`
+- `make -C koa lint` other lint checks
+- `make -C koa test` runs test suite, `FILE=` runs only the named files.
+- `make -C koa check` runs these three above
+- `make -C koa prompts` regenerates `koa/testdata/ko-prompts.txt`
+- `make -C koa visual` runs the page's visual checks 
+- `make -C koa verify` runs `check` and `visual`.
 
 ```sh
 make -C koa test FILE=koa-scroll.test.ts
@@ -127,172 +105,54 @@ Under `KO_TS_TEST_REQUIRED=1`, which CI sets, a missing Node is a
 failure. Fixture children get private home and agent directories. A
 gate waits for a test action, not elapsed time.
 
-CI runs koa's checks through the repository's verification, which
-calls these targets, and installs koa with `make -C koa install`,
-then runs the installed `koa --help`. CI does not run `make -C koa
-visual`.
-
 ## Choose the test boundary
 
-Use the narrowest test that observes the rule:
+Write the narrowest test that observes the rule:
 
-- Pure parsers, queue matching, scrolling, Markdown, extents and
-  annotation conversion belong in the corresponding
-  `koa/koa-*.test.ts` files.
-- DOM presence, order and event handling belong in
-  `koa/koa-dom.test.ts`. Its fake document uses the real page HTML
-  but does not implement CSS layout. Drive its frame, observer and
-  clock seams for reveal behavior; do not assert browser geometry.
-- Extension tools and registry behavior use
-  `koa/koa-agent-fixture.ts`. These tests have a fake pi and host,
-  plus the typed fake ko. They do not need a real model session just
-  to inspect tool registration.
-- Session, startup, reload, switch, route and feed behavior use
-  `koa/koa-program-fixture.ts`: real pinned pi in koa and a scripted
-  model. This catches SDK event-order assumptions that a fake pi
-  cannot establish.
-- Page appearance and browser-computed geometry use the replay-driven
-  Playwright WebKit cases of `koa/visual/`. Host-state changes alone must not
-  rewrite page snapshots.
-- Native focus, menus, editor floats, the bridge and the real serve
-  path use the app's tests in the VM
-  ([build.md](build.md#the-visual-test-vm)). Browser mode is not
-  their substitute: it has no `window.ko`, native theme or native
-  sandbox, so a browser test does not prove that body transport,
-  focus, keys, clipboard and previews work.
+- Pure logic (parsers, queues, scrolling, Markdown): the
+  `koa/koa-*.test.ts` file of its module.
+- DOM presence, order and events: `koa/koa-dom.test.ts`, on the real
+  page HTML without CSS layout. Do not assert geometry there.
+- Extension tools and the registry: `koa/koa-agent-fixture.ts`, a fake
+  pi and host with the fake ko.
+- Session, startup, reload and feed behaviour:
+  `koa/koa-program-fixture.ts`, the real pinned pi with a scripted
+  model.
+- Page appearance and browser geometry: a visual case in `koa/visual/`.
+- Native behaviour (focus, menus, floats, the bridge): the app's
+  tests, not koa's. Browser mode does not replace them.
 
 ## Fake ko and fake model
 
-`koa/testdata/fake_ko/` is a Rust workspace member built by
-`make build-fake-ko`. It decodes and encodes real ko protocol types,
-so wire changes fail its build. Files drive message arrival and gates;
-stdin receives acknowledgements. Deliberately malformed messages use
-the fixture's raw-feed path. Runtime exec tests run the requested argv
-with only the requested environment. A separate integration case
-checks the same exec client against a real command runtime.
-
-`koa/koa-fake-provider.ts` is an HTTP model provider, not a fake pi
-process. It speaks the OpenAI completions stream and scripts text,
-thinking, tool argument chunks, errors and held replies. It rejects
-unexpected request methods, paths, authorization, models and script
-exhaustion and records violations. Tests release named gates and check
-requests. Private model settings use a literal test key, so no real
-credentials or model service is needed.
-
-Use real session files for saved history and small test extensions
-for dialogs, startup UI and extension errors. Do not enlarge a fake
-model to invent host facts.
+`koa/testdata/fake_ko/` is a Rust program on ko's real protocol types,
+so a wire change fails its build. `make -C koa test` builds it, and the
+fixtures drive it. `koa/koa-fake-provider.ts` is the scripted model: an
+HTTP provider that refuses a request that its script does not expect.
+No test needs credentials or a model service.
 
 ## Replay scenarios and snapshots
 
-`koa/testdata/replay.ts` is a test server, not a product mode. It
-serves the built page through `assemblePage` and the SDK without
-loading pi. `koa/testdata/scenario.ts` types scenario steps against
-PageRecord and `koa/page/http.ts`. Shared scenario data belongs in
-`koa/testdata/scenario-parts.ts` only when several scenarios use it.
+`koa/testdata/replay.ts` serves the built page from a scenario,
+without pi. A scenario in `koa/testdata/scenarios/` is a typed list of
+steps (`koa/testdata/scenario.ts`): records to send and page requests
+to expect. An unexpected request or an unused step fails the run.
 
-A script opens with records, then expects either an explicit advance
-or one page request. A request step can send records before and after
-its typed reply, and hold that reply until released. Unexpected method,
-path or checked body produces a mismatch, not a successful default.
-The test must finish with every step consumed, no mismatch and no
-held reply. File and attachment requests use the product's serving
-modules rather than a permissive mock. `koa/koa-replay.test.ts`
-checks this harness.
-
-Add new states as typed steps under `koa/testdata/scenarios/`.
-Stable path names and explicit clock seams make captures deterministic.
-A new state does not require a model recording or a product test flag.
-Use one fixture with multiple phases for related states and resize it
-for width changes instead of restarting the whole chain.
-
-`koa/visual/cases.ts` assigns capture policy;
-`koa/visual/capture.ts` crops the union of matched selectors
-at the image's device scale. Missing or out-of-page rectangles fail,
-not clamp. Insets include borders and shadows. Most images cover a
-component; composition anchors cover the whole page. Geometry-only
-states keep their assertions without a redundant image. Capture stable
-states, not an uncontrolled animation frame: before each capture the
-runner pauses the infinite page animations (`dots-bounce`, `burn`) at
-their start, and it repeats a screenshot during which the cropped
-elements moved.
-
-The app's `WebviewPaneTests` checks the generic sandbox and WebKit
-constraints. The test files, not a duplicated method list, define
-coverage.
-
-## Host visual checks
-
-`koa/visual/` is a TypeScript runner (`koa/visual/main.ts`) that
-drives the WebKit of the pinned `playwright` package headless: no
-native code, no app sources and no window on the user's screen.
-`make -C koa visual` builds the page, installs that WebKit with the
-package's own CLI when it is missing (into Playwright's cache outside
-the repository, `~/Library/Caches/ms-playwright/` on macOS) and runs
-every fixture. It runs only on the host, never in the VM or in CI. The
-decision: the page renders in WebKit alone, so the app's pane, bridge
-and native chrome do not belong in its references, and a headless run
-needs no build and no focus. Playwright's WebKit is not the system's
-WebKit, so its pixels differ from the app's pane; a change of the
-`playwright` pin re-records the references.
-
-One browser serves the run; each fixture gets a fresh context and its
-own `koa/testdata/replay.ts --browser --headless` process, because a
-replay holds one scenario cursor. The runner owns that process: it
-reads the page URL from the first line, fails on an early exit or a
-missed deadline, checks that the replay consumed every step, also
-when the fixture failed, and terminates only that process. A page
-gets an explicit viewport size in whole points at device scale 2 and
-its initial scripts through its context. The runner sets one time
-zone (in `koa/visual/context.ts`) for the replay process and the
-page, so the captured times do not depend on the host's zone. Images
-that a fixture uploads are drawn with Canvas in a separate page of
-the same browser. The runner prints one line per fixture, so
-`scripts/quiet-limit 60` sees progress, and a summary line `VISUAL
-pass=N diff=N missing=N errors=N` at the end.
-
-The theme is data, not a terminal: `koa/testdata/theme-light.json`
-and `koa/testdata/theme-dark.json` hold what `WebviewTheme` in the app
-gives a pane (colours, palette, font, cell metrics, appearance and
-inset). The runner installs it as the pane's `window.ko` theme at
-document start and switches it for the dark phases. The app's
-`WebviewThemeTests` checks that `WebviewTheme`'s data for the bundled
-light and dark themes, with a fixed font configuration and accent
-colour, equals these files except for the cell metrics, so a change
-of the app's theme output fails there first. The cell metrics depend
-on the machine's font rendering; the files pin them for the runner.
-
-Native behaviour (the bridge, pane chrome, native find, focus, preview
-and the pasteboard) is the app's to test, not koa's.
-
-One set of references is committed in `koa/visual/__Snapshots__/`,
-recorded on the user's Mac with this runner. A missing or different
-reference fails the run; the actual image and the difference go to
-`build/koa-visual/output/`, which each run clears. Select a fixture
-or capture with `ONLY`; all phases of a selected fixture still run.
-`ScrollbarJumpMountsHistory` runs only when it is named. Record with
-`RECORD=1`. `koa/visual/pixels.ts` decodes and encodes the PNGs and
-compares premultiplied RGBA with a tolerance of one step per channel;
-`make -C koa test` runs its unit tests.
+`make -C koa visual` runs each fixture of `koa/visual/cases.ts`
+against its replay in headless WebKit and opens no window. For a new
+state, add the scenario steps, the capture and its policy in
+`cases.ts`, and the actions in `koa/visual/driver.ts`. A capture is
+compared with its reference in `koa/visual/__Snapshots__/`; the actual
+image and the difference go to `build/koa-visual/output/`.
 
 ```sh
 make -C koa visual ONLY=Fixture
-make -C koa visual ONLY=Fixture RECORD=1
+make -C koa visual ONLY=Fixture/capture RECORD=1
 ```
 
-Use actual names from `koa/visual/cases.ts`. Record the affected
-images once after the last implementation and review change, then
-inspect them.
+Record only the captures that you changed, after the last code change,
+then open the images.
 
 ## Measurement
 
-`koa/page/metrics.ts` instruments only metrics mode. The report
-separates receipt, frame scheduling and frame work; a frame timestamp
-is not proof of completed paint. Timing and probe passes are separate
-because DOM instrumentation changes cost. The probe counts geometry
-reads after writes and working-mark detachments. Chrome heap and
-WebContent physical footprint are different measures and must not be
-compared as the same quantity.
-
-Loaded history remains in the model while DOM windowing limits
-mounted rows. Measurement must distinguish those two costs.
+`koa --metrics PATH` writes the page's rendering metrics
+(`koa/page/metrics.ts`); `--metrics-mode` selects the measure.
