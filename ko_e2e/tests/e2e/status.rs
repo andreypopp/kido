@@ -179,6 +179,108 @@ fn record<'a>(status: &'a Value, id: &str) -> &'a Value {
 }
 
 #[test]
+fn status_route_replaces_subtrees_atomically() {
+    let s = start(&[]);
+    let pane = s.token_pane("stty raw -echo; exec cat");
+    let other = s.token_pane("exec cat");
+    s.wait_row(&other, "the other cat", |row| {
+        row["status"]["title"] == "cat"
+    });
+    let mut probe = Probe::new(&s, pane.clone());
+    probe.osc("state=idle:app=koa");
+    let path = format!("/panes/{pane}/status");
+    crate::panes::post(
+        &s,
+        None,
+        &path,
+        &json!({"type":"set","id":"outside","state":"idle"}),
+    );
+    let before = probe.next();
+    let body = json!({"type":"replace_subtrees","roots":["agents","jobs"],"records":[
+        {"id":"agents/a","state":"working","selection":"offered"},
+        {"id":"agents/a/jobs/b","state":"working","title":"build"}
+    ]});
+    assert_eq!(
+        s.ko(
+            &["api", "-X", "POST", "--input", "-", &path],
+            &body.to_string()
+        )
+        .json(),
+        json!({})
+    );
+    let first = probe.next();
+    assert_eq!(serial(&first), serial(&before) + 1);
+    assert_eq!(records(&first).len(), 4);
+    assert_eq!(record(&first, "")["app"], "koa");
+    assert_eq!(record(&first, "outside")["state"], "idle");
+    let mut selected = body.clone();
+    selected["records"][0]["selection"] = json!("selected");
+    crate::panes::post(&s, None, &path, &selected);
+    let second = probe.next();
+    assert_eq!(serial(&second), serial(&first) + 1);
+    assert_eq!(
+        record(&second, "agents/a")["started"],
+        record(&first, "agents/a")["started"]
+    );
+    assert_eq!(
+        record(&second, "agents/a/jobs/b")["started"],
+        record(&first, "agents/a/jobs/b")["started"]
+    );
+    crate::panes::post(&s, None, &path, &selected);
+    assert_eq!(
+        s.row(&pane)["status"]["program_status"],
+        second["program_status"]
+    );
+    for malformed in [
+        json!({"type":"replace_subtrees","roots":[""],"records":[]}),
+        json!({"type":"replace_subtrees","roots":["agents","agents/a"],"records":[]}),
+    ] {
+        crate::panes::refused(
+            crate::panes::api(&s, None, "POST", &path, &malformed),
+            400,
+            "invalid",
+            "",
+        );
+    }
+    crate::panes::refused(
+        crate::panes::api(&s, Some(&other), "POST", &path, &body),
+        409,
+        "refused",
+        "change only its own status",
+    );
+    let full: Vec<_> = (0..ko_wire::protocol::MAX_STATUS_RECORDS)
+        .map(|i| json!({"id":format!("jobs/j{i}"),"state":"idle"}))
+        .collect();
+    crate::panes::refused(
+        crate::panes::api(
+            &s,
+            None,
+            "POST",
+            &path,
+            &json!({"type":"replace_subtrees","roots":["agents","jobs"],"records":full}),
+        ),
+        409,
+        "refused",
+        "capacity",
+    );
+    assert_eq!(
+        s.row(&pane)["status"]["program_status"],
+        second["program_status"]
+    );
+    crate::panes::post(
+        &s,
+        None,
+        &path,
+        &json!({"type":"replace_subtrees","roots":["agents","jobs"],"records":[]}),
+    );
+    let cleared = probe.next();
+    assert_eq!(serial(&cleared), serial(&second) + 1);
+    assert_eq!(records(&cleared).len(), 2);
+    assert_eq!(record(&cleared, "")["app"], "koa");
+    assert_eq!(record(&cleared, "outside")["state"], "idle");
+}
+
+#[test]
 fn status_route_shares_records_and_restricts_the_caller() {
     let s = start(&[]);
     let pane = s.token_pane("stty raw -echo; exec cat");

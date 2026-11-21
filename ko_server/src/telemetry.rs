@@ -73,7 +73,12 @@ impl Telemetry {
         }
     }
 
-    pub(crate) fn status(&mut self, report: StatusReport, now: Mono, writer: Writer) -> bool {
+    pub(crate) fn status(
+        &mut self,
+        report: StatusReport,
+        now: Mono,
+        writer: Writer,
+    ) -> Result<bool, crate::program_status::CapacityExceeded> {
         let foreground = match writer {
             Writer::Terminal => self.foreground.as_ref(),
             Writer::Route => None,

@@ -59,8 +59,12 @@ route set.
   [root record](https://www.superlogical.com/rex/docs/build/program-status#records-and-ids)
   has the empty id and reports the program's overall status. Ids nest
   with `/` (`build`, `build/test`).
-- The set holds at most 64 records. A new record over the limit
-  removes the one updated longest ago.
+- The set holds at most `MAX_STATUS_RECORDS` records
+  (`ko_wire/src/protocol.rs`), which `GET /version` reports. A new
+  record of a `set` over the limit removes the one updated longest
+  ago. A route `replace_subtrees` replaces whole subtrees atomically
+  and never evicts: over the limit it changes nothing
+  (protocol.md, section 6).
 - A report whose id is in the set and whose fields equal the stored
   record changes nothing: no serial, no event, no move in the
   eviction order. Otherwise the stored record is removed and the new
@@ -118,8 +122,8 @@ Kido.app draws non-root records as child rows under the pane row,
 nested by id, in id order: a record nests under each ancestor id that
 is present among the non-root records. Each child row shows the record's title, or
 its id, its raw state and its message. A visit does not acknowledge
-them. Claude Code reports each subagent this way, and koa's agent extension
-each job
+them. Claude Code reports each subagent this way, and koa its
+subagents and jobs, as one replacement derived from its state
 (design-koa.md, "Status records and signals").
 
 ### Reduction

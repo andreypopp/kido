@@ -34,6 +34,7 @@ type ViewOptions = {
   cancelEditor(): void;
   shutdown(): void;
   agentsChanged(): void;
+  changed(): void;
 };
 
 export type AgentView = ReturnType<typeof createView>;
@@ -53,6 +54,7 @@ export function createView(options: ViewOptions) {
   let root: Root = { value: "idle", message: options.name ?? "pi" };
   let lastText = "";
   const publish = (dialogsChanged = false) => {
+    options.changed();
     if (life.type === 'starting' && !dialogsChanged) return;
     const next = options.compose(own());
     if ('threads' in next) publishedThreads = next.threads;
@@ -70,6 +72,7 @@ export function createView(options: ViewOptions) {
   const status = (value: Root["value"] | "clear", message = state.name) => {
     if (value !== "clear") root = { value, message };
     options.status(value, message, state.dialogs[0]?.title);
+    options.changed();
   };
   const background = (work: Promise<unknown>) => { void work.catch(error => { if (!stopping()) process.stderr.write(`koa: ${errorText(error)}\n`); }); };
   let sessionStop = new AbortController();

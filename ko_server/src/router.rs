@@ -305,6 +305,7 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             let version = ServerVersion {
                 version: ours,
                 instance: state.instance().clone(),
+                status_record_limit: protocol::MAX_STATUS_RECORDS,
             };
             ok::<routes::Version>(&mut state.conns[index], &version);
         }
@@ -484,8 +485,11 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             if let Err(refused) = acts_as(caller, id, "change only its own status") {
                 return reply::<routes::SetStatus>(&mut state.conns[index], Err(refused));
             }
-            state.set_status(poll, id, body, crate::telemetry::Writer::Route);
-            ok::<routes::SetStatus>(&mut state.conns[index], &Empty {});
+            let result = state
+                .set_status(poll, id, body, crate::telemetry::Writer::Route)
+                .map(|()| Empty {})
+                .map_err(|_| Error::new(ErrorKind::Refused, "status record capacity exceeded"));
+            reply::<routes::SetStatus>(&mut state.conns[index], result);
         }
         Request::SetVar { id, name, body } => {
             if let Err(refused) = acts_as(caller, id, "change only its own variables") {
@@ -915,6 +919,7 @@ mod tests {
         let version = protocol::json(&ServerVersion {
             version: ours.clone(),
             instance: server.state.instance().clone(),
+            status_record_limit: protocol::MAX_STATUS_RECORDS,
         });
         let mismatch = format!(
             r#"{{"kind":"protocol_mismatch","protocol":"{}","vt":"{}","build":"{}","message":"protocol major mismatch"}}"#,

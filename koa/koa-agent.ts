@@ -38,7 +38,7 @@ import { randomBytes } from "node:crypto";
 import { type WriteStream, createWriteStream, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import type { CompletionContext } from "./completion-context.ts";
-import type { AgentHost, Agent, Extension, JobsView, Records, SpawnPlan } from "./koa-agents.ts";
+import type { AgentHost, Agent, Extension, JobsView, SpawnPlan } from "./koa-agents.ts";
 import { runtimeExec, lineReader, openStream, runCommand, apiCall, apiArgs, KO_TIMEOUT_MS, type Reply, type ExecOptions, type ExecResult } from "./runtime-exec.ts";
 import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, cleanLine, isRecord, isString, str, threadSections } from "./text.ts";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
@@ -140,7 +140,6 @@ const steerHeader = (from: string, returnTo?: { session: string; pane: string },
 
 const MAX_NOTICE_BYTES = 4000;
 const MAX_JOB_TITLE_BYTES = 192;
-const MAX_JOB_MESSAGE_BYTES = 2048;
 
 const MAX_REPORT_BYTES = 1000;
 
@@ -215,7 +214,12 @@ type JobCall = {
   reject(error: unknown): void;
   abort: { signal: AbortSignal; listener: () => void } | null;
 };
+type JobRetention =
+  | { type: "retained" }
+  | { type: "lingering"; timer: NodeJS.Timeout }
+  | { type: "dismissed" };
 type JobOutput = {
+  retention: JobRetention;
   type: "job";
   name: string;
   origin: { type: "async_bash"; thread?: ThreadName; stream: boolean; service: boolean } | { type: "bash"; move: "timeout" | "reload" };
@@ -243,7 +247,6 @@ export const isBackgroundJob = (job: Job): job is BackgroundJob => job.mode.type
 const serviceJob = (job: BackgroundJob): boolean => job.mode.origin.type === "async_bash" && job.mode.origin.service;
 const jobPlace = (job: BackgroundJob, local: JobPlace): JobPlace => job.where.type === "routed" ? { type: "runtime", name: job.where.runtime } : local;
 const jobReference = (job: BackgroundJob, local: JobPlace): JobRef => ({ id: job.id, name: job.mode.name, service: serviceJob(job), log: job.mode.log, command: job.command, startedAt: Date.parse(job.startedAt), place: jobPlace(job, local) });
-const jobRecordState = (job: BackgroundJob): "idle" | "working" => serviceJob(job) ? "idle" : "working";
 const streams = (job: BackgroundJob): boolean => job.mode.origin.type === "async_bash" && job.mode.origin.stream;
 const TAIL_BYTES = 4000;
 const HELD_BYTES = 64 * 1024;
@@ -341,10 +344,11 @@ async function waitJobs(jobs: Job[]): Promise<boolean> {
 }
 
 function pruneJobs(registry: JobRegistry): void {
-  let retained = [...registry.jobs.values()].filter((job) => job.state.type === "ended" && job.state.announced).length;
+  const eligible = (job: Job) => job.state.type === "ended" && job.state.announced && (!isBackgroundJob(job) || job.mode.retention.type === "dismissed");
+  let retained = [...registry.jobs.values()].filter(eligible).length;
   for (const job of registry.jobs.values()) {
     if (retained <= 20) break;
-    if (job.state.type === "ended" && job.state.announced) {
+    if (eligible(job)) {
       registry.jobs.delete(job.id);
       retained--;
     }
@@ -379,59 +383,34 @@ export type JobSink = {
 };
 
 // The jobs of one agent live as long as the agent: a reload replaces the extension that delivers their notices, not them.
-export function createJobs(options: { records: Records; path: () => string; sink: () => JobSink | undefined; view: JobsView | undefined; place: JobPlace }) {
+export function createJobs(options: { changed(): void; path: () => string; sink: () => JobSink | undefined; view: JobsView | undefined; place: JobPlace }) {
   const registry = createJobRegistry("");
-  const jobRecords = new Map<string, { job: BackgroundJob; selected: boolean } & ({ type: "running" } | { type: "viewed" } | { type: "lingering"; timer: NodeJS.Timeout })>();
-  const cleared = new WeakSet<BackgroundJob>();
   let working = false;
-  const selectedJob = (job: BackgroundJob): boolean => options.view?.viewed() === job;
+  const lingerMs = envMs("KO_JOB_RECORD_LINGER_MS", 60000);
   const watched = (job: BackgroundJob): boolean => options.view?.watched(job) ?? false;
-  const write = (id: string | undefined, state: "idle" | "working" | "done" | "error" | "clear", title?: string, message?: string, selected = false): boolean => {
-    const recordId = id === undefined ? options.path() : `${options.path()}/${id}`;
-    const cleanedTitle = title === undefined ? undefined : cleanLine(title, MAX_JOB_TITLE_BYTES);
-    const cleanedMessage = message === undefined ? undefined : cleanLine(message, MAX_JOB_MESSAGE_BYTES);
-    const report: Api["StatusReport"] = state === "clear" ? { type: "clear", id: recordId } : {
-      type: "set", id: recordId, state,
-      ...(cleanedTitle ? { title: cleanedTitle } : {}),
-      ...(cleanedMessage ? { msg: cleanedMessage } : {}),
-      ...(options.view ? { selection: selected ? "selected" as const : "offered" as const, closeable: true } : {}),
-    };
-    return options.records.write(report);
+  const dismiss = (job: BackgroundJob): void => {
+    if (job.mode.retention.type === "dismissed") return;
+    if (job.mode.retention.type === "lingering") clearTimeout(job.mode.retention.timer);
+    job.mode.retention = { type: "dismissed" };
+    options.view?.changed(job);
+    pruneJobs(registry);
   };
-  const clearOne = (id: string): void => {
-    const record = jobRecords.get(id);
-    if (!record) { write(id, "clear"); return; }
-    if (record.type === "lingering") clearTimeout(record.timer);
-    jobRecords.delete(id);
-    cleared.add(record.job);
-    write(id, "clear");
-    options.view?.changed(record.job);
-  };
-  const linger = (id: string): NodeJS.Timeout => {
-    const timer = setTimeout(() => clearOne(id), envMs("KO_JOB_RECORD_LINGER_MS", 60000));
-    timer.unref();
-    return timer;
-  };
-  const put = (job: BackgroundJob, selected: boolean): boolean => job.state.type === "running"
-    ? write(job.id, jobRecordState(job), job.mode.name, job.command, selected)
-    : write(job.id, job.state.end.type === "exit" && job.state.end.code === 0 ? "done" : "error", job.mode.name, jobEndText(job.state.end), selected);
-  const report = (job: BackgroundJob): void => {
-    const id = job.id;
-    if (!jobRecords.has(id) && jobRecords.size >= 32) {
-      const oldest = [...jobRecords].find(([, record]) => record.type === "lingering");
-      if (!oldest) return;
-      clearOne(oldest[0]);
+  const retention = (job: BackgroundJob): void => {
+    if (job.mode.retention.type === "dismissed") return;
+    if (job.state.type === "running" || watched(job)) {
+      if (job.mode.retention.type === "lingering") clearTimeout(job.mode.retention.timer);
+      job.mode.retention = { type: "retained" };
+    } else if (job.mode.retention.type !== "lingering") {
+      const timer = setTimeout(() => { dismiss(job); options.changed(); }, lingerMs);
+      timer.unref();
+      job.mode.retention = { type: "lingering", timer };
     }
-    const selected = selectedJob(job);
-    if (!put(job, selected)) return;
-    const previous = jobRecords.get(id);
-    if (previous?.type === "lingering") clearTimeout(previous.timer);
-    jobRecords.delete(id);
-    jobRecords.set(id, job.state.type === "running" ? { type: "running", job, selected } : watched(job) ? { type: "viewed", job, selected } : { type: "lingering", timer: linger(id), job, selected });
   };
-  const recordOf = (record: string) => {
+  const recordOf = (record: string): BackgroundJob | undefined => {
     const prefix = `${options.path()}/`;
-    return record.startsWith(prefix) ? jobRecords.get(record.slice(prefix.length)) : undefined;
+    if (!record.startsWith(prefix)) return;
+    const job = registry.jobs.get(record.slice(prefix.length));
+    return job && isBackgroundJob(job) && job.mode.retention.type !== "dismissed" ? job : undefined;
   };
   const interval = (): number => envMs("KO_STREAM_INTERVAL_MS", 5000);
   const untilDue = (stream: BackgroundJob["mode"]["stream"]): number => stream.lastBatch + interval() - performance.now();
@@ -459,7 +438,8 @@ export function createJobs(options: { records: Records; path: () => string; sink
     stream.timer.unref();
   };
   const ended = (job: BackgroundJob): void => {
-    if (jobRecords.has(job.id)) report(job);
+    retention(job);
+    options.changed();
     options.view?.changed(job);
     detachJob(job);
     const sink = options.sink();
@@ -474,9 +454,10 @@ export function createJobs(options: { records: Records; path: () => string; sink
     job.state.announced = true;
     pruneJobs(registry);
   };
-  registry.owner = { onStart: report, onOutput: job => options.view?.output(job), onLines(job) { if (streams(job)) schedule(job); }, onEnd: ended };
+  registry.owner = { onStart(job) { retention(job); options.changed(); }, onOutput: job => options.view?.output(job), onLines(job) { if (streams(job)) schedule(job); }, onEnd: ended };
   return {
     registry,
+    selectable: options.view !== undefined,
     set working(value: boolean) { working = value; },
     finishWorking(): void {
       working = false;
@@ -495,30 +476,24 @@ export function createJobs(options: { records: Records; path: () => string; sink
       const job = registry.jobs.get(key.startsWith(`${options.path()}/`) ? key.slice(options.path().length + 1) : key);
       return job && isBackgroundJob(job) ? job : undefined;
     },
-    cleared: (job: BackgroundJob): boolean => cleared.has(job),
+    cleared: (job: BackgroundJob): boolean => job.mode.retention.type === "dismissed",
     reference: (job: BackgroundJob): JobRef => jobReference(job, options.place),
     snapshot(job: BackgroundJob): JobSnapshot {
       const { id, name, ...facts } = jobReference(job, options.place);
-      const state: JobSnapshot["state"] = cleared.has(job) ? { type: "cleared" } : job.state.type === "ended" ? { type: "ended", end: job.state.end, at: job.state.at } : { type: "running" };
+      const state: JobSnapshot["state"] = job.mode.retention.type === "dismissed" ? { type: "cleared" } : job.state.type === "ended" ? { type: "ended", end: job.state.end, at: job.state.at } : { type: "running" };
       return { ...facts, name: cleanLine(name, MAX_JOB_TITLE_BYTES), state };
     },
     viewChanged(): void {
-      for (const [id, record] of jobRecords) {
-        const selected = selectedJob(record.job), keep = watched(record.job);
-        if (record.type === "lingering" && keep) { clearTimeout(record.timer); jobRecords.set(id, { type: "viewed", job: record.job, selected }); }
-        else if (record.type === "viewed" && !keep) jobRecords.set(id, { type: "lingering", timer: linger(id), job: record.job, selected });
-        else if (selected !== record.selected) record.selected = selected;
-        else continue;
-        put(record.job, selected);
-      }
+      for (const job of background()) retention(job);
+      options.changed();
     },
     stop(job: BackgroundJob): void { stopJob(job); },
-    clear(job: BackgroundJob): void { clearOne(job.id); },
+    clear(job: BackgroundJob): void { dismiss(job); options.changed(); },
     close(record: string): boolean {
-      const held = recordOf(record);
-      if (!held) return false;
-      if (held.type === "running") stopJob(held.job);
-      else clearOne(record.slice(options.path().length + 1));
+      const job = recordOf(record);
+      if (!job) return false;
+      if (job.state.type === "running") stopJob(job);
+      else { dismiss(job); options.changed(); }
       return true;
     },
     // What ended or streamed while no extension was bound is delivered once by the one that binds next.
@@ -528,10 +503,9 @@ export function createJobs(options: { records: Records; path: () => string; sink
         else if (job.state.type !== "ended" && streams(job)) schedule(job);
       }
     },
-    clearRecords(): void {
-      for (const record of jobRecords.values()) if (record.type === "lingering") clearTimeout(record.timer);
-      jobRecords.clear();
-      write(undefined, "clear");
+    dismissAll(): void {
+      for (const job of background()) dismiss(job);
+      options.changed();
     },
   };
 }
@@ -680,7 +654,7 @@ function promoteJob(registry: JobRegistry, job: Job, origin: JobOutput["origin"]
   output.on("error", (error) => stopJob(job, { type: "failed", message: error.message }));
   const call = detachCall(job);
   const mode: JobOutput = {
-    type: "job", name, origin, log, output, logClosed, logged: 0,
+    type: "job", name, origin, log, output, logClosed, logged: 0, retention: { type: "retained" },
     stream: { held: 0, lines: [], dropped: 0, cut: false, split: newSplit(), carry: Buffer.alloc(0), timer: null, lastBatch: performance.now() },
   };
   const moved = Object.assign(job, { mode });
@@ -2211,7 +2185,8 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     promptSnippet: "list_async_bash() - your own async_bash jobs, with their output logs",
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute() {
-      const listed = backgroundJobs().reverse().map((job) => ({
+      let announced = 0;
+      const listed = backgroundJobs().reverse().filter(job => job.state.type !== "ended" || !job.state.announced || announced++ < 20).map((job) => ({
         job: job.id, name: job.mode.name, ...(serviceJob(job) ? { service: true } : {}), command: job.command, state: job.state.type === "ended" ? "ended" : jobRunning(job) ? "running" : "ending",
         ...(job.state.type === "ended" ? { end: jobEndText(job.state.end) } : {}),
         startedAt: job.startedAt, log: job.mode.log,
@@ -2472,7 +2447,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       const child = target.relationship === "own" ? children().find((c) => c.session === target.id) : undefined;
       const reportedText = child ? (childReported(child) ? "; it had reported" : "; it had not reported on its last work") : "";
       if (target.state === "ended") {
-        if (target.relationship === "own" && target.where.type === "process") host.clearChild(target.name);
+        if (target.relationship === "own" && target.where.type === "process") host.records.changed(true);
         return reply(`${name} had already ended: ${target.ended ?? "its pane is gone"}`);
       }
       if (target.where.type === "process") {
@@ -2854,7 +2829,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       if (reason === "new" || reason === "resume" || reason === "fork") await host.stopDescendants();
       host.jobs.registry.stopAll();
       await waitJobs([...host.jobs.registry.jobs.values()]);
-      host.jobs.clearRecords();
+      host.jobs.dismissAll();
       if (active && isRoot()) await unsetVars();
     }
     process.removeListener("exit", unsetVarsSync);

@@ -1077,6 +1077,100 @@ fn exec_session(name: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn status_report(pane: &str, body: &str) -> ExitCode {
+    let Ok(report) = protocol::decode::<StatusReport>(body.as_bytes()) else {
+        return http_error(400, ErrorKind::Invalid, "not a StatusReport");
+    };
+    if env("KO_FAKE_STATUS_REFUSE") == "1" {
+        return http_error(409, ErrorKind::Refused, "controlled status refusal");
+    }
+    let result = with_table(|table| {
+        let Some(row) = table.iter_mut().find(|row| text(row, "id") == pane) else {
+            return Err((404, ErrorKind::Missing, "pane not found"));
+        };
+        let mut status: ProgramStatus = row
+            .get("program_status")
+            .or_else(|| row["status"].get("program_status"))
+            .map(fixture)
+            .unwrap_or_default();
+        let before = status.records.clone();
+        let replacement = match report {
+            StatusReport::ReplaceSubtrees { replacement } => {
+                status.records.retain(|record| {
+                    !replacement
+                        .roots()
+                        .iter()
+                        .any(|root| record.id.is_within(root))
+                });
+                if status.records.len() + replacement.records().len() > MAX_STATUS_RECORDS {
+                    return Err((409, ErrorKind::Refused, "status record capacity exceeded"));
+                }
+                replacement.records().to_vec()
+            }
+            StatusReport::Clear { id } => {
+                status.records.retain(|record| !record.id.is_within(&id));
+                Vec::new()
+            }
+            StatusReport::Set { record } => {
+                status.records.retain(|old| old.id != record.id);
+                if status.records.len() >= MAX_STATUS_RECORDS {
+                    status.records.remove(0);
+                }
+                vec![record]
+            }
+        };
+        for record in replacement {
+            let started = if record.id.is_root() {
+                None
+            } else {
+                before
+                    .iter()
+                    .find(|old| old.id == record.id)
+                    .and_then(|old| old.started)
+                    .or(Some(status.serial + 1))
+            };
+            status.records.push(ProgramRecord {
+                id: record.id,
+                state: record.state,
+                started,
+                app: record.app.map(String::from),
+                title: record.title.map(String::from),
+                msg: record.msg.map(String::from),
+                selection: record.selection,
+                closeable: record.closeable,
+                promptable: record.promptable,
+            });
+        }
+        status.records.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut sorted_before = before;
+        sorted_before.sort_by(|a, b| a.id.cmp(&b.id));
+        if status.records != sorted_before {
+            status.serial += 1;
+            row["program_status"] = fixture(&serde_json::json!(status));
+            append(
+                "KO_FAKE_STATUS_REVISIONS",
+                &json!({"pane": pane, "status": status}).to_string(),
+            );
+        }
+        Ok(())
+    });
+    if let Err((code, kind, message)) = result {
+        return http_error(code, kind, message);
+    }
+    let lose = env("KO_FAKE_STATUS_LOSE_RESPONSE");
+    if !lose.is_empty()
+        && OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(lose)
+            .is_ok()
+    {
+        return ExitCode::FAILURE;
+    }
+    println!("{}", protocol::json(&Empty {}));
+    ExitCode::SUCCESS
+}
+
 fn api(argv: &[String]) -> ExitCode {
     let mut method = "GET".to_owned();
     let (mut input, mut path, mut stream) = (false, String::new(), false);
@@ -1133,6 +1227,7 @@ fn api(argv: &[String]) -> ExitCode {
                 "{}",
                 protocol::json(&ServerVersion {
                     instance: fixture(&json!(instance)),
+                    status_record_limit: protocol::MAX_STATUS_RECORDS,
                     version: Version {
                         build: "fake".to_owned(),
                         protocol: "1".to_owned(),
@@ -1159,11 +1254,13 @@ fn api(argv: &[String]) -> ExitCode {
             }
             return stop_pane(pane);
         }
-        ("POST", ["", "panes", _, "status"]) => {
-            if protocol::decode::<StatusReport>(body.as_bytes()).is_err() {
-                return http_error(400, ErrorKind::Invalid, "not a StatusReport");
-            }
-            println!("{}", protocol::json(&Empty {}));
+        ("POST", ["", "panes", pane, "status"]) => return status_report(pane, &body),
+        ("GET", ["", "panes", pane]) => {
+            let table = rows("KO_FAKE_PANES");
+            let Some(row) = row_of(&table, pane) else {
+                return http_error(404, ErrorKind::Missing, "pane not found");
+            };
+            println!("{}", protocol::json(&listing(row)));
         }
         ("POST", ["", "panes", pane, "messages"]) => return send_message(pane, &body),
         ("GET", ["", "panes", _, "screen"]) => return screen(&path),

@@ -754,7 +754,7 @@ routes! {
         send: Empty,
         recv: SearchEvent,
     }
-    /// Sets or clears one program status record of a pane.
+    /// Sets or clears a program status record, or atomically replaces named status subtrees.
     SetStatus {
         method: POST,
         path: /panes/{id: PaneId}/status,

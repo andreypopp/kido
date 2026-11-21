@@ -30,7 +30,7 @@ const kidScript = [spawn("kid", "work"), { when: "spawn", text: "spawned" }, { w
 const posted = async (app: App) => (await app.apiCalls()).filter(call => call.method === "POST" && call.path === "/panes");
 
 test("an ordinary spawn is an agent of koa's own process: no pane, a view of its own, a report to the parent", { timeout: 30000 }, async t => {
-  const app = await realFixture(t, { panes: [selfPane()], replies: kidScript });
+  const app = await realFixture(t, { panes: [selfPane()], replies: [...kidScript, { when: "more kid work", text: "kid again", gate: "next-turn" }, { when: "notice from kid", text: "noted again" }] });
   await send(app, "spawn one");
   const kid = viewOf(await app.until(listed("kid")), "kid");
   assert.deepEqual(await posted(app), []);
@@ -49,6 +49,12 @@ test("an ordinary spawn is an agent of koa's own process: no pane, a view of its
   assert.deepEqual(switched.view.path.map(node => node.name), ["pi", "kid"]);
   const reset = await app.until(ofType("reset", record => items(record).includes("kid done")), cursor);
   assert.ok(!items(reset).includes("spawn one"));
+  await pollUntil(async () => (await app.statusRevisions()).some(revision => revision.status.records.some(record => record.id === "agents/kid" && record.state === "done")), 5000, "the child's first done record");
+  await send(app, "more kid work");
+  await pollUntil(async () => (await app.statusRevisions()).at(-1)?.status.records.some(record => record.id === "agents/kid" && record.state === "working") ?? false, 5000, "the same child's next working record");
+  app.provider.release("next-turn");
+  await pollUntil(async () => (await app.statusRevisions()).at(-1)?.status.records.some(record => record.id === "agents/kid" && record.state === "done" && record.msg?.includes("kid again")) ?? false, 5000, "the child's next done record");
+  await statusPosts(app);
   const back = app.count();
   assert.equal((await app.post("view", { id: rootId })).status, 200);
   await app.until(ofType("reset", record => items(record).includes("spawn one")), back);
@@ -96,11 +102,12 @@ test("the pane's one queue reaches the agent that data.to names; a select switch
   const view = () => state(app).view.id;
   await app.feed({ id: "select-user-1", kind: "select", text: "agents/kid" });
   await pollUntil(() => view() === kid, 5000, "the select of the kid");
-  const posts = await statusPosts(app);
-  assert.equal(posts.findLast(post => post.id === "agents/kid" && post.type === "set")?.promptable, true);
+  await pollUntil(async () => (await statusRecords(app)).some(post => post.id === "agents/kid" && post.promptable === true), 5000, "the promptable child record");
+  const posts = await statusRecords(app);
+  assert.equal(posts.findLast(post => post.id === "agents/kid")?.promptable, true);
   await app.feed({ id: "select-user-2", kind: "select", text: "" });
   await pollUntil(() => view() === rootId, 5000, "the select of the root");
-  await pollUntil(async () => (await statusPosts(app)).slice(posts.length).some(post => post.id === "agents/kid" && post.selection === "offered"), 5000, "the former child record to be offered again");
+  await pollUntil(async () => (await statusRecords(app)).slice(posts.length).some(post => post.id === "agents/kid" && post.selection === "offered"), 5000, "the former child record to be offered again");
   await app.feed({ id: "select-pane-3", kind: "select", text: "agents/kid", from: { type: "pane", pane: "pane_2", session: "other", name: "other" } });
   await app.feed({ id: "select-none-4", kind: "select", text: "agents/nobody" });
   await pollUntil(async () => (await acked(app, "select-none-4")).length > 0, 5000, "the last select ack");
@@ -128,18 +135,18 @@ test("a close of a record stops that subagent for the user only, with a notice t
   const app = await realFixture(t, { panes: [selfPane()], replies });
   await send(app, "spawn one");
   await app.until(listed("kid"));
-  await pollUntil(async () => (await statusPosts(app)).some(post => post.id === "agents/kid" && post.closeable === true), 10000, "the closeable record");
+  await pollUntil(async () => (await statusRecords(app)).some(post => post.id === "agents/kid" && post.closeable === true), 10000, "the closeable record");
   await app.feed({ id: "close-pane-1", kind: "close", text: "agents/kid", from: { type: "pane", pane: "pane_2", session: "other", name: "other" } });
   await app.feed({ id: "close-none-2", kind: "close", text: "agents/nobody" });
   await app.feed({ id: "close-root-3", kind: "close", text: "" });
   await pollUntil(async () => (await app.acks()).length >= 3, 5000, "the first acks");
-  await pollUntil(async () => (await statusPosts(app)).some(post => post.type === "clear" && post.id === "agents/nobody"), 5000, "the clear of a record that matches no agent");
-  assert.ok(!(await statusPosts(app)).some(post => post.type === "clear" && post.id === ""), "the root record stays");
+  assert.ok((await statusPosts(app)).every(post => !post.records.some((record: { id: string }) => record.id === "agents/nobody")));
+  assert.ok(!(await statusRecords(app)).some(post => post.type === "clear" && post.id === ""), "the root record stays");
   assert.deepEqual(await acked(app, "close-pane-1"), ["ack"]);
   assert.ok(state(app).agents.some(agent => agent.name === "kid"));
   await app.feed({ id: "close-user-4", kind: "close", text: "agents/kid" });
   await pollUntil(() => !state(app).agents.some(agent => agent.name === "kid"), 10000, "the kid to go");
-  await pollUntil(async () => (await statusPosts(app)).some(post => post.type === "clear" && post.id === "agents/kid"), 5000, "the clear of the kid's record");
+  await pollUntil(async () => !(await statusPosts(app)).at(-1)?.records.some((record: { id: string }) => record.id.startsWith("agents/kid")), 5000, "the empty subtree");
   await pollUntil(() => app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes("the user stopped subagent @kid")), 10000, "the notice to the parent");
   assert.deepEqual(await acked(app, "close-user-4"), ["ack"]);
   await app.feed({ id: "user-stopped-5", kind: "user", text: "lost", record: "agents/kid" });
@@ -147,14 +154,13 @@ test("a close of a record stops that subagent for the user only, with a notice t
   assert.deepEqual(await acked(app, "user-stopped-5"), ["refuse"]);
 });
 
-test("koa clears the agents and jobs records before it writes any of its own", { timeout: 30000 }, async t => {
+test("koa replaces both owned subtrees in its first publication", { timeout: 30000 }, async t => {
   const app = await realFixture(t, { panes: [selfPane()], replies: kidScript });
   await send(app, "spawn one");
   await app.until(listed("kid"));
-  await pollUntil(async () => (await statusPosts(app)).some(post => post.id === "agents/kid" && post.type === "set"), 10000, "the record of the kid");
+  await pollUntil(async () => (await statusRecords(app)).some(post => post.id === "agents/kid" && post.id !== ""), 10000, "the record of the kid");
   const posts = await statusPosts(app);
-  const first = posts.findIndex(post => post.type === "set");
-  assert.deepEqual(posts.slice(0, first).map(post => `${post.type} ${post.id}`).sort(), ["clear agents", "clear jobs"]);
+  assert.deepEqual(posts[0], { type: "replace_subtrees", roots: ["agents", "jobs"], records: [] });
 });
 
 test("a submitted prompt warns about each @name that is no agent and no path, and goes to the model unchanged", { timeout: 30000 }, async t => {
@@ -172,7 +178,26 @@ test("a submitted prompt warns about each @name that is no agent and no path, an
 });
 
 const tool = (name: string, args: object) => ({ name, args });
-const statusPosts = async (app: App) => (await app.apiCalls()).filter(call => call.method === "POST" && call.path === "/panes/pane_1/status").map(call => JSON.parse(call.body));
+const assertClosed = (ids: string[]) => {
+  const unique = new Set(ids);
+  assert.equal(unique.size, ids.length);
+  assert.ok(!unique.has(""));
+  for (const id of unique) {
+    const parts = id.split("/");
+    for (let index = 2; index < parts.length; index += 2) assert.ok(unique.has(parts.slice(0, index).join("/")), id);
+  }
+};
+const statusPosts = async (app: App) => {
+  const posts = (await app.apiCalls()).filter(call => call.method === "POST" && call.path === "/panes/pane_1/status").map(call => JSON.parse(call.body));
+  for (const post of posts) {
+    assert.equal(post.type, "replace_subtrees");
+    assert.deepEqual(post.roots, ["agents", "jobs"]);
+    assertClosed(post.records.map((record: { id: string }) => record.id));
+  }
+  for (const revision of await app.statusRevisions()) assertClosed(revision.status.records.filter(record => record.id !== "").map(record => record.id));
+  return posts;
+};
+const statusRecords = async (app: App) => (await statusPosts(app)).flatMap(post => post.records);
 
 test("a tree of three levels refuses a fourth, writes a record for each agent with its selection, and a stop takes the subtree", { timeout: 40000 }, async t => {
   const app = await realFixture(t, {
@@ -192,19 +217,19 @@ test("a tree of three levels refuses a fourth, writes a record for each agent wi
   });
   await send(app, "spawn one");
   await pollUntil(() => app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes("root noted")) || app.provider.requests.length >= 8, 15000, "the whole tree to settle");
-  await pollUntil(async () => (await statusPosts(app)).some(post => post.id === "agents/kid" && post.state === "done"), 10000, "the kid's record to settle");
-  const posts = await statusPosts(app);
+  await pollUntil(async () => (await statusRecords(app)).some(post => post.id === "agents/kid" && post.state === "done"), 10000, "the kid's record to settle");
+  const posts = await statusRecords(app);
   assert.ok(posts.some(post => post.id === "agents/kid/agents/gk" && post.title === "gk"));
-  assert.ok(posts.every(post => post.type === "clear" || post.selection === "offered"), "no record is selected while the root is viewed");
+  assert.ok(posts.every(post => post.selection === "offered"), "no record is selected while the root is viewed");
   assert.ok(app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes("refusing to spawn at depth 3: maximum nesting is 2")));
   const kid = viewOf(state(app), "kid");
-  const before = (await statusPosts(app)).length;
+  const before = (await statusRecords(app)).length;
   await app.feed({ id: "select-user-1", kind: "select", text: "agents/kid" });
   await pollUntil(() => state(app).view.id === kid, 5000, "the select");
-  await pollUntil(async () => (await statusPosts(app)).slice(before).some(post => post.id === "agents/kid" && post.selection === "selected"), 5000, "the selected record");
+  await pollUntil(async () => (await statusRecords(app)).slice(before).some(post => post.id === "agents/kid" && post.selection === "selected"), 5000, "the selected record");
   await app.feed({ id: "user-stop-2", kind: "user", text: "stop it", record: "" });
   await pollUntil(() => state(app).view.path.length === 1 && !state(app).agents.some(agent => agent.name === "kid"), 10000, "the stop to select the root and drop the kid");
-  await pollUntil(async () => (await statusPosts(app)).some(post => post.type === "clear" && post.id === "agents/kid"), 5000, "the subtree clear");
+  await pollUntil(async () => !(await statusPosts(app)).at(-1)?.records.some((record: { id: string }) => record.id.startsWith("agents/kid")), 5000, "the empty subtree");
   await pollUntil(() => app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes("stopped kid")), 5000, "the stop_agent result to reach the model");
   assert.deepEqual(app.provider.violations, []);
 });
@@ -307,7 +332,7 @@ test("a creation that is pending while its parent is stopped does not survive th
   await writeFile(gate, "");
   await pollUntil(() => app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes("stopped kid")), 15000, "the stop to finish");
   await pollUntil(() => state(app).agents.length === 0, 5000, "the kid to leave the list");
-  assert.ok(!(await statusPosts(app)).some(post => post.type === "set" && post.id === "agents/kid/agents/gk"), "the pending child was never published");
+  assert.ok(!(await statusRecords(app)).some(post => post.id !== "" && post.id === "agents/kid/agents/gk"), "the pending child was never published");
 });
 
 test("a child whose start failed starts again alone, from its saved session", { timeout: 40000 }, async t => {
@@ -376,7 +401,7 @@ test("a named subagent view refuses root-only routes, and a stopped subtree ends
     assert.match((await refused.json()).error, /only in @/);
   }
   assert.equal((await kidView.get("models")).status, 200);
-  await pollUntil(async () => (await statusPosts(app)).some(post => post.id === "agents/kid" && post.closeable === true), 10000, "the closeable record");
+  await pollUntil(async () => (await statusRecords(app)).some(post => post.id === "agents/kid" && post.closeable === true), 10000, "the closeable record");
   await app.feed({ id: "close-user-1", kind: "close", text: "agents/kid" });
   const gone = await kidView.until(ofType("view_gone"));
   assert.deepEqual([gone.view, gone.parent], [kid, rootId]);
@@ -417,7 +442,7 @@ test("stopping an agent ends the named streams of its grandchild and its job wit
   const gkView = await app.subscribe(gk), jobStream = await app.subscribe(job);
   assert.deepEqual([gkView.status, jobStream.status], [200, 200]);
   await jobStream.until(ofType("job-reset"));
-  await pollUntil(async () => (await statusPosts(app)).some(post => post.id === "agents/kid" && post.closeable === true), 10000, "the closeable record");
+  await pollUntil(async () => (await statusRecords(app)).some(post => post.id === "agents/kid" && post.closeable === true), 10000, "the closeable record");
   await app.feed({ id: "close-user-1", kind: "close", text: "agents/kid" });
   for (const [stream, id] of [[kidView, kid], [gkView, gk], [jobStream, job]] as const) {
     const gone = await stream.until(ofType("view_gone"));

@@ -749,7 +749,7 @@ host types, not koa's program modules. Its settings use the `KO_*`
 prefix; host launch controls are separate.
 
 The host owns everything that must outlive one factory invocation:
-the tree, inbox, record writer and each agent's jobs. The extension
+the tree, inbox, status publisher and each agent's jobs. The extension
 owns tools and pi event handlers. Its ko calls are asynchronous,
 except synchronous process-exit cleanup. A blocking call would stop
 all agents and delay inbox acknowledgements.
@@ -958,20 +958,49 @@ in a child-process callback.
 
 ### Status records and signals
 
-The tree's ordered record queue is shared by agents and jobs.
-Subagent records are selectable, closeable and promptable; job records
-are selectable and closeable. Paths encode tree nesting, but only the
-harness interprets their agent/job meaning. Root status continues to
-name the root while the user views a child or log.
+The subagent and job records are derived, never written one by one.
+`deriveRecords` in `koa/koa-status.ts` is a pure function from the
+tree (each agent's view, life, dialogs and the selection) and each
+agent's retained jobs to the whole record set of the `agents` and
+`jobs` subtrees. Every revision contains each record's ancestors by
+construction: a record of a stopped or stopping agent's subtree is
+not in it, so no job completion can restore that subtree. A report
+does not remove an agent's record; the agent stays a live member that
+can take another turn. Subagent records are selectable, closeable and
+promptable; job records are selectable and closeable. Paths encode
+tree nesting, but only the harness interprets their agent/job
+meaning. Root status is OSC and is not part of the derivation; it
+continues to name the root while the user views a child or log.
 
-Finished job records linger only while not watched. An event-stream
-subscriber, selected or named, keeps the viewed record; selection
-without a subscriber does not. A keepalive detects a lost subscriber.
-The per-agent admission cap can omit a new row when all slots are
-occupied by running or watched records. Omitting a row does not stop
-the job. Starting a tree clears its agent and job record subtrees
-before publishing new records, so a process restart does not leave
-live-looking rows from its predecessor.
+One publisher sends each revision as one `replace_subtrees` of
+`agents` and `jobs` (protocol.md, section 6), so ko never holds a
+child without its parent and a restarted koa replaces its
+predecessor's rows in its first publication. Any change of a
+derivation input marks a new revision. The publisher coalesces the
+revisions that arrive while one is in flight, sends only the newest,
+and does no I/O when the derived set equals the one ko acknowledged.
+The acknowledged set is unknown from the start of each POST until its
+successful response, so a lost response never hides a later revision
+that returns to the earlier set. A failed revision is retried a
+bounded number of times and then logged and abandoned; the next
+change starts a new revision. Exit cleanup sends an empty
+replacement synchronously. Publication needs only the pane identity,
+also with `--browser`.
+
+The budget is pane-wide: ko's `status_record_limit` from
+`GET /version`, less one slot for the root and the pane's records
+outside the two subtrees. The derivation fits the budget by removing
+whole entries only: first the lingering finished jobs, oldest first;
+then it admits agents parent first and the remaining jobs of admitted
+agents. It never publishes more records than ko keeps, so ko's
+eviction never cuts a subtree. A 409 for capacity, because another
+writer added records, makes the next attempt read the pane again.
+
+A finished job's record lingers for `KO_JOB_RECORD_LINGER_MS` only
+while not watched. An event-stream subscriber, selected or named,
+retains it; selection without a subscriber does not. A keepalive
+detects a lost subscriber. A dismissed job leaves the derivation.
+Omitting a row does not stop the job.
 
 `signalJob` accepts only a registry job, never a pid supplied by a
 tool or message. It signals a local group only while its owned child

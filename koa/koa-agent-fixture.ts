@@ -8,9 +8,10 @@ import childProcess from "node:child_process";
 
 import { EventEmitter, once } from "node:events";
 import type { TestContext } from "node:test";
-import { hostFacts, createRecords, type Agent, type AgentHost } from "./koa-agents.ts";
+import { hostFacts, type Agent, type AgentHost } from "./koa-agents.ts";
 import type { CompletionContext } from "./completion-context.ts";
 import type { RestartState } from "./records.ts";
+import { createPublisher, deriveRecords } from "./koa-status.ts";
 import type { PageRecord } from "./koa-records.ts";
 
 import assert from "node:assert/strict";
@@ -436,15 +437,17 @@ type Entry = { type: "custom"; customType: string; data: Record<string, unknown>
 // A tree member that has only the fields a test names; the extension reads no others.
 export const stubAgent = (fields: object): Agent => Object.assign(Object.create(null), fields);
 
-export function createChannel() {
+export function createChannel(active = true) {
   const unused = (): never => { throw new Error("this fixture has no agent tree"); };
   const facts = hostFacts(process.env);
-  const records = createRecords(facts);
   const self = stubAgent({ id: "self-session", parent: undefined, children: [], name: "", runtime: undefined, extension: undefined, stopping: false, view: { state: { name: "Self", cwd: process.cwd(), dialogs: [] }, root: { value: "idle" } } });
+  const records = createPublisher({ active: active && !!facts.pane && facts.insideKo, pane: facts.pane ?? "", derive: budget => deriveRecords(self, viewing.job ? { type: "job", agent: self, job: viewing.job } : { type: "agent", agent: self }, budget) });
   const host: AgentHost = {
-    self, get facts() { return hostFacts(process.env); }, browser: false, pathEditor: true, trusted: undefined, records, jobs: createJobs({ records, path: () => "jobs", sink: () => host.extension, place: { type: "machine" }, view: { viewed: () => viewing.job, watched: job => viewing.watched.has(job), output() {}, changed() {} } }), extension: undefined,
-    notify() {}, scope: () => [], find: () => undefined, spawn: unused, stop: unused, stopDescendants: async () => {}, clearChild: name => { records.write({ type: "clear", id: `agents/${name}` }); },
+    self, get facts() { return hostFacts(process.env); }, browser: false, pathEditor: true, trusted: undefined, records, jobs: createJobs({ changed: () => records.changed(), path: () => "jobs", sink: () => host.extension, place: { type: "machine" }, view: { watched: job => viewing.watched.has(job), output() {}, changed() {} } }), extension: undefined,
+    notify() {}, scope: () => [], find: () => undefined, spawn: unused, stop: unused, stopDescendants: async () => {},
   };
+  Object.assign(self, { host });
+  records.changed(true);
   liveHosts.push(host);
   return {
     host,
@@ -648,7 +651,7 @@ export async function startSession(
   opts: { mode?: "tui" | "print" | "rpc" | "json"; factory?: (pi: FakePi) => void; sessionId?: string; name?: string; idle?: () => boolean; entries?: Entry[]; channel?: FakeChannel; ctx?: Record<string, unknown>; record?: boolean; startup?: boolean; flags?: Record<string, string | boolean>; bashSource?: string } = {},
 ): Promise<Started> {
   const { factory = koaExtension, sessionId = "self-session", name, idle, entries = [], ctx, record = true, flags = {} } = opts;
-  const created = createFakePi(join(fx.dir, "sessions", "caller"), entries, opts.channel);
+  const created = createFakePi(join(fx.dir, "sessions", "caller"), entries, opts.channel ?? (shared ??= createChannel(ctx?.hasUI !== false)));
   if (opts.bashSource) at(created.toolSources, 0).sourceInfo.path = opts.bashSource;
   for (const [flag, value] of Object.entries(flags)) created.flags.set(flag, value);
   Object.assign(created.channel.host, { browser: !!flags["koa-browser"] });

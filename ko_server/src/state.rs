@@ -380,13 +380,14 @@ impl State {
         id: PaneId,
         report: ko_wire::protocol::StatusReport,
         writer: crate::telemetry::Writer,
-    ) {
+    ) -> Result<(), crate::program_status::CapacityExceeded> {
         let now = ko_sys::clock::Mono::now();
         if let Some(pane) = self.panes.find_mut(id)
-            && pane.telemetry_mut().status(report, now, writer)
+            && pane.telemetry_mut().status(report, now, writer)?
         {
             self.model.mark(poll, pane);
         }
+        Ok(())
     }
 
     pub(crate) fn dispatch(&mut self, poll: &mut Poll, id: PaneId, mut events: Vec<Event>) {
@@ -1067,7 +1068,7 @@ impl State {
                 }
             }
             Event::Record(report) => {
-                self.set_status(poll, id, report, crate::telemetry::Writer::Terminal);
+                let _ = self.set_status(poll, id, report, crate::telemetry::Writer::Terminal);
             }
             Event::Foreground(foreground) => {
                 if let Some(pane) = self.panes.find_mut(id)

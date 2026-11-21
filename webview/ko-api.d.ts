@@ -205,7 +205,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Sets or clears one program status record of a pane. */
+        /** @description Sets or clears a program status record, or atomically replaces named status subtrees. */
         post: operations["SetStatus"];
         delete?: never;
         options?: never;
@@ -1737,6 +1737,7 @@ export interface components {
             build: string;
             instance: components["schemas"]["Instance"];
             protocol: string;
+            status_record_limit: number;
             vt: string;
         };
         Session: {
@@ -1800,6 +1801,38 @@ export interface components {
         };
         StatusId: string;
         StatusProgress: number;
+        StatusRecord: {
+            app?: components["schemas"]["StatusApp"];
+            /**
+             * @description False: the program offers no close of the record. True: the program acts on a `close`
+             *     message of this record.
+             */
+            closeable?: boolean;
+            id: components["schemas"]["StatusId"];
+            msg?: components["schemas"]["StatusText2048"];
+            /** @description True: the program delivers a user message for this non-root record to its agent. */
+            promptable?: boolean;
+            selection?: components["schemas"]["RecordSelection"];
+            title?: components["schemas"]["StatusText192"];
+        } & ({
+            /** @constant */
+            state: "idle";
+        } | {
+            progress?: components["schemas"]["StatusProgress"];
+            /** @constant */
+            state: "working";
+        } | {
+            /** @constant */
+            state: "done";
+        } | {
+            kind?: components["schemas"]["ProgramKind"];
+            progress?: components["schemas"]["StatusProgress"];
+            /** @constant */
+            state: "blocked";
+        } | {
+            /** @constant */
+            state: "error";
+        });
         StatusReport: ({
             app?: components["schemas"]["StatusApp"];
             /**
@@ -1837,6 +1870,11 @@ export interface components {
             id: components["schemas"]["StatusId"];
             /** @constant */
             type: "clear";
+        } | {
+            records: components["schemas"]["StatusRecord"][];
+            roots: components["schemas"]["StatusId"][];
+            /** @constant */
+            type: "replace_subtrees";
         };
         /** @description One to 192 UTF-8 bytes, without control characters. */
         StatusText192: string;

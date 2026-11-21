@@ -567,9 +567,13 @@ import KoModel
         XCTAssertEqual(alert.buttons[0].keyEquivalent, "")
         owner.respondToAlert(.alertFirstButtonReturn)
         wait("the bundled server attaches and creates the first session") { self.names(owner) == ["session"] && owner.testBanner.isHidden }
-        let version = try JSONDecoder().decode([String: String].self, from: Data(output(["api", "/version"], dir: dir).utf8))
-        XCTAssertEqual(version["vt"], KoClient.version.vt)
-        XCTAssertEqual(version["build"], KoClient.version.build)
+        struct Version: Decodable {
+            let vt: String
+            let build: String
+        }
+        let version = try JSONDecoder().decode(Version.self, from: Data(output(["api", "/version"], dir: dir).utf8))
+        XCTAssertEqual(version.vt, KoClient.version.vt)
+        XCTAssertEqual(version.build, KoClient.version.build)
     }
 
     func testARefusedHelloShowsTheServerErrorWithoutTheWelcomeTimeout() throws {

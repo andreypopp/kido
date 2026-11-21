@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeFixture, selfPane, startSession, notices, pollUntil, text, gatedCommand, movedId, logHas, captureStatusRecords, at, jsonRows, rowWhere, get, getStr, type ToolResult } from "./koa-agent-fixture.ts";
+import { makeFixture, selfPane, startSession, notices, pollUntil, text, gatedCommand, movedId, logHas, captureStatusRecords, at, jsonRows, rowWhere, get, getStr, getRows, type ToolResult } from "./koa-agent-fixture.ts";
 
 const listed = async (s: Awaited<ReturnType<typeof startSession>>) => jsonRows(await s.tool("list_async_bash").execute("l", {}));
 const capture = (updates: string[]) => (result: ToolResult) => updates.push(result.content.map((part) => part.text ?? "").join(""));
@@ -96,7 +96,7 @@ test("a reload moves a running bash call and preserves its output without an old
     const updates: string[] = [];
     const work = s.tool("bash").execute("b", { command: `printf 'before\\n'; ${gatedCommand(gate, "", "after\n")}` }, undefined, capture(updates));
     await pollUntil(() => updates.some((u) => u?.includes("before")));
-    const records = () => fx.posts(`/panes/${process.env.KO_PANE}/status`).filter(record => record.type === "set" && record.state === "working");
+    const records = () => fx.posts(`/panes/${process.env.KO_PANE}/status`).flatMap(report => getRows(report, "records")).filter(record => record.state === "working");
     assert.equal(records().length, 0);
     await s.emit("session_shutdown", { reason: "reload" });
     assert.equal(records().length, 1);

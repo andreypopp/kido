@@ -2,7 +2,7 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { makeFixture, agentPane, selfPane, startSession, text, at, getStr, pollUntil } from "./koa-agent-fixture.ts";
+import { makeFixture, agentPane, selfPane, startSession, text, at, getStr, getRows, pollUntil } from "./koa-agent-fixture.ts";
 
 test("stop_agent stops a peer with a stop message and then the pane, and says so", async () => {
   const fx = makeFixture();
@@ -50,9 +50,10 @@ test("stop_agent refuses only the caller, reports an ended child, and names a fa
     const stop = s.tool("stop_agent");
     const self = await stop.execute("c", { agent: "Self" });
     assert.equal(text(self), "refusing to stop Self: it is this agent");
+    const before = fx.posts("/panes/pane_1/status").length;
     assert.equal(text(await stop.execute("c", { agent: "kid" })), "kid had already ended: koa restarted");
     assert.deepEqual(fx.posts("/panes/pane_5/stop"), [], "an ended child needs no stop");
-    await pollUntil(() => fx.posts("/panes/pane_1/status").some((post) => post.type === "clear" && post.id === "agents/kid"), 2000, "the clear of the ended child's record");
+    await pollUntil(() => fx.posts("/panes/pane_1/status").slice(before).some(post => post.type === "replace_subtrees" && !getRows(post, "records").some(record => record.id === "agents/kid")), 2000, "the replacement without the ended child");
     fx.scriptSends([{ status: 500, body: { kind: "io", message: "queue" } }, { status: 500, body: { kind: "io", message: "queue" } }, { status: 500, body: { kind: "io", message: "queue" } }]);
     assert.equal(text(await stop.execute("c", { agent: "peer" })), "stopped peer; the stop request failed: queue");
     assert.match(text(await stop.execute("c", { agent: "nobody" })), /no agent session matches "nobody"/);

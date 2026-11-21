@@ -258,6 +258,7 @@ pub struct ServerVersion {
     #[serde(flatten)]
     pub version: Version,
     pub instance: Instance,
+    pub status_record_limit: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -473,6 +474,83 @@ pub enum StatusReport {
     Clear {
         id: StatusId,
     },
+    ReplaceSubtrees {
+        #[serde(flatten)]
+        replacement: StatusReplacement,
+    },
+}
+
+pub const MAX_STATUS_RECORDS: usize = 64;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+struct RawStatusReplacement {
+    #[schemars(length(min = 1, max = MAX_STATUS_RECORDS))]
+    roots: Vec<StatusId>,
+    #[schemars(length(max = MAX_STATUS_RECORDS))]
+    records: Vec<StatusRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawStatusReplacement", into = "RawStatusReplacement")]
+pub struct StatusReplacement(RawStatusReplacement);
+
+impl JsonSchema for StatusReplacement {
+    fn schema_name() -> Cow<'static, str> {
+        "StatusReplacement".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        let mut schema = RawStatusReplacement::json_schema(generator);
+        schema.insert("description".into(), "Roots must be nonempty, non-root, unique and disjoint. Record ids must be unique and within a root.".into());
+        schema
+    }
+}
+
+impl TryFrom<RawStatusReplacement> for StatusReplacement {
+    type Error = &'static str;
+
+    fn try_from(raw: RawStatusReplacement) -> Result<Self, Self::Error> {
+        if raw.roots.is_empty()
+            || raw.roots.len() > MAX_STATUS_RECORDS
+            || raw.records.len() > MAX_STATUS_RECORDS
+        {
+            return Err("invalid status replacement length");
+        }
+        for (index, root) in raw.roots.iter().enumerate() {
+            if root.is_root()
+                || raw
+                    .roots
+                    .iter()
+                    .take(index)
+                    .any(|other| root.is_within(other) || other.is_within(root))
+            {
+                return Err("status roots must be non-root and disjoint");
+            }
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for record in &raw.records {
+            if !raw.roots.iter().any(|root| record.id.is_within(root)) || !ids.insert(&record.id) {
+                return Err("status ids must be unique and within a root");
+            }
+        }
+        Ok(Self(raw))
+    }
+}
+
+impl From<StatusReplacement> for RawStatusReplacement {
+    fn from(replacement: StatusReplacement) -> Self {
+        replacement.0
+    }
+}
+
+impl StatusReplacement {
+    pub fn roots(&self) -> &[StatusId] {
+        &self.0.roots
+    }
+
+    pub fn records(&self) -> &[StatusRecord] {
+        &self.0.records
+    }
 }
 
 /// Whether selecting a record means something to the program that reports it.
@@ -2611,6 +2689,50 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use serde::de::DeserializeOwned;
+
+    #[test]
+    fn status_replacements_validate_subtrees() {
+        let roots: Vec<_> = (0..=MAX_STATUS_RECORDS)
+            .map(|index| format!("r{index}"))
+            .collect();
+        let records: Vec<_> = (0..=MAX_STATUS_RECORDS)
+            .map(|index| serde_json::json!({"id":format!("jobs/j{index}"),"state":"idle"}))
+            .collect();
+        for body in [
+            serde_json::json!({"type":"replace_subtrees","roots":roots,"records":[]}),
+            serde_json::json!({"type":"replace_subtrees","roots":["jobs"],"records":records}),
+        ] {
+            assert!(decode::<StatusReport>(&serde_json::to_vec(&body).unwrap()).is_err());
+        }
+        let schema = serde_json::to_value(schemars::schema_for!(StatusReplacement)).unwrap();
+        assert_eq!(schema["properties"]["roots"]["minItems"], 1);
+        assert_eq!(
+            schema["properties"]["roots"]["maxItems"],
+            MAX_STATUS_RECORDS
+        );
+        assert_eq!(
+            schema["properties"]["records"]["maxItems"],
+            MAX_STATUS_RECORDS
+        );
+        for body in [
+            r#"{"type":"replace_subtrees","roots":["agents","jobs"],"records":[{"id":"agents/a","state":"idle"}]}"#,
+            r#"{"type":"replace_subtrees","roots":["agents"],"records":[]}"#,
+        ] {
+            assert!(decode::<StatusReport>(body.as_bytes()).is_ok(), "{body}");
+        }
+        for body in [
+            r#"{"type":"replace_subtrees","roots":[],"records":[]}"#,
+            r#"{"type":"replace_subtrees","roots":[""],"records":[]}"#,
+            r#"{"type":"replace_subtrees","roots":["agents","agents/a"],"records":[]}"#,
+            r#"{"type":"replace_subtrees","roots":["jobs","jobs"],"records":[]}"#,
+            r#"{"type":"replace_subtrees","roots":["jobs"],"records":[{"id":"other","state":"idle"}]}"#,
+            r#"{"type":"replace_subtrees","roots":["jobs"],"records":[{"id":"jobs/a","state":"idle"},{"id":"jobs/a","state":"idle"}]}"#,
+            r#"{"type":"replace_subtrees","roots":["jobs"],"records":[["jobs/a","idle"]]}"#,
+            r#"{"type":"replace_subtrees","roots":["jobs"],"records":[{"id":"jobs/a","state":"idle","title":""}]}"#,
+        ] {
+            assert!(decode::<StatusReport>(body.as_bytes()).is_err(), "{body}");
+        }
+    }
 
     #[test]
     fn status_reports_validate_ids_and_decoded_text() {

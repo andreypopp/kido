@@ -30,6 +30,7 @@ import { findKo, apiArgs } from "./runtime-exec.ts";
 import { fileSource, jobView, liveSource } from "./koa-job-view.ts";
 import { parseThreadName, type ThreadName, type JobSnapshot } from "./records.ts";
 import type { Agent, Selection, Tree } from "./koa-agents.ts";
+import { jobRecord } from "./koa-status.ts";
 import type { AgentView, Own } from "./koa-view.ts";
 import { agentCompletionItems, type AgentRow } from "./agents.ts";
 import { ATTACHMENT_LIMITS, type ViewGone, type PromptMode, type PageRecord, type State, type ThinkingLevel, type Dialog, type CompletionCommand, type CompletionQuery, type SessionStats, type Bash, type View, metricsRequest } from "./koa-records.ts";
@@ -247,7 +248,7 @@ Everything after -- is message text.
     const jobViewOf = (current: Viewed, path: View["path"]): Extract<View, { type: 'job' }> => {
       const { agent } = current, id = viewedId(current);
       const job: JobSnapshot = current.type === "job" ? agent.host.jobs.snapshot(current.job) : { name: current.ref.name, command: current.ref.command, service: current.ref.service, startedAt: current.ref.startedAt, place: current.ref.place, log: current.ref.log, state: { type: "cleared" } };
-      return { id, path: [...path, { id, name: job.name, type: "job" }], type: "job", job, record: koaAgents.jobRecord(agent, id) };
+      return { id, path: [...path, { id, name: job.name, type: "job" }], type: "job", job, record: jobRecord(agent, id) };
     };
     const facts = koaAgents.hostFacts(process.env);
     const pathEditor = !!facts.pane && !browser && !facts.runtime;
@@ -268,12 +269,9 @@ Everything after -- is message text.
           return state;
         },
         status: (value, message, dialog) => {
-          const agent = agentRef();
           if (first) {
             const encoded = Buffer.from(cleanLine(dialog ?? message, 2048)).toString("base64");
             process.stdout.write(`\x1b]7501;state=${value === "clear" ? value : dialog ? "blocked" : value}${value === "clear" ? "" : `:app=koa${dialog ? ":kind=question" : ""}:msg=${encoded}`}\x1b\\`);
-          } else {
-            tree.writeRecord(agent);
           }
         },
         title: own => { if (first) process.stdout.write(`\x1b]0;${utf8Prefix(replaceControlCharacters(`koa - ${own.name} - ${basename(own.cwd)}`), 2048)}\x1b\\`); },
@@ -281,6 +279,7 @@ Everything after -- is message text.
         cancelEditor: () => { if (tree.selected() === agentRef()) void edits.cancel(); },
         shutdown: () => { if (first) background(quit()); },
         agentsChanged: () => refreshRows(agentRef()),
+        changed: () => tree?.changed(),
       });
     };
     type Viewed = Exclude<Selection, { type: "agent" }>;
@@ -317,7 +316,6 @@ Everything after -- is message text.
       refreshRows(next.agent);
       incoming.show(holder);
       if (previous.type !== "agent") retire(viewedId(previous));
-      for (const agent of new Set([previous.agent, next.agent])) agent.host.jobs.viewChanged();
     };
     const tree: Tree = koaAgents.createTree({
       sdk, args: sdk.pi.parseArgs(restartArgs(parsed, undefined)), cwd: process.cwd(), agentDir, facts, browser, pathEditor, makeView,

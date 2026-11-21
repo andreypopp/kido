@@ -4405,6 +4405,10 @@
           "protocol": {
             "type": "string"
           },
+          "status_record_limit": {
+            "minimum": 0,
+            "type": "integer"
+          },
           "vt": {
             "type": "string"
           }
@@ -4413,7 +4417,8 @@
           "protocol",
           "vt",
           "build",
-          "instance"
+          "instance",
+          "status_record_limit"
         ],
         "type": "object"
       },
@@ -4674,6 +4679,108 @@
         "minimum": 0,
         "type": "integer"
       },
+      "StatusRecord": {
+        "oneOf": [
+          {
+            "properties": {
+              "state": {
+                "const": "idle",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "progress": {
+                "$ref": "#/components/schemas/StatusProgress"
+              },
+              "state": {
+                "const": "working",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "state": {
+                "const": "done",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "$ref": "#/components/schemas/ProgramKind"
+              },
+              "progress": {
+                "$ref": "#/components/schemas/StatusProgress"
+              },
+              "state": {
+                "const": "blocked",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "state": {
+                "const": "error",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "app": {
+            "$ref": "#/components/schemas/StatusApp"
+          },
+          "closeable": {
+            "description": "False: the program offers no close of the record. True: the program acts on a `close`\nmessage of this record.",
+            "type": "boolean"
+          },
+          "id": {
+            "$ref": "#/components/schemas/StatusId"
+          },
+          "msg": {
+            "$ref": "#/components/schemas/StatusText2048"
+          },
+          "promptable": {
+            "description": "True: the program delivers a user message for this non-root record to its agent.",
+            "type": "boolean"
+          },
+          "selection": {
+            "$ref": "#/components/schemas/RecordSelection"
+          },
+          "title": {
+            "$ref": "#/components/schemas/StatusText192"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
       "StatusReport": {
         "oneOf": [
           {
@@ -4796,6 +4903,36 @@
             "required": [
               "type",
               "id"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Roots must be nonempty, non-root, unique and disjoint. Record ids must be unique and within a root.",
+            "properties": {
+              "records": {
+                "items": {
+                  "$ref": "#/components/schemas/StatusRecord"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              "roots": {
+                "items": {
+                  "$ref": "#/components/schemas/StatusId"
+                },
+                "maxItems": 64,
+                "minItems": 1,
+                "type": "array"
+              },
+              "type": {
+                "const": "replace_subtrees",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "roots",
+              "records"
             ],
             "type": "object"
           }
@@ -6327,7 +6464,7 @@
     },
     "/panes/{id}/status": {
       "post": {
-        "description": "Sets or clears one program status record of a pane.",
+        "description": "Sets or clears a program status record, or atomically replaces named status subtrees.",
         "operationId": "SetStatus",
         "parameters": [
           {

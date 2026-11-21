@@ -1,4 +1,5 @@
 import type { TestContext } from "node:test";
+import type { components } from "../webview/ko-api.d.ts";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { realpathSync } from "node:fs";
@@ -99,8 +100,9 @@ export async function realFixture(t: TestContext, options: Real) {
     await writeFile(join(dir, "panes.json"), JSON.stringify(options.panes));
     await writeFile(join(dir, "feed.jsonl"), "");
     await writeFile(join(dir, "acks.jsonl"), "");
+    await writeFile(join(dir, "status-revisions.jsonl"), "");
   }
-  const ko = options.panes ? { KO_PANE: "pane_1", KO_SOCKET: "/tmp/koa-agent-test/socket", KO_PANE_TOKEN: "", KO_FAKE_PANES: join(dir, "panes.json"), KO_FAKE_API_LOG: join(dir, "api-log"), KO_FAKE_FEED: join(dir, "feed.jsonl"), KO_FAKE_ACKS: join(dir, "acks.jsonl") } : {};
+  const ko = options.panes ? { KO_PANE: "pane_1", KO_SOCKET: "/tmp/koa-agent-test/socket", KO_PANE_TOKEN: "", KO_FAKE_PANES: join(dir, "panes.json"), KO_FAKE_API_LOG: join(dir, "api-log"), KO_FAKE_FEED: join(dir, "feed.jsonl"), KO_FAKE_ACKS: join(dir, "acks.jsonl"), KO_FAKE_STATUS_REVISIONS: join(dir, "status-revisions.jsonl") } : {};
   const app = await launch(scope, dir, cwd, { PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", ...ko, ...options.env }, realPi, [...(options.discover ? [] : ["--no-extensions"]), ...(options.resources ? [] : ["--no-skills", "--no-prompt-templates"]), "--no-context-files", "--session-dir", sessions, ...extensions.flat(), ...extra, ...options.args ?? []], options.program ?? resolve("../build/koa/share/koa/koa/koa.ts"));
   if (options.start !== false) await app.until(ofType("state", record => record.life?.type === "ready"));
   let seq = 0;
@@ -109,7 +111,8 @@ export async function realFixture(t: TestContext, options: Real) {
     return appendFile(join(dir, "feed.jsonl"), JSON.stringify({ seq: ++seq, text: "", ...("pane" in from ? { relation: message.relation ?? "sibling" } : {}), ...message, from }) + "\n");
   };
   const acks = async () => (await readFile(join(dir, "acks.jsonl"), "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line): { type: string; id: string } => JSON.parse(line));
-  return { ...app, provider, dir, cwd, sessions, agentDir, feed, acks, apiCalls: async () => (await readFile(join(dir, "api-log"), "utf8").catch(() => "")).trim().split("\n").filter(Boolean).flatMap(line => { const call: unknown = JSON.parse(line); return isApiCall(call) ? [call] : []; }) };
+  const statusRevisions = async () => (await readFile(join(dir, "status-revisions.jsonl"), "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line): { pane: string; status: components["schemas"]["ProgramStatus"] } => JSON.parse(line));
+  return { ...app, provider, dir, cwd, sessions, agentDir, feed, acks, statusRevisions, apiCalls: async () => (await readFile(join(dir, "api-log"), "utf8").catch(() => "")).trim().split("\n").filter(Boolean).flatMap(line => { const call: unknown = JSON.parse(line); return isApiCall(call) ? [call] : []; }) };
 }
 
 export async function writeSession(cwd: string, sessions: string, turns: number, name: string) {

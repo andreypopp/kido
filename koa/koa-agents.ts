@@ -1,9 +1,7 @@
-import { spawnSync } from "node:child_process";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSession, AgentSessionRuntime, Args, ExtensionUIContext, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import type { components } from "../webview/ko-api.d.ts";
 import type { Sdk } from "./koa-sdk.ts";
 import { agentExtension, createJobs, type BackgroundJob, type Jobs, type JobSink } from "./koa-agent.ts";
 import { sessionDir } from "./koa-session-dir.ts";
@@ -12,11 +10,10 @@ import { openInbox, type Inbox } from "./koa-inbox.ts";
 import type { SessionRow, SessionScope } from "./koa-records.ts";
 import type { AgentEnd, JobPlace, JobRef, RestartState, InProcessMessage } from "./records.ts";
 import type { AgentRow } from "./agents.ts";
-import { errorText, cleanLine, utf8Prefix } from "./text.ts";
-import { apiArgs, apiCall, findKo } from "./runtime-exec.ts";
+import { errorText } from "./text.ts";
+import { agentPath, createPublisher, deriveRecords, jobsPath } from "./koa-status.ts";
+import { findKo } from "./runtime-exec.ts";
 import type { CompletionContext } from "./completion-context.ts";
-
-type Api = components["schemas"];
 
 export type Dialogs = Pick<ExtensionUIContext, "select" | "input" | "confirm" | "editor" | "notify" | "setStatus" | "setEditorText">;
 
@@ -92,13 +89,12 @@ type Scoped = { agent: Agent; relationship: Relationship };
 export type Selection = { type: "agent"; agent: Agent } | { type: "job"; agent: Agent; job: BackgroundJob } | { type: "file"; agent: Agent; ref: JobRef };
 
 export type JobsView = {
-  viewed(): BackgroundJob | undefined;
   watched(job: BackgroundJob): boolean;
   output(job: BackgroundJob): void;
   changed(job: BackgroundJob): void;
 };
 
-export type Records = { active: boolean; write(report: Api["StatusReport"]): boolean; drain(): Promise<void> };
+type Records = Pick<ReturnType<typeof createPublisher>, "active" | "changed" | "drain">;
 
 export type AgentHost = {
   readonly self: Agent;
@@ -115,7 +111,6 @@ export type AgentHost = {
   spawn(plan: SpawnPlan): Promise<Agent | { error: string }>;
   stop(agent: Agent): Promise<void>;
   stopDescendants(): Promise<void>;
-  clearChild(name: string): void;
 };
 
 export type Tree = {
@@ -128,7 +123,7 @@ export type Tree = {
   view(): Selection;
   resolveView(id: string): Selection | undefined;
   select(selection: Selection): void;
-  writeRecord(agent: Agent): void;
+  changed(): void;
   retry(agent: Agent): Promise<void>;
   stop(agent: Agent, cause: AgentEnd): Promise<void>;
   restartState(): RestartState;
@@ -203,26 +198,6 @@ function childSessionDir(agentDir: string, cwd: string): string {
   return join(agentDir, "ko-subagents", `--${resolve(cwd).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`);
 }
 
-export function createRecords(facts: HostFacts): Records {
-  let queue = Promise.resolve();
-  const active = !!facts.pane && facts.insideKo;
-  return {
-    active,
-    write(report) {
-      if (!active) return false;
-      const path = `/panes/${facts.pane}/status`;
-      queue = queue.then(async () => { await apiCall("POST", path, report); }).catch(() => {});
-      return true;
-    },
-    drain: () => queue,
-  };
-}
-
-const childPath = (parent: Agent, name: string): string => `${recordPath(parent)}${parent.parent ? "/" : ""}agents/${name}`;
-const recordPath = (agent: Agent): string => agent.parent ? childPath(agent.parent, agent.name) : "";
-const jobsPath = (agent: Agent): string => `${recordPath(agent)}${agent.parent ? "/" : ""}jobs`;
-export const jobRecord = (agent: Agent, id: string): string => `${jobsPath(agent)}/${id}`;
-
 export function createTree(options: TreeOptions): Tree {
   const { sdk, facts } = options;
   let parsed = options.args;
@@ -231,8 +206,7 @@ export function createTree(options: TreeOptions): Tree {
   if (parsed.offline || process.env.PI_OFFLINE) { process.env.PI_OFFLINE = "1"; process.env.PI_SKIP_VERSION_CHECK = "1"; }
   const { agentDir } = options;
   const dir = sessionDir(parsed, options.cwd);
-  const records = createRecords(facts);
-  for (const id of ["agents", "jobs"]) records.write({ type: "clear", id });
+  let records: ReturnType<typeof createPublisher>;
   let modelRuntimeCache: Awaited<ReturnType<typeof pi.ModelRuntime.create>> | undefined;
   const getModelRuntime = async () => modelRuntimeCache ??= await pi.ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), signal: AbortSignal.timeout(15_000) });
   const trustStore = new pi.ProjectTrustStore(agentDir);
@@ -269,20 +243,12 @@ export function createTree(options: TreeOptions): Tree {
     return [...rows].map(([agent, relationship]) => ({ agent, relationship }));
   };
 
-  const writeRecord = (agent: Agent): void => {
-    if (!agent.parent || agent.stopping) return;
-    const { view } = agent;
-    const dialog = view.state.dialogs[0]?.title;
-    const failed = view.life.type === "failed" ? view.life.message : undefined;
-    const text = cleanLine(dialog ?? failed ?? view.root.message, 2048);
-    const common = { type: "set" as const, id: recordPath(agent), title: utf8Prefix(agent.name, 192), selection: selection?.type === "agent" && selection.agent === agent ? "selected" as const : "offered" as const, closeable: true, promptable: true, ...(text ? { msg: text } : {}) };
-    records.write(dialog ? { ...common, state: "blocked", kind: "question" } : { ...common, state: failed === undefined ? view.root.value : "error" });
-  };
   const view = (): Selection => selection ??= { type: "agent", agent: root };
   const select = (next: Selection): void => {
     const previous = view();
     selection = next;
-    for (const agent of new Set([previous.agent, next.agent])) { writeRecord(agent); agent.host.jobs.viewChanged(); }
+    for (const agent of new Set([previous.agent, next.agent])) agent.host.jobs.viewChanged();
+    records.changed();
   };
   const resolveView = (id: string): Selection | undefined => {
     const agent = id === "" ? root : tree.byRecord(id) ?? find(id);
@@ -403,8 +369,7 @@ export function createTree(options: TreeOptions): Tree {
   const makeHost = (agent: () => Agent, trusted: string | undefined): AgentHost => {
     const host: AgentHost = {
       get self() { return agent(); },
-      facts, browser: options.browser, pathEditor: options.pathEditor, trusted, records, jobs: createJobs({ records, path: () => jobsPath(agent()), sink: () => host.extension, place: facts.place, view: {
-        viewed: () => { const current = view(); return current.type === "job" && current.agent === agent() ? current.job : undefined; },
+      facts, browser: options.browser, pathEditor: options.pathEditor, trusted, get records() { return records; }, jobs: createJobs({ changed: () => records?.changed(), path: () => jobsPath(agent()), sink: () => host.extension, place: facts.place, view: {
         watched: job => options.jobWatched(job),
         output: job => options.jobOutput(job),
         changed: job => options.jobChanged(agent(), job),
@@ -415,7 +380,6 @@ export function createTree(options: TreeOptions): Tree {
       spawn: plan => spawn(agent(), plan),
       stop: target => stop(target, "stopped"),
       stopDescendants: () => stopDescendants(agent()),
-      clearChild: name => { records.write({ type: "clear", id: childPath(agent(), name) }); },
     };
     return host;
   };
@@ -465,7 +429,7 @@ export function createTree(options: TreeOptions): Tree {
     }
     plans.set(agent, plan);
     parent.children.push(agent);
-    writeRecord(agent);
+    records.changed();
     options.changed();
     await attach(agent);
     return agent;
@@ -509,7 +473,7 @@ export function createTree(options: TreeOptions): Tree {
     if (agent.parent) {
       const at = agent.parent.children.indexOf(agent);
       if (at >= 0) agent.parent.children.splice(at, 1);
-      records.write({ type: "clear", id: recordPath(agent) });
+      records.changed();
       agent.parent.extension?.markEnded(agent.id, cause);
     }
     agent.view.close();
@@ -526,6 +490,7 @@ export function createTree(options: TreeOptions): Tree {
     if (agent.stopping) return;
     const subtree = marked(agent);
     for (const member of subtree) member.stopping = true;
+    records.changed();
     options.beforeStop(agent);
     for (const member of subtree) await stopOne(member, cause);
   };
@@ -534,9 +499,11 @@ export function createTree(options: TreeOptions): Tree {
   };
 
   const root: Agent = makeAgent(undefined, undefined, "", options.cwd, undefined);
+  records = createPublisher({ active: !!facts.pane && facts.insideKo, pane: facts.pane ?? "", derive: budget => deriveRecords(root, view(), budget) });
+  records.changed(true);
   const tree: Tree = {
-    root, records, all, find, selected: () => view().agent, view, resolveView, select, writeRecord, retry, stop,
-    byRecord: id => all().find(agent => agent.parent && recordPath(agent) === id),
+    root, records, all, find, selected: () => view().agent, view, resolveView, select, changed: () => records?.changed(), retry, stop,
+    byRecord: id => all().find(agent => agent.parent && agentPath(agent) === id),
     openInbox: () => {
       if (!facts.pane || !facts.ko || !facts.insideKo) { ready(); return; }
       const deliver = async (agent: Agent | undefined, message: InProcessMessage): Promise<"ack" | "refuse"> => {
@@ -557,7 +524,7 @@ export function createTree(options: TreeOptions): Tree {
           if (!agent) {
             const owner = jobOwner(record);
             if (owner) owner.host.jobs.close(record);
-            else if (record === "agents" || record.startsWith("agents/")) records.write({ type: "clear", id: record });
+            else records.changed(true);
             return;
           }
           if (!parent || agent.stopping) return;
@@ -598,12 +565,15 @@ export function createTree(options: TreeOptions): Tree {
     async dispose() {
       ended = true;
       inbox?.close();
+      for (const agent of all()) agent.stopping = true;
+      root.host.jobs.dismissAll();
+      records.changed(true);
       for (const agent of all().reverse()) {
-        agent.stopping = true;
         agent.view.cancelDialogs();
         try { await agent.runtime?.dispose(); } catch (error) { process.stderr.write(`koa: ${errorText(error)}\n`); }
       }
       await records.drain();
+      records.close();
     },
   };
   const instantiateRoot = async () => {
@@ -617,12 +587,7 @@ export function createTree(options: TreeOptions): Tree {
   };
   process.on("exit", () => {
     for (const agent of all()) agent.host.jobs.registry.exit();
-    const ko = facts.ko;
-    if (!facts.pane || !facts.insideKo || !ko) return;
-    for (const id of ["jobs", "agents"]) {
-      const report: Api["StatusReport"] = { type: "clear", id };
-      spawnSync(ko, apiArgs("POST", `/panes/${facts.pane}/status`, report), { timeout: 1000, input: JSON.stringify(report), stdio: ["pipe", "ignore", "ignore"] });
-    }
+    if (facts.ko) records.exit(facts.ko);
   });
   return tree;
 }

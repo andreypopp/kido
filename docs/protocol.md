@@ -614,13 +614,27 @@ its removal (section 15), and this client's
 own state when a `switch` or a removal moved it. The OSC 133 steps
 and the OSC 7501 records reach a client only through `status`.
 
-`POST /panes/pane_N/status` writes one record of the pane's OSC 7501
-record set: a `set` or a `clear` of an id, the root included. It is the
-second edge of the set beside the terminal's OSC 7501, under the same
-rules (design-program-status.md, "The record set"), and a change
-follows as a `status` event. A pane writes only its own records (409
-`refused` for another pane), and the user writes any pane's. On a
-runtime connection only the visit's own pane writes.
+`POST /panes/pane_N/status` writes the pane's OSC 7501 record set: a
+`set` or a `clear` of one id, the root included, or a
+`replace_subtrees` (`StatusReplacement` in `ko_wire/src/protocol.rs`).
+It is the second edge of the set beside the terminal's OSC 7501, under
+the same rules (design-program-status.md, "The record set"), and a
+change follows as one `status` event. A pane writes only its own
+records (409 `refused` for another pane), and the user writes any
+pane's. On a runtime connection only the visit's own pane writes.
+
+A replacement names non-root, disjoint roots and gives the whole new
+content of their subtrees: every record id lies inside one root and
+occurs once. The server does not read the id grammar further, so a
+writer that wants each record's ancestors present must send them; koa
+does (design-koa.md, "Status records and signals"). An invalid body is
+400 `invalid`. The change is atomic: when the records outside the
+roots and the new records together exceed the server's limit
+(`status_record_limit` of `GET /version`), the reply is 409 `refused`
+and nothing changes; a replacement never evicts. Otherwise the root
+record and every record outside the roots stay, each retained id keeps
+its `started`, and a changed set increases the serial once. An equal
+replacement, such as a retry after a lost response, changes nothing.
 
 A record of the route can carry `selection` (`RecordSelection` in
 `ko_wire/src/protocol.rs`); Ghostty's OSC 7501 parser has no such

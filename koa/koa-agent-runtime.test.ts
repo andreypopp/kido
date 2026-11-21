@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-import { makeFixture, agentPane, selfPane, startSession, text, customMessages, notices, gatedCommand, pollUntil, withEnv, freshExtension, movedId, logHas, captureStatusRecords, type Fixture, type Started, at, jobId, jobLog, jsonRows, type ToolResult, getStr, getList, get, createChannel } from "./koa-agent-fixture.ts";
+import { makeFixture, agentPane, selfPane, startSession, text, customMessages, notices, gatedCommand, pollUntil, withEnv, freshExtension, movedId, logHas, captureStatusRecords, type Fixture, type Started, at, jobId, jobLog, jsonRows, type ToolResult, getStr, getList, getRows, get, createChannel } from "./koa-agent-fixture.ts";
 
 import { isRecord } from "./text.ts";
 import { mapHostPath, senderHeader } from "./koa-agent.ts";
@@ -482,7 +482,7 @@ test("a routed async_bash is an exec session with a host log, a notice, and canc
     const gate = join(t.rt, "gate");
     const command = `env; printf 'before\\n'; ${gatedCommand(gate, "", "after\n", 3)}`;
     const result = await withEnv({ HOST_SECRET: "host-only" }, () => run(s, "async_bash", { command, name: "build", stream: true }));
-    const records = () => fx.posts(`/panes/${process.env.KO_PANE}/status`).filter(record => record.id === `jobs/${jobId(result)}`);
+    const records = () => fx.posts(`/panes/${process.env.KO_PANE}/status`).flatMap(report => getRows(report, "records")).filter(record => record.id === `jobs/${jobId(result)}`);
     await pollUntil(() => records()[0]?.state === "working");
     await pollUntil(() => fx.running() === baseline + 1);
     await pollUntil(() => getList(at(fx.execLog(), -1).request, "argv")[2] === command);

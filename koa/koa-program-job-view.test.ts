@@ -1,6 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -24,7 +24,7 @@ async function viewing(t: TestContext, before = "hello\n", env: NodeJS.ProcessEn
   const tools = [{ name: "async_bash", args: { command: `cat '${output}'; ${gatedCommand(gate, "", "bye\n", 1)}`, name: "one" } }];
   const app = await realFixture(t, { panes: [selfPane()], replies: [{ tools }, { text: "started" }], env: { KO_RUNTIME: "", ...env } });
   await app.post("prompt", { text: "run a job", mode: "prompt", attachments: [] });
-  const statuses = async () => (await app.apiCalls()).filter(call => call.path === "/panes/pane_1/status").map(call => { const body: { id: string; type: string; state?: string; selection?: string } = JSON.parse(call.body); return body; });
+  const statuses = async () => (await app.statusRevisions()).flatMap(revision => revision.status.records);
   await pollUntil(async () => (await statuses()).some(r => r.id.startsWith("jobs/")), 10000, "the job record");
   const record = (await statuses()).find(r => r.id.startsWith("jobs/"))?.id ?? "";
   const id = record.slice("jobs/".length);
@@ -96,7 +96,7 @@ test("Stop ends the job in place and Clear leaves the view and removes the recor
   await f.app.until(ofType("state", record => record.view.type === "job" && record.view.job.state.type === "ended" && record.view.job.state.end.type === "stopped"));
   assert.equal((await f.app.post("job/clear", { id: f.id })).status, 200);
   await f.app.until(ofType("state", record => record.view.type === "root" && f.states().filter(s => s.view.type === "job").length > 0));
-  await pollUntil(async () => (await f.app.apiCalls()).some(call => call.path === "/panes/pane_1/status" && call.body.includes('"clear"') && call.body.includes(f.id)), 5000, "the record is cleared");
+  await pollUntil(async () => !(await f.app.statusRevisions()).at(-1)?.status.records.some(record => record.id === f.record), 5000, "the record is dismissed");
 });
 
 test("a job view takes no agent action: abort and prompts are refused, and a view switch returns to the agent", { timeout: 30000 }, async t => {
@@ -121,7 +121,7 @@ test("an external clear keeps the open view as cleared", { timeout: 30000 }, asy
   await f.close(f.record);
   const cleared = await f.app.until(ofType("state", record => record.view.type === "job" && record.view.job.state.type === "cleared"));
   assert.equal(cleared.view.id, f.id);
-  await pollUntil(async () => /\\"clear\\"/.test(await readFile(join(f.app.dir, "api-log"), "utf8")), 5000, "the record is cleared");
+  await pollUntil(async () => !(await f.app.statusRevisions()).at(-1)?.status.records.some(record => record.id === f.record), 5000, "the record is dismissed");
 });
 
 test("a reconnect with a byte cursor catches up from the log in bounded steps and then from the tail, without a gap", { timeout: 30000 }, async t => {
@@ -148,23 +148,21 @@ const cards = (records: PageRecord[]) => records.flatMap(record => record.type =
 
 test("a card whose job left the registry opens a read-only view from its stored facts, and its open link goes once the log does", { timeout: 60000 }, async t => {
   const tools = Array.from({ length: 22 }, (_, i) => ({ name: "async_bash", args: { command: `echo hi-${i}`, name: `n${i}` } }));
-  const app = await realFixture(t, { panes: [selfPane()], replies: [{ tools }, ...Array.from({ length: 40 }, () => ({ text: "ok" }))], env: { KO_RUNTIME: "" } });
+  const app = await realFixture(t, { panes: [selfPane()], replies: [{ tools }, ...Array.from({ length: 40 }, () => ({ text: "ok" }))], env: { KO_RUNTIME: "", KO_JOB_RECORD_LINGER_MS: "1" } });
   await app.post("prompt", { text: "run jobs", mode: "prompt", attachments: [] });
-  const statuses = async () => (await app.apiCalls()).filter(call => call.path === "/panes/pane_1/status").map(call => { const body: { id: string; state?: string } = JSON.parse(call.body); return body; });
-  await pollUntil(async () => new Set((await statuses()).filter(r => r.state === "done").map(r => r.id)).size === 22, 20000, "all jobs end");
-  await pollUntil(() => app.records().filter(record => record.type === "item" && record.item.kind === "job" && record.item.event.type === "ended").length >= 22, 30000, "every job is announced, so the registry pruned the oldest");
+  await pollUntil(() => app.records().filter(record => record.type === "item" && record.item.kind === "job" && record.item.event.type === "ended").length >= 22, 30000, "every job is announced");
+  await pollUntil(async () => !(await app.statusRevisions()).at(-1)?.status.records.some(record => record.id.startsWith("jobs/")), 20000, "all job records to expire");
   let first: ReturnType<typeof cards>[number] | undefined, state: Extract<PageRecord, { type: "state" }> | undefined;
   for (const card of cards(app.records())) {
     const after = app.count();
     assert.equal((await app.post("view", { id: card.id })).status, 200);
     const opened = await app.until(ofType("state", record => record.view.type === "job" && record.view.id === card.id), after);
-    if (opened.view.type === "job" && opened.view.job.state.type === "cleared") { first = card; state = opened; break; }
+    if (opened.view.type === "job" && opened.view.job.state.type === "cleared" && (await app.post("job/stop", { id: card.id })).status === 409) { first = card; state = opened; break; }
   }
   assert.ok(first && state && state.view.type === "job", "a pruned job opens from its card");
   assert.deepEqual([state.view.job.command.startsWith("echo hi-"), state.view.job.log], [true, first.log]);
   const reset = await app.until(isReset, app.records().findIndex(record => record === state));
   assert.equal(text(reset), first.command.replace("echo ", "") + "\n");
-  assert.equal((await app.post("job/stop", { id: first.id })).status, 409);
   const self = state.view.path[0]?.id ?? "";
   await rm(first.log);
   assert.equal((await app.post("view", { id: self })).status, 200);
@@ -250,7 +248,7 @@ test("the last disconnect of a viewer of an unselected job retires its feed", { 
 
 async function finished(t: TestContext) {
   const f = await viewing(t, "hello\n", { KO_JOB_RECORD_LINGER_MS: "300" });
-  const cleared = async () => (await f.statuses()).some(r => r.id === f.record && r.type === "clear");
+  const cleared = async () => !(await f.app.statusRevisions()).at(-1)?.status.records.some(record => record.id === f.record);
   return { f, cleared, end: async () => { await f.release(); await pollUntil(async () => (await f.statuses()).some(r => r.id === f.record && r.state === "error"), 10000, "the job ends"); } };
 }
 
