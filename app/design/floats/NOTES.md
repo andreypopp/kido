@@ -372,11 +372,14 @@ parent, minimise and Space for free; each is now a rule of ours.
   change leaves the floats where they are and sends nothing; a float
   without a local frame follows its cells on the new grid. The one
   constraint, applied at a resize, a screen change and on adoption,
-  as a move and never a resize: the whole 16pt move band and 60pt of
+  as a move and never a resize: the whole move band and 60pt of
   the width inside the visible frame of the screen that holds the
   float (menu bar and Dock excluded). Never inside the main window: a
   float may cover the sidebar, the toolbar, the tabs, the edge, or
-  lie outside.
+  lie outside. Not during a gesture (2026-11-21): while a float is
+  dragged the window follows the pointer, a screen change that the
+  drag itself causes is not a moment of the rule, and the rule runs
+  once at the drop.
 - **Size: the server's cells** (user, 2026-11-20: the server keeps
   clamping floats into the ko window's room on every float edit and
   every ko-window resize, and this unit leaves the server unchanged).
@@ -581,6 +584,70 @@ the Option drag, and the sidebar without the float's row.
   memory. A pane that was never a float, or whose memory is gone, is
   unchanged: Float Pane sends `Edit::Float` without geometry, and
   the server places it.
+- **Dock into another window** (user, 2026-11-21). A float docks by
+  drag into any ko window of its own session that a Kido window of
+  the same connection shows; without a target it docks back into
+  the window it came from.
+  - *The targets.* During an Option band drag (above), the drop
+    targets are the pane-edge targets of the tiled panes that the
+    Kido windows of the float's connection show, when the ko window
+    shown is of the float's session: the owner's main window and
+    every other Kido window on the same server (same server
+    instance, same session; not another session, never another
+    server). The Kido window under the pointer is found by the
+    screen point, front to back, among those windows' main windows
+    (float windows, the dragged one included, are never targets);
+    its WindowView supplies the targets and draws the bar in its own
+    pane area, as it does for a tiled source; moving to another
+    window clears the bar there and shows it here, one bar at a
+    time. No Kido window changes order during the drag, and the
+    main window does not switch what it shows to offer targets: a
+    ko window of the session that no Kido window shows has no
+    targets (switch the main window to it first). The float itself
+    moves under the pointer and never shows the ghost.
+  - *The edit.* The drop sends `dock {pane, target, edge}`, as a
+    dock in the own window does: `ko_client`'s `Dock` takes the pane
+    from the window whose floats hold it and puts it beside the
+    target in the target's window, and the layout `PUT` carries the
+    move (a pane can move between windows, protocol.md, section 7;
+    the source window's focus moves in the same layout event). No
+    new route and no new edit; the window-edge `dock_window` and the
+    swap are not offered to a float (above). A child float may dock
+    into another window: a tiled child is valid in any window and
+    is a root of that window's tree (design.md, "Who is
+    authoritative for what"); its edge still decides its lifetime.
+  - *After the drop.* The docked pane is the focused pane of its
+    new ko window, as a dock in the own window keeps it active, and
+    the Kido window that received the drop becomes key (it shows the
+    pane; the user dropped there). The owner's float window closes
+    in the layout pass that shows the pane tiled. The source ko
+    window's focus goes to its last-focused tiled pane (the server
+    moves it when the focused pane leaves; the app's per-window
+    memory of section A agrees). The ownership of the floats does
+    not change.
+  - *Dock Pane without a target* (⌥⌘F, the toolbar button, the
+    palette, the menu) docks the float back into the window it came
+    from: the ko window it was floated from (Float Pane, the pop
+    out), or, for a pane created as a float (koa's editor), the
+    window it was created in. That window is always the ko window
+    whose floats hold it: a float never changes ko window while it
+    floats (a `float` edit keeps its window, a floating child is
+    valid only in its parent's window), so the origin needs no
+    memory, and Dock Pane is as today: beside the remembered
+    last-focused tiled pane of that window (section A), after
+    switching the main window to show it when it does not
+    (section E). A child float docks beside its parent, as today.
+  - *Float again, same place* (above) for a pane that was docked
+    into another window: the memory is the pane's, by id, in the
+    owning Kido window, and it holds a screen origin and a cell
+    size, nothing about a ko window; Float Pane floats the pane in
+    the ko window it is tiled in now, at the remembered screen
+    origin and size, clamped to that window's room: the same place
+    on screen, which is what the user remembers. Exception: a child
+    tiled in a window other than its parent's cannot float (the
+    server refuses a floating child outside its parent's window):
+    Float Pane is disabled on it, the palette row absent, and the
+    memory is dropped when the dock lands it there.
 - **Tests.** Rows: a window with a float lists its tiled panes only,
   a float's records and cluster are absent, a tiled child of a float
   is a depth-0 row, the cluster count omits a floating child, the
@@ -598,4 +665,14 @@ the Option drag, and the sidebar without the float's row.
   another dock in a smaller pane area comes back clamped in size
   and moved the least amount; a pop out by drag ignores the memory;
   a never-floated pane sends no geometry; the memory does not
-  survive a relaunch.
+  survive a relaunch. Another window: an Option band drag over a
+  tiled pane of a second Kido window on the same server showing the
+  same session shows the bar there and the drop sends `dock` with
+  that target, the pane is focused in the second window, which is
+  key, and the float window is gone; over a Kido window showing
+  another session, no bar and the drop moves; over another server's
+  window, the same; Dock Pane without a target after the main
+  window switched to another session docks into the float's own ko
+  window; Float Pane after a dock into another window floats the
+  pane in that window at the old screen origin; a child docked into
+  another window has Float Pane disabled.
