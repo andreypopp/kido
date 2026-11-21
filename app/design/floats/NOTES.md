@@ -616,6 +616,10 @@ the Option drag, and the sidebar without the float's row.
     into another window: a tiled child is valid in any window and
     is a root of that window's tree (design.md, "Who is
     authoritative for what"); its edge still decides its lifetime.
+    The server's rule that a floating child is valid only in its
+    parent's window goes (user, 2026-11-21): a child may float in
+    any window, so the window a child is docked into is a window it
+    can float in again; the lifetime edge is unchanged.
   - *After the drop.* The docked pane is the focused pane of its
     new ko window, as a dock in the own window keeps it active, and
     the Kido window that received the drop becomes key (it shows the
@@ -631,23 +635,22 @@ the Option drag, and the sidebar without the float's row.
     out), or, for a pane created as a float (koa's editor), the
     window it was created in. That window is always the ko window
     whose floats hold it: a float never changes ko window while it
-    floats (a `float` edit keeps its window, a floating child is
-    valid only in its parent's window), so the origin needs no
+    floats (a `float` edit keeps its window), so the origin needs no
     memory, and Dock Pane is as today: beside the remembered
     last-focused tiled pane of that window (section A), after
     switching the main window to show it when it does not
-    (section E). A child float docks beside its parent, as today.
+    (section E). A child float docks in its own window: beside its
+    parent when the parent is tiled in that window, as today; else
+    beside the remembered last-focused tiled pane, like any float.
   - *Float again, same place* (above) for a pane that was docked
     into another window: the memory is the pane's, by id, in the
     owning Kido window, and it holds a screen origin and a cell
     size, nothing about a ko window; Float Pane floats the pane in
     the ko window it is tiled in now, at the remembered screen
     origin and size, clamped to that window's room: the same place
-    on screen, which is what the user remembers. Exception: a child
-    tiled in a window other than its parent's cannot float (the
-    server refuses a floating child outside its parent's window):
-    Float Pane is disabled on it, the palette row absent, and the
-    memory is dropped when the dock lands it there.
+    on screen, which is what the user remembers. A child is no
+    exception (the parent's-window rule is gone): it floats again in
+    the window it is tiled in, at its remembered place.
 - **Tests.** Rows: a window with a float lists its tiled panes only,
   a float's records and cluster are absent, a tiled child of a float
   is a depth-0 row, the cluster count omits a floating child, the
@@ -674,5 +677,6 @@ the Option drag, and the sidebar without the float's row.
   window, the same; Dock Pane without a target after the main
   window switched to another session docks into the float's own ko
   window; Float Pane after a dock into another window floats the
-  pane in that window at the old screen origin; a child docked into
-  another window has Float Pane disabled.
+  pane in that window at the old screen origin, a child too; Dock
+  Pane on a child float whose parent is in another window docks it
+  beside that window's last-focused tiled pane.
