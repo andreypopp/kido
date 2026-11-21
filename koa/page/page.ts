@@ -1682,6 +1682,7 @@ function apply(record: PageRecord) {
     for (const item of record.items) { accept(item); changedItem(item.seq, false); }
     historyBefore = record.items.filter(item => item.kind !== 'annotations' && item.kind !== 'threads').reduce((lowest, item) => Math.min(lowest, item.seq), Infinity);
     if (threadFilter()) void reloadThread();
+    else { const generation = scrolling.generation; void rendered().then(() => { if (epoch === record.epoch && scrolling.generation === generation) fillHistory(); }); }
     schedule();
   } else if (record.type === 'item') {
     const current = items.get(record.item.seq);
@@ -2031,6 +2032,10 @@ function connect() {
 }
 window.addEventListener('pagehide', () => { closed = true; source?.close(); clearTimeout(reconnect); });
 window.addEventListener('pageshow', event => { if (event.persisted && closed && !failed) { closed = false; connect(); } });
+function fillHistory() {
+  const scroll = element('scroll');
+  if (scroll.scrollHeight <= scroll.clientHeight || scroll.scrollTop < 80) void older();
+}
 function older() {
   if (state.view.type === 'job' || !more || first === undefined) return;
   if (!historyRequest) { const request = historyRequest = { before: historyBefore ?? first, ...(threadFilter() ? { thread: threadFilter() } : {}), patches: [], done: Promise.resolve() }; request.done = loadOlder(request); }
@@ -2042,6 +2047,7 @@ async function reloadThread() {
   return request.done;
 }
 async function loadOlder(mine: NonNullable<typeof historyRequest>) {
+  let applied = false;
   try {
     const response = await fetch(scoped('/items?before=' + mine.before + (mine.thread ? '&thread=' + encodeURIComponent(mine.thread) : ''), state.sessionId)); if (!response.ok) throw Error('Could not load earlier messages');
     const result: Extract<PageRecord, { type: 'reset' }> = await response.json();
@@ -2052,8 +2058,9 @@ async function loadOlder(mine: NonNullable<typeof historyRequest>) {
       for (const item of result.items) if (!items.has(item.seq)) accept(item);
       for (const patch of mine.patches) { applyPatch(patch, false); if (historyRequest !== mine) return; }
       await rendered();
+      applied = true;
     }
-  } catch (error) { reportError(error); } finally { if (historyRequest === mine) historyRequest = undefined; }
+  } catch (error) { reportError(error); } finally { if (historyRequest === mine) { historyRequest = undefined; if (applied && historyBefore !== mine.before) fillHistory(); } }
 }
 const sessionHost = element('session-picker');
 const sessionSearch = node('input', undefined, 'q'); sessionSearch.placeholder = 'Search sessions…'; sessionSearch.setAttribute('aria-label', 'Search sessions');
@@ -2292,7 +2299,7 @@ element('scroll').onscroll = () => {
   decide({ type: 'scroll' });
   const geo = geometry(), top = geo.top - geo.origin, half = geo.viewport / 2, { total } = ensureTable();
   if (!mountedSpans.some(span => span.start <= Math.max(0, top - half) && span.end >= Math.min(total, top + geo.viewport + half))) { windowDirty = true; schedule(); }
-  if (element('scroll').scrollTop < 80) void older();
+  fillHistory();
 };
 element('scroll').addEventListener('wheel', event => {
   if (event.deltaY && Math.abs(event.deltaY) >= Math.abs(event.deltaX)) decide({ type: 'input', direction: event.deltaY < 0 ? 'up' : 'down' });

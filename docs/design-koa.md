@@ -343,7 +343,11 @@ A reconnect sends the epoch and the last final item, not
 Last-Event-ID. Patches change unfinished items, so an event id would
 be the wrong cursor. A current cursor gets the missing items; another
 epoch gets a capped reset window. Older history uses the same window
-limits. A slow page whose output queue exceeds the feed cap is
+limits. The page asks for older history when its top comes into view. After
+the first page, each older page and a thread reload, it asks for the
+next older page while its top is still in view, so a window that the
+rows do not fill fills itself; a failed page stops this until the next
+scroll. A slow page whose output queue exceeds the feed cap is
 disconnected and can catch up; it does not block other pages.
 
 An exception while applying a record is different from a transport

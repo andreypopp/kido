@@ -4019,6 +4019,34 @@ test('a run or job group is mounted whole or not at all, and a folded fence stay
   assert.equal(page.bars.length, bars, 'a remounted fence that was opened gets no new fold bar');
 });
 
+test('a short reset fills the viewport from older pages and stops at the end or a failure', async () => {
+  for (const outcome of ['filled', 'end', 'failed', 'throws', 'already filled']) {
+    const page = await windowPage(), requests: number[] = [];
+    page.evaluate("element('scroll').clientHeight=1000");
+    Object.assign(page.app.context, { fetch: async (path: string) => {
+      const before = Number(path.match(/before=(\d+)/)?.[1]); requests.push(before);
+      if (outcome === 'throws') throw Error('offline');
+      return { ok: outcome !== 'failed', json: async () => ({ type: 'reset', epoch: 'a', more: outcome !== 'end', items: page.rows(outcome === 'filled' ? 0 : before - 1, before) }) };
+    } });
+    page.open(page.rows(20, outcome === 'already filled' ? 100 : 21), true);
+    for (let turn = 0; turn < 6; turn++) { page.settle(4); await page.settled(); }
+    assert.deepEqual(requests, outcome === 'already filled' ? [] : [20], outcome);
+    assert.equal(page.evaluate('scrolling.kind'), 'following', outcome);
+  }
+});
+
+test('a short reset continues through multiple older pages', async () => {
+  const page = await windowPage(), requests: number[] = [];
+  page.evaluate("element('scroll').clientHeight=1000");
+  Object.assign(page.app.context, { fetch: async (path: string) => {
+    const before = Number(path.match(/before=(\d+)/)?.[1]); requests.push(before);
+    return { ok: true, json: async () => ({ type: 'reset', epoch: 'a', more: before > 19, items: page.rows(before - 1, before) }) };
+  } });
+  page.open(page.rows(20, 21), true);
+  for (let turn = 0; turn < 8; turn++) { page.settle(4); await page.settled(); }
+  assert.deepEqual(requests, [20, 19]);
+});
+
 test('returning to an absent anchor loads older pages until it is loaded, mounts it and restores the offset', async () => {
   const page = await windowPage();
   const requests: number[] = [];
