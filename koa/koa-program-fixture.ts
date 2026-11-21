@@ -12,7 +12,7 @@ import { assistant, sse, ofType } from "./koa-agent-fixture.ts";
 import { startProvider, writeAgentDir, type Model, type Reply } from "./koa-fake-provider.ts";
 export async function linkFakeKo(dir: string) {
   const fake = process.env.KO_FAKE_KO;
-  if (!fake) throw new Error("KO_FAKE_KO is not set; run scripts/test-ts.sh");
+  if (!fake) throw new Error("KO_FAKE_KO is not set; run make -C koa test");
   await stat(fake);
   await symlink(fake, join(dir, "ko"));
 }

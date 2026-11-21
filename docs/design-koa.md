@@ -1104,19 +1104,27 @@ Use the narrowest test that observes the rule:
 - Native focus, menus, editor floats and the real serve path use
   app integration tests in the VM. Browser mode is not their substitute.
 
-`scripts/test-ts.sh` installs pinned dependencies when needed, builds
-fake ko and koa, checks types, and runs the Node suite. With no file
-arguments, `koa/testdata/run-tests.mjs` schedules the suite with long
-files first. With file arguments it runs only those files after the
-build and type checks:
+`koa/Makefile` is the one entry point of koa's checks, and each target
+installs the pinned dependencies when needed. `make -C koa typecheck`
+checks both TypeScript projects (`koa/` and `koa/page/`). `make -C koa
+lint` runs `koa/scripts/lint.py` (TS hygiene, the `process.kill`
+sites, history comments, also in `webview/`) and compares
+`koa/testdata/ko-prompts.txt` with the output of
+`koa/scripts/dump-prompts.ts`. `make -C koa test` builds fake ko and
+koa and runs the Node suite; `koa/testdata/run-tests.mjs` schedules it
+with long files first. `FILE=` runs only the named files.
+`make -C koa check` runs all three. `scripts/lint.sh` calls `make -C
+koa lint`, and the ts stage of `scripts/verify.sh` calls `make -C koa
+typecheck test`:
 
 ```sh
-scripts/test-ts.sh koa-scroll.test.ts
-scripts/test-ts.sh koa-program-session.test.ts
-scripts/test-ts.sh koa-webview-sdk.test.ts
+make -C koa test FILE=koa-scroll.test.ts
+make -C koa test FILE="koa-program-session.test.ts koa-webview-sdk.test.ts"
 ```
 
-The script scrubs pane identity from the test environment. Fixture
+`koa/scripts/node.sh`, which every target sources, skips without
+Node 24 or newer (a failure under `KO_TS_TEST_REQUIRED=1`) and scrubs
+pane identity from the test environment. Fixture
 children get private home and agent directories. A gate waits for a
 test action, not elapsed time. Follow the repository's bounded-wait
 and no-repeat rules in `AGENTS.md`. Final unit verification uses
@@ -1145,7 +1153,8 @@ Use real session files for saved history and small test extensions
 for dialogs, startup UI and extension errors. Do not enlarge a fake
 model to invent host facts.
 `koa/testdata/ko-prompts.txt` snapshots extension prompt text;
-`make prompts` regenerates it when that text intentionally changes.
+`make -C koa prompts` (or the root `make prompts`) regenerates it when
+that text intentionally changes.
 
 ### Replay scenarios and snapshots
 

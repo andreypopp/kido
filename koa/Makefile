@@ -1,9 +1,18 @@
+.DEFAULT_GOAL := build
 OUT ?= ../build/koa
 PREFIX ?= $(HOME)/.local
 KOA_SRC := koa-timer.ts koa-editor.ts koa-float.ts koa-feed.ts koa-job-log.ts koa-job-view.ts koa-records.ts koa-transcript.ts koa-image.ts koa-http.ts koa.ts koa-attach.ts koa-queue.ts koa-complete.ts koa-shell.ts koa-shell.sh koa-child.ts koa-sdk.ts koa-resume.ts koa-agents.ts koa-view.ts koa-inbox.ts koa-args.ts koa-commands.ts koa-session-dir.ts koa-identity.ts koa-assemble.ts koa-agent.ts text.ts markdown-line.ts agents.ts token.ts path-token.ts records.ts completion-context.ts runtime-exec.ts prompt.ts package.json
 KOA_ESBUILD = node_modules/.bin/esbuild page/page.ts page/page.css page/page.html --loader:.html=copy --bundle --format=esm --platform=browser --target=safari26 --outdir=$(OUT)/share/koa/koa
 
-.PHONY: build watch install
+.PHONY: build watch install typecheck lint test check prompts
+typecheck lint prompts:
+	./scripts/test.sh $@
+
+test:
+	./scripts/test.sh test $(FILE)
+
+check: typecheck lint test
+
 build: $(OUT)/bin/koa $(OUT)/share/koa/koa/page.js
 	rm -rf $(OUT)/share/koa/webview
 	cp -R ../webview $(OUT)/share/koa/webview

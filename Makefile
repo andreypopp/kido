@@ -30,7 +30,7 @@ install: build build-linux
 	cp $(KO)/bin/ko $(KO)/bin/ko-pane "$(PREFIX)/bin/"
 
 prompts:
-	./scripts/lint.sh --update-prompts
+	$(MAKE) -C koa prompts
 
 schemas:
 	./scripts/lint.sh --update-schemas
@@ -203,7 +203,7 @@ lint-rs:
 	$(CARGO) clippy --locked --workspace --all-targets -- -D warnings
 
 lint: lint-rs
-	./scripts/test-ts.sh lint
+	./scripts/lint.sh
 
 bindgen:
 	./scripts/bindgen.sh

@@ -476,7 +476,8 @@ docs/verification.md describes every check. The targets agents run:
     make cargo ARGS='test -p ko_server'  one cargo command, for iterating on one package
     make lint    cargo fmt --check, clippy and scripts/lint.sh
     make schemas regenerate the schemas and webview/ko-api.d.ts
-    make prompts regenerate the prompt fixture
+    make prompts regenerate the prompt fixture (make -C koa prompts)
+    make -C koa check  koa's typecheck, lint and test; test FILE=name.test.ts runs one file
     make fuzz TARGET=ring TIME=600  one time-boxed fuzz run, only when the user asks
     make ci-like ARGS=...  a CPU/memory-capped Linux container
 
@@ -658,7 +659,9 @@ delegates as its brief says and does not write code.
 - **Size the process to what the change is for,** not to its line
   count. Local tooling (the pi extensions in `.pi/`, a script that
   only agents use, a brief, a plan or other prose) gets one agent, a
-  quick check such as `scripts/lint.sh`, and no tests, reviewers or
+  quick check such as `scripts/lint.sh` (`scripts/lint.sh docs` for
+  prose alone: the doc references and Markdown checks, with no build),
+  and no tests, reviewers or
   full verification. A small product change (one behaviour, a few
   files) takes the small track: no planner, one implementer and one
   correctness reviewer, and the manager says that it chose it. Its final
@@ -802,7 +805,7 @@ delegates as its brief says and does not write code.
   the kill paths.
 - **Fast gates first.** After every edit, before it reports or runs
   `scripts/checks.sh`, an implementer runs the fast gates of what it
-  changed: `make lint`, and `scripts/test-ts.sh` for TypeScript. A
+  changed: `make lint`, and `make -C koa check` for TypeScript. A
   slow stage never runs on a tree that fails a fast gate.
 - **Verify what you touched; CI runs the whole.** If a bug's cause is
   not clear from the code, write the test first. This includes a

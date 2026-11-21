@@ -13,10 +13,12 @@ describes the build. Kido.app's checks are in design-app.md,
 `make verify` runs, in this order: a scrubbed `make build`, `make
 build-linux check-static` (build-linux), fmt, clippy and
 `scripts/lint.sh` (lint; lint-rs is the stage without lint.sh), ko's
-cargo tests (unit), ko's e2e (e2e), the TypeScript suite (ts), and
+cargo tests (unit), ko's e2e (e2e), the TypeScript suite (ts: `make
+-C koa typecheck test` and `scripts/test-pi.sh`), and
 `make verus`. `STAGES=` selects stages, and `E2E=client_` limits the
 e2e stage to the tests whose names contain the text (a cargo test
-filter). The stages `lint-sh` (`scripts/lint.sh` only), `app` (the
+filter). `scripts/lint.sh docs` runs only the doc reference and
+Markdown checks, with no build. The stages `lint-sh` (`scripts/lint.sh` only), `app` (the
 app's `make test`), `ko-test` and `visual` (the app's `make visual`,
 limited by `VISUAL_ONLY`) are not in the default list;
 `scripts/checks.sh` selects them. Every selected stage runs even after

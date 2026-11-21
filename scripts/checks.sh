@@ -80,7 +80,7 @@ ko_sys/* ko_vt_sys/*|build build-linux lint unit e2e
 ko/* ko_*/* fuzz/* share/ko/*|build lint unit e2e
 koa/page/*|page
 koa/testdata/replay.ts koa/testdata/scenario.ts koa/testdata/scenario-parts.ts koa/testdata/scenarios/*|replay
-koa/* webview/* .pi/* scripts/test-ts.sh|build lint ts
+koa/* webview/* .pi/* koa/scripts/* scripts/test-pi.sh|build lint ts
 app/VisualTests/__Snapshots__/*/*|snapshot
 app/VisualTests/*.swift|swift
 app/VisualTests/*|visual

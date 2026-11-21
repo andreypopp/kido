@@ -264,7 +264,7 @@ export function makeFixture(): Fixture {
   statusRecords.length = 0;
   cachedFakeKo ??= process.env.KO_FAKE_KO ?? null;
   if (!cachedFakeKo || !existsSync(cachedFakeKo)) {
-    throw new Error("KO_FAKE_KO is not set or not built; run scripts/test-ts.sh");
+    throw new Error("KO_FAKE_KO is not set or not built; run make -C koa test");
   }
   const dir = mkdtempSync(join("/tmp", "koa-agent-test-"));
   const binDir = join(dir, "bin");

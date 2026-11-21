@@ -206,7 +206,7 @@ The other targets:
     make bindgen  regenerate ko_vt_sys/src/bindings.rs
     make probe BYTES=N  ko-bench throughput: the server's ring reader under ko-pane, N bytes of bench/streams (default 1 GiB); not part of verify
     make build-bench  the C helpers of bench/ in build/bench/, after build
-    make prompts regenerate the prompt fixture through scripts/lint.sh --update-prompts
+    make prompts regenerate the prompt fixture through make -C koa prompts
     make schemas regenerate share/ko/openapi.json, share/ko/client-model.json, share/ko/config-schema.json and webview/ko-api.d.ts through scripts/lint.sh --update-schemas
     make api-docs  one static HTML page of share/ko/openapi.json (Redocly) in build/ko-api.html; not part of verify
     make fuzz TARGET=ring TIME=600  one time-boxed fuzz run; no TARGET lists the targets

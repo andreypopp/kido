@@ -404,17 +404,17 @@ configuration.
                         release.md, /release: Kido.app first, then ko and koa
     .pi/extensions/     no-git-writes, the spawned agent's bash-tool guard
     .pi/tests/          no-git-writes.test.ts, the guard's suite, which
-                        scripts/test-ts.sh runs with koa's suite
+                        scripts/test-pi.sh runs in the ts stage
     scripts/openapi/    package.json and its lockfile: openapi-typescript and
                         redocly, the generators of ko-api.d.ts and of make
                         api-docs, with the TypeScript 5 that they need, apart
                         from koa's TypeScript 7
     scripts/            verify.sh, scrubbed verification; checks.sh, the
                         checks of a unit's changed paths; release.sh, the
-                        Homebrew tap releases of ko and koa; lint.sh, code hygiene, signal
-                        calls, doc references, schemas and prompt snapshots;
-                        test-ts.sh; dump-prompts.ts, every prompt text pi
-                        registers; main-watch.sh, CI for each observed main
+                        Homebrew tap releases of ko and koa; lint.sh, the repository's
+                        hygiene, signal calls, doc references and schemas, then
+                        make -C koa lint; lint-docs.py and lint-names.py, its
+                        doc and removed-name checks; test-pi.sh; main-watch.sh, CI for each observed main
                         head; ci-website-watch.sh; ci-like.sh and
                         ci-like/Dockerfile, the Linux reproduction;
                         install-zig.sh, the zig pin; zig-cc-musl, the

@@ -2,12 +2,21 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 case "${1:-}" in
-  ''|--update-prompts|--update-schemas) ;;
-  *) echo "usage: scripts/lint.sh [--update-prompts|--update-schemas]" >&2; exit 1 ;;
+  ''|docs|--update-schemas) ;;
+  *) echo "usage: scripts/lint.sh [docs|--update-schemas]" >&2; exit 1 ;;
 esac
+failed=0
+if [[ "${1:-}" == docs ]]; then
+  python3 scripts/lint-docs.py || failed=1
+  python3 scripts/lint-names.py docs || failed=1
+  if [[ "$failed" == 0 ]]; then echo 'lint docs: PASS'; fi
+  exit "$failed"
+fi
+python3 scripts/lint-docs.py || failed=1
+python3 scripts/lint-names.py || failed=1
+make -C koa lint || failed=1
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
-failed=0
 # A negative pid or a process group reaches kill(2) only through ko_sys::pid and signal_child.
 signal_pattern='\bkillpg\b|\bkill[[:space:]]*\([[:space:]]*-'
 signals=$( {
@@ -99,30 +108,6 @@ def lexical(text):
         return re.sub(r'[^\n]', ' ', token)
     return re.sub(pattern, mask, text), comments
 
-ts_sources = glob.glob('webview/*.ts') + glob.glob('koa/*.ts') + glob.glob('koa/page/*.ts')
-signal_sites = {'koa/koa-agent.ts': {'function': 'signalJob', 'count': 0}, 'koa/koa-child.ts': {'function': 'signalChild', 'count': 0}}
-for path in ts_sources:
-    text = pathlib.Path(path).read_text()
-    code, _ = lexical(text)
-    allowed = signal_sites.get(path)
-    function = re.search(r'\bfunction\s+' + allowed['function'] + r'\s*\([^)]*\)[^{]*\{', code) if allowed else None
-    start = end = -1
-    if function:
-        start = function.end()
-        depth = 1
-        end = start
-        while end < len(code) and depth:
-            depth += (code[end] == '{') - (code[end] == '}')
-            end += 1
-    for match in re.finditer(r'\bprocess\.kill\s*\(', code):
-        if start <= match.start() < end:
-            allowed['count'] += 1
-        else:
-            report(path, text, match.start(), 'process.kill must occur only in signalJob or signalChild')
-for path, site in signal_sites.items():
-    if site['count'] != 1:
-        report(path, '', 0, 'expected exactly one process.kill call in ' + site['function'])
-
 # A glob or named import of libc's kill makes a bare kill( call; only ko_sys::pid signals.
 for path in glob.glob('ko/**/*.rs', recursive=True) + glob.glob('ko_*/**/*.rs', recursive=True):
     if path == 'ko_sys/src/pid/desktop.rs':
@@ -132,13 +117,6 @@ for path in glob.glob('ko/**/*.rs', recursive=True) + glob.glob('ko_*/**/*.rs', 
     if re.search(r'\buse\s+libc::(\*|kill(?:pg)?\b|\{[^}]*(\*|\bkill(?:pg)?\b))', code):
         for match in re.finditer(r'(?<![\w:])kill(?:pg)?\s*\(', code):
             report(path, text, match.start(), 'signals must go through ko_sys::pid')
-
-core = [path for path in ts_sources if path.startswith('koa/')]
-for path in candidates(r'(^|[^a-zA-Z_])(as|any)([^a-zA-Z_]|$)|!', core):
-    text = pathlib.Path(path).read_text()
-    code, _ = lexical(text)
-    for match in re.finditer(r'\bas\b(?!\s+const\b)|(?<![\w.])any\b|(?<=[\w)\]])!(?!=)', code):
-        report(path, text, match.start(), 'TS hygiene: assertion or any')
 
 fuzz_allowed = {
     'ko_e2e/tests/e2e/config.rs': {
@@ -160,33 +138,6 @@ for path, statements in fuzz_allowed.items():
         if left:
             report(path, '', 0, f'stale KO_FUZZ_ allowance {statement!r} ({left} unused)')
 
-history = r'\b(previously|no longer|(?<!be )used to|formerly|as of now|since this fix)\b'
-for path in candidates('[Pp]reviously|[Nn]o longer|[Uu]sed to|[Ff]ormerly|[Aa]s of now|[Ss]ince this fix', ts_sources):
-    text = pathlib.Path(path).read_text()
-    _, comments = lexical(text)
-    for offset, comment in comments:
-        for match in re.finditer(history, comment, re.I):
-            report(path, text, offset + match.start(), 'comment history: ' + match.group())
-
-# A backticked ko crate path or file in the docs must exist: `ko_x::a::b` names a crate directory
-# whose sources mention each segment, `ko_x/src/y.rs` a path in the tree.
-crate_code = {}
-for path in ['AGENTS.md', *glob.glob('docs/*.md')]:
-    text = pathlib.Path(path).read_text()
-    for match in re.finditer(r'`(ko(?:_[a-z0-9]+)*)((?:::[A-Za-z_]\w*)+)', text):
-        crate, segments = match.group(1), match.group(2).split('::')[1:]
-        if not pathlib.Path(crate).is_dir():
-            report(path, text, match.start(), f'stale reference {match.group(0)[1:]}: no crate {crate}')
-            continue
-        if crate not in crate_code:
-            crate_code[crate] = ''.join(p.read_text() for p in pathlib.Path(crate).rglob('*.rs'))
-        for segment in segments:
-            if not re.search(r'\b' + re.escape(segment) + r'\b', crate_code[crate]):
-                report(path, text, match.start(), f'stale reference {match.group(0)[1:]}: {segment} not in {crate}')
-    for match in re.finditer(r'`(ko(?:_[a-z0-9]+)*/[\w./-]*[\w/])`', text):
-        if not pathlib.Path(match.group(1)).exists():
-            report(path, text, match.start(), f'stale reference {match.group(1)}: no such path')
-
 # ko_e2e waits for events; its one fixed wait is the idle measurement, and harness.rs holds the poll tick.
 rust_sleeps = {
     'ko_e2e/tests/e2e/idle.rs': {'std::thread::sleep(Duration::from_secs(2));': 1},
@@ -206,48 +157,8 @@ for path, statements in rust_sleeps.items():
     for statement, left in statements.items():
         if left:
             report(path, '', 0, f'stale thread::sleep allowance {statement!r} ({left} unused)')
-# Names of the removed tmux-based kido must not come back.
-# Kido.app keeps its own KIDO_ knobs, in app/ and in the two app docs.
-app_knob = re.compile(r'KIDO_(VISUAL|STRESS|APP_|DEMO_|PRODUCT_NAME$|VSYNC_MEASURE$|MTC_VERIFY$|SHM_H$)')
-app_scope = ('app/', 'docs/design-app.md', 'docs/known-issues-app.md')
-gates = [
-    re.compile(p) for p in (
-        r'kido-pi', r'kido-tmux', r'share/kido', r'\bdune\b', r'install-tmux-fork', r'test_e2e',
-        r'\bgo test\b', r'\.mli?\b', r'verify-ko', r'make flake', r'lib_tmux', r'rfc/kido-server',
-        r'lib/[a-z_]+\.ml',
-    )
-]
-# Whole-tree exemptions: a directory ends in /, anything else names one file.
-gate_exempt = (
-    'website/', 'third_party/', 'ko_server/testdata/', 'bench/streams/',
-    'app/design/',  # historical mockups, kept as drawn
-    'scripts/lint.sh', 'app/VisualTests/PaletteTests.swift',  # the gate's own patterns; snapshot test data
-)
-gate_statements = {}
-prefilter = r'KIDO_|kido-|share/kido|dune|tmux|test_e2e|go test|\.ml|verify-ko|make flake|lib/|rfc/kido-server'
-excluded = [f':(exclude){entry}' for entry in gate_exempt]
-found = subprocess.run(['git', 'grep', '-I', '-n', '-i', '--untracked', '-E', prefilter, '--', '.', *excluded], capture_output=True, text=True)
-if found.returncode not in (0, 1):
-    raise RuntimeError(found.stderr)
-for hit in found.stdout.splitlines():
-    path, line, text = hit.split(':', 2)
-    names = {m.group() for m in re.finditer(r'KIDO_[A-Z_]+', text) if not (path.startswith(app_scope) and app_knob.match(m.group()))}
-    for pattern in gates:
-        names.update(m.group() for m in pattern.finditer(text))
-    allowed = gate_statements.get(path, {})
-    if names and allowed.get(text.strip(), 0) > 0:
-        allowed[text.strip()] -= 1
-        continue
-    if names:
-        print(f"{path}:{line}: removed name " + ', '.join(sorted(names)))
-        errors += 1
-for path, statements in gate_statements.items():
-    for statement, left in statements.items():
-        if left:
-            report(path, '', 0, f'stale gate allowance {statement!r} ({left} unused)')
 raise SystemExit(1 if errors else 0)
 PY
-node_flags=()
 make --no-print-directory build >&2
 build/ko/bin/ko api-schema > "$scratch/openapi.json"
 if [[ "${1:-}" == --update-schemas ]]; then
@@ -270,13 +181,12 @@ elif ! diff -u share/ko/config-schema.json "$scratch/config-schema.json"; then
   echo 'share/ko/config-schema.json:1: configuration schema differs; regenerate: scripts/lint.sh --update-schemas'
   failed=1
 fi
-printf 'const probe: number = 1;\n' > "$scratch/probe.ts"
-if command -v node >/dev/null 2>&1 && node "$scratch/probe.ts" >/dev/null 2>&1; then
+. ./koa/scripts/node.sh
+if node_ok; then
   :
-elif command -v node >/dev/null 2>&1 && node --experimental-strip-types "$scratch/probe.ts" >/dev/null 2>&1; then
-  node_flags=(--experimental-strip-types)
 else
-  echo 'lint: SKIP prompt and ko-api.d.ts snapshots (node cannot run TypeScript)'
+  status=$?
+  if [[ "$status" == 2 ]]; then failed=1; fi
   exit "$failed"
 fi
 make scripts/openapi/node_modules/.package-lock.json
@@ -285,17 +195,6 @@ if [[ "${1:-}" == --update-schemas ]]; then
   cp "$scratch/ko-api.d.ts" webview/ko-api.d.ts
 elif ! diff -u webview/ko-api.d.ts "$scratch/ko-api.d.ts"; then
   echo 'webview/ko-api.d.ts:1: generated types differ; regenerate: scripts/lint.sh --update-schemas'
-  failed=1
-fi
-fixture=koa/testdata/ko-prompts.txt
-if ! node ${node_flags[@]+"${node_flags[@]}"} scripts/dump-prompts.ts > "$scratch/prompts.txt"; then
-  echo 'scripts/dump-prompts.ts:1: prompt dump failed' >&2
-  exit 1
-fi
-if [[ "${1:-}" == --update-prompts ]]; then
-  cp "$scratch/prompts.txt" "$fixture"
-elif ! diff -u "$fixture" "$scratch/prompts.txt"; then
-  echo "$fixture:1: prompt snapshot differs; regenerate: scripts/lint.sh --update-prompts"
   failed=1
 fi
 if [[ "$failed" == 0 ]]; then echo 'lint: PASS'; fi
