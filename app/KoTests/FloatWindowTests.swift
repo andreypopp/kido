@@ -428,6 +428,11 @@ import XCTest
         let session = try XCTUnwrap(owner.testSession)
         let id = PaneID(number: 2)
         let view = try XCTUnwrap(session.pane(id))
+        let visible = try XCTUnwrap(owner.window.screen).visibleFrame
+        owner.window.setFrame(visible.insetBy(dx: visible.width / 8, dy: visible.height / 8), display: false)
+        wait("the owner has room around every edge") {
+            session.windows.values.contains { !$0.isHidden && $0.visualGeometryReady }
+        }
         let size = try XCTUnwrap(client.model().layout.layout.windows.first)
         for (dx, dy) in [(CGFloat(-3000), CGFloat(0)), (3000, 0), (0, 3000), (0, -3000)] {
             try drag(session, id, dx: dx, dy: dy)

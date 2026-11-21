@@ -90,6 +90,10 @@ final class SidebarChildren: NSView {
 }
 
 final class SidebarSelectionRow: NSTableRowView {
+    override var frame: NSRect {
+        get { super.frame }
+        set { super.frame = superview?.backingAlignedRect(newValue, options: .alignAllEdgesNearest) ?? newValue }
+    }
     override func drawSelection(in dirtyRect: NSRect) {}
     override var isSelected: Bool { didSet { subviews.forEach { $0.needsDisplay = true } } }
 }

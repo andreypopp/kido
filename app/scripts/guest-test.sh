@@ -15,6 +15,8 @@ visual|ko-test)
 	rm -rf "$server"
 	mkdir -p "$server"
 	trap '"$KO_CHECKOUT/build/ko/bin/ko" kill-server --server "$server" 2>/dev/null || true; rm -rf "$server"' EXIT
+	mkdir -p "$PWD/build/snapshot-artifacts"
+	export TEST_RUNNER_SNAPSHOT_ARTIFACTS="$PWD/build/snapshot-artifacts"
 	xcodebuild -project Kido.xcodeproj -scheme "$scheme" -configuration Debug -destination platform=macOS -derivedDataPath "$derived" -clonedSourcePackagesDirPath "$PWD/$derived/SourcePackages" -disableAutomaticPackageResolution $settings "$@" test-without-building 2>&1 || status=$?
 	fmt tests $(($(date +%s) - t0))
 	case "$target" in
