@@ -677,6 +677,12 @@ delegates as its brief says and does not write code.
   `ko-test` or the full visual stage; CI runs the rest. A finding
   outside the request (a defect seen on the way, a reviewer's idea)
   goes to the user as a follow-up item, not into the same unit.
+  The MVP track applies only when the user asks for it by name: one
+  implementer on `claude-bridge/claude-opus-5-5` writes the code in
+  its own worktree, with no tests, no reviewers and no manager, runs
+  one smoke test of the real flow and tells the user how to try it.
+  An MVP is never merged. The user can promote it to a normal unit,
+  which adds the reviews and the tests that it needs.
 - **A koa unit** changes only `koa/`. Its manager and implementers
   follow `docs/dev-koa.md` for building, testing and
   verification, and run only the checks that it names. The rules
