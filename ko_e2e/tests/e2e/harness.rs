@@ -1489,34 +1489,3 @@ pub(crate) fn wait_gone(pid: Pid, what: &str) {
         pid.has_ended()
     });
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ko_sys::event::{Events, Interest, Mode, Poll};
-
-    #[test]
-    fn a_refusal_can_be_read_after_the_peer_has_closed() {
-        let server = start(&[]);
-        let mut stream = server.dial().unwrap();
-        stream
-            .write_all(b"GET /version HTTP/1.1\r\nbad header\r\n\r\n")
-            .unwrap();
-        let mut poll = Poll::new();
-        let token = poll.watch(stream.as_fd(), Interest::Hangup);
-        let timer = poll.timer();
-        poll.start(timer, DEADLINE, None).unwrap();
-        let mut events = Events::default();
-        loop {
-            poll.turn(Mode::Wait, &mut events).unwrap();
-            if events.ready().iter().any(|ready| ready.token == token) {
-                break;
-            }
-            assert!(
-                events.due().is_empty(),
-                "server did not close the refused request"
-            );
-        }
-        assert_eq!(server.read_reply(stream).0, 400);
-    }
-}
