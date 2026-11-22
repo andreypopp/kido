@@ -19,8 +19,8 @@ import { install } from './metrics.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
 import type { State, WireJob, WireItem, QueuedPrompt, Patch, PageRecord, MetricsSample, Stages, PromptMode, ImageRef, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
 import type { TopicName, AgentRef, Relation } from '../records.ts';
-import { parseTopicName } from '../records.ts';
-import { topicTurn } from '../topic-turn.ts';
+import { createTopics, topicsMemory, type TopicsMemory } from './topics.ts';
+import { createTranscriptHistory } from './transcript-history.ts';
 
 type Step = StepInput & { key: string; slots: Map<string, Slot> };
 type Slot = { type: 'image'; view: HTMLButtonElement } | { type: 'run'; view: HTMLDivElement };
@@ -49,25 +49,16 @@ const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, clas
   return result;
 };
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
-type ComposerTopic = { type: 'topic'; name: TopicName } | { type: 'dropped' };
-type PageMemory = { scroll: Saved[]; drafts: [view: string, text: string][]; filters: [scope: string, topic: TopicName][]; composerTopics: [scope: string, topic: ComposerTopic][] };
+type PageMemory = TopicsMemory & { scroll: Saved[]; drafts: [view: string, text: string][] };
 const stored: unknown = history.state;
 const pageMemory = (stored: unknown): stored is PageMemory => isRecord(stored) && Array.isArray(stored.scroll) && stored.scroll.every(saved => {
   if (!isRecord(saved) || !isRecord(saved.scope) || typeof saved.scope.view !== 'string' || saved.scope.sessionId !== undefined && typeof saved.scope.sessionId !== 'string' || !Number.isInteger(saved.last) || !isRecord(saved.anchor) || saved.anchor.edge !== 'row' && saved.anchor.edge !== 'divider' || typeof saved.anchor.offset !== 'number' || !Number.isFinite(saved.anchor.offset) || !isRecord(saved.anchor.item)) return false;
   const item = saved.anchor.item;
   return item.kind === 'message' && Number.isInteger(item.seq) && (item.row === undefined || isRecord(item.row) && isRecord(item.row.source) && Number.isInteger(item.row.source.seq) && (item.row.kind === 'text' && item.row.source.kind === 'block' && Number.isInteger(item.row.source.index) || item.row.kind === 'run' && (item.row.source.kind === 'item' || item.row.source.kind === 'block' && Number.isInteger(item.row.source.index)))) || item.kind === 'job' && Number.isInteger(item.byte);
-}) && Array.isArray(stored.drafts) && stored.drafts.every(entry => Array.isArray(entry) && entry.length === 2 && entry.every(value => typeof value === 'string')) && ['filters', 'composerTopics'].every(key => { const entries = stored[key]; return Array.isArray(entries) && entries.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && (key === 'composerTopics' ? isRecord(entry[1]) && (entry[1].type === 'dropped' || entry[1].type === 'topic' && parseTopicName(entry[1].name) !== undefined) : parseTopicName(entry[1]) !== undefined)); });
+}) && Array.isArray(stored.drafts) && stored.drafts.every(entry => Array.isArray(entry) && entry.length === 2 && entry.every(value => typeof value === 'string')) && topicsMemory(stored);
 const memory = pageMemory(stored) ? stored : undefined;
 const topicItems = new Map<number, Extract<WireItem, { kind: 'topics' }>>();
 const projections = new Map<number, WireItem | undefined>();
-const topicFilters = new Map<string, TopicName>(memory?.filters);
-const composerTopics = new Map<string, ComposerTopic>(memory?.composerTopics);
-const composerTopic = node('div', undefined, 'message-header composer-topic');
-const topicMeasure = node('span', '0', 'topic-measure');
-topicMeasure.setAttribute('aria-hidden', 'true'); document.body.append(topicMeasure);
-const topicFilter = (): TopicName | undefined => state.view.type === 'root' ? topicFilters.get(filterKey()) : undefined;
-let historyBefore: number | undefined;
-let topicCapsule: { view: HTMLDivElement; names: TopicName[]; selected?: TopicName; width?: number } | undefined;
 
 const rhythmPending = new Set<HTMLElement>();
 const annotationItems = new Map<number, Map<number, Extract<WireItem, { kind: 'annotations' }>>>();
@@ -104,7 +95,20 @@ const growing: HTMLElement[] = [], observed = new Map<Element, Watch>(), measure
 const pathWarnings = new Map<number, string>();
 let pathWarningEpoch = 0;
 let state: State = { pathEditor: false, view: { id: '', path: [], type: 'root' }, topics: [], agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, dialogs: [] };
-const filterKey = (record: { view: { id: string }; sessionId?: string } = state) => record.view.id + ':' + (record.sessionId ?? '');
+const topics = createTopics({
+  state: () => state, items, element, node, timestamp, refreshComposer, focus: () => editor.focus(),
+  filterChanged(name) {
+    transcriptHistory.cancel('scope'); topics.close(); refreshTopicItems(); topics.render(); refreshComposer();
+    enqueue({ type: 'filter', active: name !== undefined });
+    for (const seq of items.keys()) changedItem(seq, false);
+    if (epoch) void transcriptHistory.reload();
+  },
+  async correct(correction) {
+    const { kind, ...body } = correction;
+    try { await fetchJSON(kind === 'message' ? '/messages/topic' : kind === 'move' ? '/topics/move' : '/topics/archive', body); }
+    catch (error) { reportError(error); throw error; }
+  },
+}, memory);
 function latestTopicInput(): WireItem | undefined {
   let latest: WireItem | undefined;
   for (const item of items.values()) if ((item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') && (!latest || item.seq > latest.seq)) latest = item;
@@ -119,7 +123,7 @@ const topicContext: TopicContext = { items, labels: seq => topicItems.get(seq)?.
 function visible(seq: number): WireItem | undefined {
   const item = items.get(seq);
   if (projections.has(seq)) return projections.get(seq);
-  const projected = projectTopic(topicContext, seq, topicFilter()) ?? (item && waitingForTopic(item) ? item : undefined);
+  const projected = projectTopic(topicContext, seq, topics.filter()) ?? (item && waitingForTopic(item) ? item : undefined);
   projections.set(seq, projected);
   return projected;
 }
@@ -131,319 +135,20 @@ function refreshTopicItems() {
   for (const seq of views.keys()) if (!visible(seq)) unmountRow(seq);
   windowDirty = true; schedule();
 }
-function setTopic(name: TopicName | undefined) {
-  const previous = topicFilter(), next = previous === name ? undefined : name;
-  if (!next && previous && composerTopicName() === previous) composerTopics.set(filterKey(), { type: 'dropped' });
-  if (next) { composerTopics.set(filterKey(), { type: 'topic', name: next }); if (topicNaming?.target.kind === 'composer') topicNaming = undefined; }
-  updateTopicFilter(next);
-}
-function updateTopicFilter(name: TopicName | undefined, scope = filterKey()) {
-  if (name) topicFilters.set(scope, name); else topicFilters.delete(scope);
-  if (scope !== filterKey()) return;
-  clearTimeout(topicClick); topicClick = undefined;
-  historyRequest = undefined; historyBefore = undefined;
-  closeTopics(); refreshTopicItems(); renderTopics(); refreshComposer();
-  enqueue({ type: 'filter', active: name !== undefined });
-  for (const seq of items.keys()) changedItem(seq, false);
-  if (epoch) void reloadTopic();
-}
-function topicColour(name?: TopicName): string {
-  const topics = 'topics' in state ? state.topics : [], index = topics.findIndex(topic => topic.name === name);
-  return `var(--topic-${(index < 0 ? topics.length : index) % 6})`;
-}
-function topicName(name: TopicName) {
-  const label = node('span', undefined, 'topic-name'); label.dataset.topic = name; label.title = name;
-  label.style.setProperty('--topic-color', topicColour(name));
-  label.append(node('span', '#', 'topic-hash'), node('span', name));
-  return label;
-}
-function composerTopicName(): TopicName | undefined {
-  if (state.view.type !== 'root') return undefined;
-  const choice = composerTopics.get(filterKey());
-  return choice ? choice.type === 'topic' ? choice.name : undefined : topicFilter();
-}
-function setComposerTopic(name: TopicName | undefined) {
-  if (topicNaming?.target.kind === 'composer') topicNaming = undefined;
-  composerTopics.set(filterKey(), name ? { type: 'topic', name } : { type: 'dropped' });
-  refreshComposer();
-}
-type TopicNamingTarget = { kind: 'composer' } | { kind: 'message'; seq: number; key: string };
-let topicNaming: { target: TopicNamingTarget; scope: string; sessionId: string | undefined; chip: HTMLElement; input: HTMLInputElement } | undefined;
-function newTopicChip(target: TopicNamingTarget) {
-  const chip = node('span', undefined, 'topic-chip topic-new'); chip.append(node('span', '+', 'topic-hash'), node('span', 'topic'));
-  chip.setAttribute('role', 'button'); chip.tabIndex = -1; chip.setAttribute('aria-label', 'Name a topic');
-  chip.onclick = () => startTopicNaming(chip, target);
-  chip.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); startTopicNaming(chip, target); } };
-  return chip;
-}
-function finishTopicNaming(commit: boolean) {
-  const naming = topicNaming;
-  if (!naming) return;
-  const name = commit ? parseTopicName(naming.input.value) : undefined;
-  if (commit && !name) { naming.input.focus(); return; }
-  topicNaming = undefined;
-  naming.chip.replaceWith(newTopicChip(naming.target));
-  if (naming.scope !== filterKey()) return;
-  if (naming.target.kind === 'composer') { if (commit) setComposerTopic(name); editor.focus(); }
-  else if (name) void fetchJSON('/messages/topic', { sessionId: naming.sessionId, seq: naming.target.seq, topic: name }).catch(reportError);
-}
-function startTopicNaming(plus: HTMLElement, target: TopicNamingTarget) {
-  finishTopicNaming(false);
-  const chip = node('span', undefined, 'topic-chip topic-naming'), input = node('input', undefined, 'topic-input');
-  input.placeholder = 'topic name'; input.spellcheck = false; input.setAttribute('aria-label', 'Topic name');
-  const colour = () => {
-    chip.style.setProperty('--topic-color', topicColour(parseTopicName(input.value)));
-    input.style.width = Math.max(6, input.value.length || input.placeholder.length) + 'ch';
-  };
-  input.oninput = colour; colour();
-  input.onkeydown = event => {
-    event.stopPropagation();
-    if (event.isComposing) return;
-    if (event.key === 'Enter' || event.key === 'Tab' && target.kind === 'composer') { event.preventDefault(); finishTopicNaming(true); }
-    else if (event.key === 'Escape') { event.preventDefault(); finishTopicNaming(false); }
-  };
-  const cancel = node('button', '×', 'topic-clear'); cancel.type = 'button'; cancel.setAttribute('aria-label', 'Cancel topic name'); cancel.onclick = () => finishTopicNaming(false);
-  chip.append(node('span', '#', 'topic-hash'), input, cancel); plus.replaceWith(chip);
-  topicNaming = { target, scope: filterKey(), sessionId: state.sessionId, chip, input }; input.focus();
-}
-function topicChip(name: TopicName, clear = false) {
-  const mark = node('span', undefined, 'topic-chip');
-  mark.dataset.topic = name;
-  mark.style.setProperty('--topic-color', topicColour(name));
-  mark.title = name; mark.append(topicName(name));
-  if (clear) {
-    const button = node('button', '×', 'topic-clear'); button.type = 'button'; button.setAttribute('aria-label', 'Drop composer topic'); button.onclick = () => setComposerTopic(undefined); mark.append(button);
-  } else {
-    mark.setAttribute('role', 'button'); mark.tabIndex = -1;
-    mark.setAttribute('aria-label', 'Compose in topic ' + name); mark.onclick = () => setComposerTopic(name);
-    mark.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setComposerTopic(name); } };
-  }
-  return mark;
-}
-function messageHeader(name: TopicName | undefined, at?: number, target?: Extract<TopicNamingTarget, { kind: 'message' }>) {
-  if (target && topicNaming?.scope === filterKey() && topicNaming.target.kind === 'message' && topicNaming.target.key === target.key && topicNaming.chip.parentElement?.classList.contains('message-header')) return topicNaming.chip.parentElement;
-  const row = node('div', undefined, 'message-header');
-  if (name && !topicFilter() && state.view.type === 'root') row.append(topicChip(name));
-  if (target && state.view.type === 'root') row.append(topicNaming?.scope === filterKey() && topicNaming.target.kind === 'message' && topicNaming.target.key === target.key ? topicNaming.chip : newTopicChip(target));
-  if (at !== undefined) { const time = node('time', timestamp(at)); time.dateTime = new Date(at).toISOString(); row.append(time); }
-  return row;
-}
-let topicDragged = false, cancelTopicDrag: (() => void) | undefined, cancelTopicRename: (() => void) | undefined;
-function dragTopic(event: PointerEvent, source: HTMLElement, from: TopicName) {
-  if (event.button !== 0 || !event.isPrimary) return;
-  cancelTopicDrag?.();
-  const scope = filterKey(), sessionId = state.sessionId, startX = event.clientX, startY = event.clientY;
-  let dragging = false, ended = false, target: HTMLElement | undefined, hovered: HTMLElement | undefined, eligible = false;
-  const mark = (next: HTMLElement | undefined) => {
-    target?.classList.remove('drop-target'); target?.style.removeProperty('--drop-color');
-    target = next;
-    target?.style.setProperty('--drop-color', topicColour(from)); target?.classList.add('drop-target');
-  };
-  const move = (moved: PointerEvent) => {
-    if (!dragging && Math.hypot(moved.clientX - startX, moved.clientY - startY) < 5) return;
-    if (!dragging) { dragging = true; source.classList.add('dragging'); document.body.classList.add('topic-dragging'); }
-    moved.preventDefault();
-    const scroller = element('scroll').getBoundingClientRect();
-    if (moved.clientX >= scroller.left && moved.clientX <= scroller.right) element('scroll').scrollBy(0, moved.clientY < scroller.top + 48 ? -24 : moved.clientY > scroller.bottom - 48 ? 24 : 0);
-    const under = document.elementFromPoint(moved.clientX, moved.clientY);
-    const row = under?.closest<HTMLElement>('.topic-entry[data-topic]') ?? undefined;
-    const message = row ? undefined : under?.closest<HTMLElement>('#items > [data-seq]') ?? undefined, item = message && items.get(Number(message.dataset.seq));
-    if (message !== hovered) {
-      hovered = message;
-      const targets = item && topicTurn(items.values(), item.seq);
-      eligible = !!targets?.every(target => target.final) && (topicFilter() !== undefined || targets.some(target => target.kind === 'user' ? target.topic !== from : target.blocks.some(block => block.topic !== from)));
-    }
-    mark(row ? row.dataset.topic !== from ? row : undefined : eligible ? message : undefined);
-  };
-  const cancel = (key: KeyboardEvent) => { if (key.key === 'Escape') { key.preventDefault(); key.stopImmediatePropagation(); end(); } };
-  const end = (event?: PointerEvent) => {
-    if (ended) return;
-    ended = true; cancelTopicDrag = undefined;
-    document.removeEventListener('keydown', cancel, true);
-    document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', end); document.removeEventListener('pointercancel', end);
-    source.classList.remove('dragging'); document.body.classList.remove('topic-dragging');
-    const dropped = event?.type === 'pointerup' && scope === filterKey() ? target : undefined;
-    mark(undefined);
-    if (!dragging) return;
-    topicDragged = true; setTimeout(() => { topicDragged = false; });
-    const into = parseTopicName(dropped?.dataset.topic);
-    if (into) void moveTopic(from, into, scope, sessionId);
-    else if (dropped?.dataset.seq !== undefined) fetchJSON('/messages/topic', { sessionId, seq: Number(dropped.dataset.seq), topic: from }).catch(reportError);
-  };
-  cancelTopicDrag = () => end();
-  document.addEventListener('keydown', cancel, true);
-  document.addEventListener('pointermove', move); document.addEventListener('pointerup', end); document.addEventListener('pointercancel', end);
-}
-const topicMoves = new Map<string, { from: TopicName; to: TopicName }>();
-async function moveTopic(from: TopicName, to: TopicName, scope: string, sessionId: string | undefined) {
-  const filter = topicFilters.get(scope), move = { from, to };
-  topicMoves.set(scope, move);
-  try {
-    await fetchJSON('/topics/move', { sessionId, from, to });
-    const choice = composerTopics.get(scope);
-    if ((choice?.type === 'topic' ? choice.name : choice ? undefined : topicFilters.get(scope)) === from) composerTopics.set(scope, { type: 'topic', name: to });
-    if (filter === from && topicFilters.get(scope) === from) {
-      updateTopicFilter(to, scope);
-    } else if (filterKey() === scope) refreshComposer();
-  } catch (error) { reportError(error); }
-  finally { if (topicMoves.get(scope) === move) topicMoves.delete(scope); }
-}
-let renaming = false, topicClick: number | undefined;
-function clickTopic(event: MouseEvent, entry: HTMLElement, name: TopicName) {
-  if (topicDragged || renaming) return;
-  clearTimeout(topicClick);
-  if (event.detail === 0) setTopic(name);
-  else if (event.detail === 1) { const scope = filterKey(); topicClick = setTimeout(() => { topicClick = undefined; if (filterKey() === scope) setTopic(name); }, 250); }
-  else renameTopic(entry, name);
-}
-function renameTopic(entry: HTMLElement, name: TopicName) {
-  const label = entry.querySelector('.topic-name');
-  if (!label) return;
-  cancelTopicRename?.();
-  const scope = filterKey(), sessionId = state.sessionId;
-  renaming = true;
-  const input = node('input', undefined, 'topic-rename');
-  input.value = name; input.spellcheck = false; input.setAttribute('aria-label', 'Topic name');
-  let done = false;
-  const finish = (commit: boolean) => {
-    if (done) return;
-    done = true; renaming = false; cancelTopicRename = undefined;
-    const to = commit && scope === filterKey() ? parseTopicName(input.value) : undefined;
-    row.remove(); renderTopics();
-    if (to && to !== name) void moveTopic(name, to, scope, sessionId);
-  };
-  cancelTopicRename = () => finish(false);
-  input.onkeydown = event => {
-    event.stopPropagation();
-    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
-    else if (event.key === 'Escape') { event.preventDefault(); finish(false); }
-  };
-  input.onkeyup = event => { event.stopPropagation(); event.preventDefault(); };
-  input.onpointerdown = event => event.stopPropagation();
-  input.onclick = event => event.stopPropagation();
-  input.onblur = () => finish(true);
-  const row = node('div', undefined, entry.className + ' renaming');
-  const hash = node('span', '#', 'topic-name'); hash.style.setProperty('--topic-color', topicColour(name));
-  row.append(hash, input);
-  entry.replaceWith(row);
-  input.focus(); input.select();
-}
-function topicMode(paneWidth: number, transcriptWidth: number, cellWidth: number): 'line' | 'block' {
-  return paneWidth - transcriptWidth - 28 >= 30 * cellWidth ? 'block' : 'line';
-}
-function toggleTopics() {
-  if (element('topics').dataset.mode === 'block') return;
-  const panel = element('topics').querySelector<HTMLElement>('.topic-panel');
-  if (panel) { const open = panel.hidden; renderTopics(); const current = element('topics').querySelector<HTMLElement>('.topic-panel'); if (current) current.hidden = !open; element('topics').querySelector(topicFilter() ? '.topic-open' : '.topic-overflow')?.setAttribute('aria-expanded', String(open)); }
-}
-function closeTopics() {
-  const panel = element('topics').querySelector<HTMLElement>('.topic-panel');
-  if (panel && element('topics').dataset.mode !== 'block') panel.hidden = true;
-  element('topics').querySelector(topicFilter() ? '.topic-open' : '.topic-overflow')?.setAttribute('aria-expanded', 'false');
-}
-function topicAge(at: number, now: number): string {
-  const minutes = Math.max(0, Math.floor((now - at) / 60000));
-  return minutes < 1 ? 'now' : minutes < 60 ? minutes + 'm' : minutes < 1440 ? Math.floor(minutes / 60) + 'h' : Math.floor(minutes / 1440) + 'd';
-}
-function fitTopics(width = document.documentElement.clientWidth) {
-  const capsule = topicCapsule;
-  if (!capsule || capsule.selected || capsule.width === width) return;
-  const button = capsule.view.querySelector<HTMLElement>('.topic-open');
-  if (!button) return;
-  button.classList.remove('single');
-  const children: HTMLElement[] = [], labels = capsule.names.map(name => {
-    const label = topicName(name); label.setAttribute('role', 'button'); label.tabIndex = -1;
-    label.onclick = () => setTopic(name);
-    label.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setTopic(name); } };
-    if (children.length) children.push(node('span', '·', 'topic-separator'));
-    children.push(label);
-    return label;
-  });
-  const more = node('button', '…', 'topic-overflow'); more.type = 'button'; more.setAttribute('aria-label', 'Choose topic'); more.setAttribute('aria-expanded', String(element('topics').querySelector<HTMLElement>('.topic-panel')?.hidden === false)); more.onclick = toggleTopics;
-  button.replaceChildren(...children, more);
-  const measured = button.scrollWidth + capsule.view.getBoundingClientRect().width - button.getBoundingClientRect().width;
-  if (measured > Math.max(0, width - 16) && labels.length > 1) {
-    const ends = labels.map(label => label.getBoundingClientRect().right), separator = children[1].getBoundingClientRect().width, gap = parseFloat(getComputedStyle(button).columnGap);
-    const counts = labels.slice(1).map((_, index) => node('span', '+' + (labels.length - index - 1), 'topic-more'));
-    button.append(...counts);
-    const widths = counts.map(label => label.getBoundingClientRect().width);
-    let count = labels.length - 1;
-    while (count > 1 && measured - (ends[ends.length - 1] - ends[count - 1]) + separator + widths[count - 1] + 2 * gap > Math.max(0, width - 16)) count--;
-    const separatorNode = node('span', '·', 'topic-separator');
-    const fits = (count: number) => {
-      button.replaceChildren(...children.slice(0, 2 * count - 1), separatorNode, counts[count - 1], more);
-      return button.scrollWidth + capsule.view.getBoundingClientRect().width - button.getBoundingClientRect().width <= Math.max(0, width - 16);
-    };
-    while (count < labels.length - 1 && fits(count + 1)) count++;
-    while (!fits(count) && count > 1) count--;
-    button.classList.toggle('single', count === 1);
-  } else button.classList.toggle('single', labels.length <= 1);
-  capsule.width = width;
-}
-function renderTopics() {
-  if (renaming) return;
-  const host = element('topics'), filter = topicFilter();
-  host.hidden = state.view.type !== 'root' || !('topics' in state) || !state.topics.length;
-  const column = element('transcript').getBoundingClientRect(), width = document.documentElement.clientWidth;
-  const mode = topicMode(width, column.width, topicMeasure.getBoundingClientRect().width);
-  const previousMode = host.dataset.mode; host.dataset.mode = mode;
-  document.body.classList.toggle('with-topics', !host.hidden && mode === 'line');
-  host.style.left = mode === 'block' ? column.left + column.width + 20 + 'px' : '';
-  host.style.width = mode === 'block' ? Math.min(360, width - column.width - 28) + 'px' : '';
-  if (!('topics' in state) || host.hidden) { host.replaceChildren(); topicCapsule = undefined; return; }
-  const previousPanel = host.querySelector<HTMLElement>('.topic-panel'), open = previousMode === 'line' && previousPanel?.hidden === false;
-  const scrollTop = previousPanel?.scrollTop ?? 0;
-  const topics = state.topics.map((topic, index) => ({ ...topic, index })).sort((a, b) => Number(!!a.archived) - Number(!!b.archived) || (a.last && b.last ? b.last.at - a.last.at || b.index - a.index : a.last ? 1 : b.last ? -1 : b.index - a.index));
-  const names = topics.filter(topic => !topic.archived).map(topic => topic.name), changed = !topicCapsule || topicCapsule.selected !== filter || names.length !== topicCapsule.names.length || names.some((name, index) => name !== topicCapsule?.names[index]);
-  if (mode === 'block') topicCapsule = undefined;
-  else if (changed) {
-    const capsule = node('div', undefined, 'topic-capsule'), button = node(filter ? 'button' : 'div', undefined, 'topic-open');
-    button.setAttribute('aria-label', 'Topics');
-    if (filter) { button.setAttribute('type', 'button'); button.onclick = toggleTopics; }
-    if (filter) { button.classList.add('single'); const label = topicName(filter); label.classList.toggle('archived', !!state.topics.find(topic => topic.name === filter)?.archived); button.append(label); }
-    capsule.append(button);
-    if (filter) { const clear = node('button', '×', 'topic-clear'); clear.type = 'button'; clear.setAttribute('aria-label', 'All topics'); clear.onclick = () => setTopic(undefined); capsule.append(clear); }
-    topicCapsule = { view: capsule, names, selected: filter };
-  }
-  const capsule = topicCapsule?.view;
-  if (filter) capsule?.querySelector('.topic-open')?.setAttribute('aria-expanded', String(open));
-  const panel = node('div', undefined, 'topic-panel'); panel.hidden = mode === 'line' && !open; panel.setAttribute('aria-label', 'Choose topic');
-  for (const topic of topics) {
-    const entry = node('div', undefined, 'topic-entry'); entry.setAttribute('role', 'button'); entry.tabIndex = -1; entry.dataset.topic = topic.name;
-    entry.classList.toggle('archived', !!topic.archived);
-    entry.classList.toggle('current', topic.name === filter); entry.setAttribute('aria-pressed', String(topic.name === filter));
-    const label = topicName(topic.name); label.classList.add('topic-toggle'); entry.append(label);
-    const age = node('span', undefined, 'topic-age');
-    if (topic.last) {
-      const time = node('time', topicAge(topic.last.at, Date.now())); time.dateTime = new Date(topic.last.at).toISOString();
-      entry.append(node('span', markdownLine(topic.last.summary), 'topic-summary')); age.append(time);
-    }
-    const archive = node('button', topic.archived ? '↺' : '×', 'topic-archive'); archive.type = 'button'; archive.setAttribute('aria-label', topic.archived ? 'Restore topic' : 'Archive topic');
-    archive.onpointerdown = event => { if (topicNaming?.target.kind === 'message') finishTopicNaming(false); event.stopPropagation(); };
-    archive.onclick = event => { event.stopPropagation(); void fetchJSON('/topics/archive', { sessionId: state.sessionId, name: topic.name, archived: !topic.archived }).catch(reportError); };
-    age.append(archive); entry.append(age);
-    entry.onkeydown = event => { if (event.target === entry && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setTopic(topic.name); } };
-    entry.onpointerdown = event => dragTopic(event, entry, topic.name);
-    entry.onclick = event => clickTopic(event, entry, topic.name); panel.append(entry);
-  }
-  if (filter) { const all = node('button', 'All topics', 'topic-entry topic-all'); all.type = 'button'; all.onclick = () => setTopic(undefined); panel.append(all); }
-  host.replaceChildren(...(capsule ? [capsule, panel] : [panel]));
-  if (open || previousMode === 'block' && mode === 'block') panel.scrollTop = scrollTop;
-  if (capsule && !filter) fitTopics();
-  for (const mark of [...element('items').querySelectorAll<HTMLElement>('.topic-chip,.topic-name'), ...host.querySelectorAll<HTMLElement>('.topic-name')]) {
-    const topic = state.topics.find(topic => topic.name === mark.dataset.topic);
-    if (topic) mark.style.setProperty('--topic-color', topicColour(topic.name));
-  }
-}
 let scrolling = scrollInitial({ view: '', sessionId: undefined }, memory?.scroll);
 let scrollDecision: Decision = { glideOffset: 0, latest: { show: false, count: 0 }, windowTop: 0, frame: 'none' };
 let lastMeasurement: Measure | undefined;
 let divider: HTMLElement | undefined;
 let dockHeight = 0;
-let epoch = '', after = -1, first: number | undefined, more = false, delay = 200;
+let epoch = '', after = -1, first: number | undefined, delay = 200;
 let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
-let historyRequest: { before: number; topic?: TopicName; patches: (Patch | Extract<PageRecord, { type: 'item' }>)[]; done: Promise<void> } | undefined;
+const transcriptHistory = createTranscriptHistory({
+  epoch: () => epoch, session: () => state.sessionId, view: () => state.view.type, filter: () => topics.filter(), first: () => first,
+  viewport: () => element('scroll'), has: seq => items.has(seq), accept: item => accept(item),
+  apply: record => { if (record.type === 'patch') applyPatch(record, false); else apply(record); },
+  history: () => enqueue({ type: 'history' }), rendered: () => rendered(), error: reportError,
+});
 let editorOpening = false;
 const draft = attach(element('attachments'), () => refreshComposer(), () => state.edit ? 'editing' : editor.bash() ? 'command' : undefined);
 const pendingBash = new Map<string, ReturnType<typeof commandRun>>();
@@ -759,7 +464,7 @@ function measure(): Measure {
           const y = origin + rowTop(item.seq);
           return { kind: 'unmounted', row: { item, top: y, bottom: y + extentOf(t, item.seq), windowTop: y } };
         }
-        if (more && first !== undefined && item.seq < first) return { kind: 'unloaded' };
+        if (transcriptHistory.more && first !== undefined && item.seq < first) return { kind: 'unloaded' };
         let low = 0, high = order.length;
         while (low < high) {
           const middle = (low + high) >> 1;
@@ -842,7 +547,7 @@ async function loadAnchor(item: ItemId, generation: number) {
   try {
     if (item.kind === 'job') {
       while (current() && state.view.type === 'job' && job.start() > item.byte && await job.earlier());
-    } else for (let before = first; more && first !== undefined && item.seq < first && current();) { await older(); if (first === before) break; before = first; }
+    } else for (let before = first; transcriptHistory.more && first !== undefined && item.seq < first && current();) { await transcriptHistory.earlier(); if (first === before) break; before = first; }
     if (current()) enqueue({ type: 'restore-result', generation, found: item.kind === 'message' ? items.has(item.seq) : !!rowOf(item) });
   } catch (error) { if (current()) enqueue({ type: 'restore-result', generation, found: false }); reportError(error); }
   finally { if (loadingAnchor === key) loadingAnchor = undefined; }
@@ -1199,7 +904,7 @@ function commandNotice(item: Pick<Extract<WireItem, { kind: 'command' }>, 'seq' 
 }
 function accept(item: WireItem) {
   const old = items.get(item.seq), previous = visible(item.seq);
-  const priorInput = !old && topicFilter() && (item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') ? latestTopicInput() : undefined;
+  const priorInput = !old && topics.filter() && (item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') ? latestTopicInput() : undefined;
   const rawKey = runParts(item, item).map(part => part.kind === 'boundary' ? 'boundary' : part.kind + ':' + sourceKey(part.source) + ':' + (part.source.kind === 'block' && item.kind === 'assistant' ? item.blocks[part.source.index].topic ?? topicItems.get(item.seq)?.topics[0] ?? '' : item.kind === 'agent' || item.kind === 'job' ? item.topic ?? '' : '')).join('|') + ':' + (item.kind === 'assistant' ? item.blocks.filter(visibleText).map(block => block.topic ?? topicItems.get(item.seq)?.topics[0] ?? '').join('|') : item.kind === 'user' ? item.topic ?? topicItems.get(item.seq)?.topics.join('|') ?? '' : '');
   const changedRun = runKeys.get(item.seq) !== rawKey;
   runKeys.set(item.seq, rawKey);
@@ -1248,7 +953,7 @@ function accept(item: WireItem) {
     if (seq > item.seq) dirty.add(seq);
   }
   if (priorInput?.kind === 'user' && priorInput.seq !== item.seq) accept({ ...priorInput });
-  if (topicFilter() && changedRun) {
+  if (topics.filter() && changedRun) {
     let from = item.seq, to = item.seq;
     while (from > 0) {
       const previous = items.get(from - 1); if (!previous) break;
@@ -1276,7 +981,7 @@ function syncChildren(parent: HTMLElement, children: HTMLElement[]) {
   while (parent.childNodes.length > children.length) { const extra = parent.lastChild; if (extra) unwatch(extra); extra?.remove(); }
 }
 function renderItem(item: WireItem) {
-  const previous = views.get(item.seq), warning = pathWarnings.get(item.seq), filter = topicFilter();
+  const previous = views.get(item.seq), warning = pathWarnings.get(item.seq), filter = topics.filter();
   const context = runContext(), runs = runParts(items.get(item.seq), item).map(part => part.kind === 'boundary' ? 'boundary' : part.kind + ':' + sourceKey(part.source) + ':' + (runOf(context, part.source) ? sourceKey(runOwner(context, part.source)) : '')).join('|');
   if (previous?.item === item && previous.warning === warning && previous.filter === filter && previous.runs === runs) return false;
   const view = previous?.view ?? node('div');
@@ -1307,7 +1012,7 @@ function renderItem(item: WireItem) {
     children.push(section); parts = [];
   };
   if (item.kind === 'assistant') {
-    if ((item.blocks.some(block => block.topic) || topicItems.get(item.seq)?.topics.length) && topicNaming?.target.kind === 'message' && topicNaming.target.seq === item.seq) finishTopicNaming(false);
+    if (item.blocks.some(block => block.topic) || topicItems.get(item.seq)?.topics.length) topics.cancelMessage(item.seq);
     view.className = 'assistant';
     item.blocks.forEach((block, index) => {
       if (block.type === 'text' && !visibleText(block)) return;
@@ -1319,8 +1024,8 @@ function renderItem(item: WireItem) {
         flush();
         const message = prose(key, block.text, item.final || index < item.blocks.length - 1, annotationItems.get(item.seq)?.get(index), 'assistant');
         const header = message.querySelector('.message-header');
-        if (!header?.contains(topicNaming?.chip ?? null)) header?.remove();
-        if (!parts.some(part => part.classList.contains('msg'))) { if (!message.querySelector('.message-header')) message.prepend(messageHeader(block.topic, hasHeader ? undefined : item.at, item.blocks.some(block => block.topic) || topicItems.get(item.seq)?.topics.length ? undefined : { kind: 'message', seq: item.seq, key })); hasHeader = true; }
+        if (!header?.contains(topics.namingChip() ?? null)) header?.remove();
+        if (!parts.some(part => part.classList.contains('msg'))) { if (!message.querySelector('.message-header')) message.prepend(topics.header(block.topic, hasHeader ? undefined : item.at, item.blocks.some(block => block.topic) || topicItems.get(item.seq)?.topics.length ? undefined : { kind: 'message', seq: item.seq, key })); hasHeader = true; }
         parts.push(message);
       }
       else steps.push({ kind: 'block', block, item, key, index, slots });
@@ -1337,7 +1042,7 @@ function renderItem(item: WireItem) {
     view.className = 'msg ' + item.kind;
     if (item.kind === 'user') {
       const names = topicItems.get(item.seq)?.topics ?? [];
-      const header = messageHeader(item.topic ?? (names.length === 1 ? names[0] : undefined), item.at, item.topic || names.length ? undefined : { kind: 'message', seq: item.seq, key: item.seq + ':user' });
+      const header = topics.header(item.topic ?? (names.length === 1 ? names[0] : undefined), item.at, item.topic || names.length ? undefined : { kind: 'message', seq: item.seq, key: item.seq + ':user' });
       const text = node('div', undefined, 't'); text.append(prose(item.seq + ':user', item.text, true, undefined, 'user'));
       if (item.images.length) { const images = thumbnails(item.images, () => slots); images.load(); text.append(images.view); }
       const paths = item.attachments.filter(file => file.kind === 'file').map(file => file.path);
@@ -1575,7 +1280,7 @@ function renderDirty(geo: Geo = geometry()) {
   for (const seq of new Set([...seqs, ...seqs.map(seq => seq + 1), ...touched])) changedItem(seq, false);
   for (const seq of rendered) { const row = views.get(seq)?.view; if (row) watchBlocks(row); }
   const older = element('older');
-  if (older.hidden === more) older.hidden = !more;
+  if (older.hidden === transcriptHistory.more) older.hidden = !transcriptHistory.more;
   return reset;
 }
 
@@ -1637,17 +1342,7 @@ function refreshComposer() {
   editor.running(running);
   editor.readonly(editing());
   draft.refresh();
-  if (topicNaming && topicNaming.scope !== filterKey()) finishTopicNaming(false);
-  const topic = composerTopicName();
-  if (topicNaming?.target.kind !== 'composer' || !composerTopic.contains(topicNaming.chip)) {
-    composerTopic.remove(); composerTopic.replaceChildren();
-    if (state.view.type === 'root') {
-      if (topicNaming?.target.kind === 'composer') composerTopic.append(topicNaming.chip);
-      else if (topic) composerTopic.append(topicChip(topic, true));
-      else composerTopic.append(newTopicChip({ kind: 'composer' }));
-      element('field').prepend(composerTopic);
-    }
-  }
+  topics.renderComposer();
   const addressed = viewedName();
   editor.placeholder(state.life.type === 'starting' ? 'Starting pi…' : state.life.type === 'switching' ? 'Loading…' : running ? 'running… ⎋ cancels' : draft.hover && !state.edit ? 'Drop to attach' : hasFailed() ? 'koa could not start the agent' : working && state.compaction !== 'running' ? 'Steer ' + addressed + '…' : 'Message ' + addressed + '…');
   if (state.edit) element('composer').setAttribute('title', 'Editing in ' + state.edit.editor); else element('composer').removeAttribute('title');
@@ -1854,14 +1549,14 @@ function statuses() {
   }));
 }
 function resync() {
-  historyRequest = undefined; epoch = ''; after = -1;
+  transcriptHistory.cancel('request'); epoch = ''; after = -1;
   if (source) source.onmessage = source.onerror = source.onopen = null;
   source?.close(); clearTimeout(reconnect);
   connect();
 }
 function applyPatch(record: Patch, buffer: boolean) {
   const current = items.get(record.seq);
-  if (!current) { if (buffer) historyRequest?.patches.push(record); return; }
+  if (!current) { if (buffer) transcriptHistory.buffer(record); return; }
   if (current.kind !== 'assistant') return resync();
   if (record.revision <= current.revision) return;
   if (record.baseRevision !== current.revision) return resync();
@@ -1882,22 +1577,22 @@ function applyPatch(record: Patch, buffer: boolean) {
 }
 function apply(record: PageRecord) {
   if (record.type === 'reset') {
-    finishTopicNaming(false); cancelTopicRename?.(); cancelTopicDrag?.();
+    topics.cancel();
     pathWarnings.clear(); pathWarningEpoch++;
     editor.resetCompletion();
-    find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); allRuns.owners.clear(); runKeys.clear(); topicContext.topics = undefined; order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); topicItems.clear(); projections.clear(); folds.clear(); historyRequest = undefined; more = record.more;
+    find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); allRuns.owners.clear(); runKeys.clear(); topicContext.topics = undefined; order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); topicItems.clear(); projections.clear(); folds.clear(); transcriptHistory.cancel('request');
     resets++;
     enqueue({ type: 'reset' });
     lastMeasurement = undefined;
     resetting = true;
     for (const item of record.items) { accept(item); changedItem(item.seq, false); }
-    historyBefore = record.items.filter(item => !topicFilter() || item.kind !== 'annotations' && item.kind !== 'topics').reduce((lowest, item) => Math.min(lowest, item.seq), Infinity);
-    if (topicFilter()) void reloadTopic();
-    else void rendered().then(() => { if (epoch === record.epoch) fillHistory(); });
+    transcriptHistory.reset(record);
+    if (topics.filter()) void transcriptHistory.reload();
+    else void rendered().then(() => { if (epoch === record.epoch) transcriptHistory.fill(); });
     schedule();
   } else if (record.type === 'item') {
     const current = items.get(record.item.seq);
-    if (!current && historyBefore !== undefined && Number.isFinite(historyBefore) && record.item.seq < historyBefore) { historyRequest?.patches.push(record); return; }
+    if (!current && transcriptHistory.outside(record.item.seq)) { transcriptHistory.buffer(record); return; }
     if (!current || record.item.revision > current.revision) { accept(record.item); changedItem(record.item.seq, !current); }
   } else if (record.type === 'patch') applyPatch(record, true);
   else if (record.type === 'reload') location.reload();
@@ -1912,22 +1607,18 @@ function apply(record: PageRecord) {
     if (viewChanged) leaveView(record.view.id);
     if (viewChanged || state.sessionId !== record.sessionId) { pathWarnings.clear(); pathWarningEpoch++; }
     const loaded = state.view.id === '' && epoch !== '';
-    const scopeChanged = viewChanged || state.sessionId !== record.sessionId, previousFilter = topicFilter(), priorInput = latestTopicInput();
+    const scopeChanged = viewChanged || state.sessionId !== record.sessionId, previousFilter = topics.filter(), priorInput = latestTopicInput();
     if (previousFilter && priorInput?.kind === 'user') visible(priorInput.seq);
     const workingChanged = state.working !== record.working;
-    const scope = filterKey(record), filter = topicFilters.get(scope), move = topicMoves.get(scope);
-    const reconciled = filter && 'topics' in record && !record.topics.some(topic => topic.name === filter)
-      ? move?.from === filter && record.topics.some(topic => topic.name === move.to) ? move.to : undefined
-      : filter;
-    if (scopeChanged && reconciled !== filter) updateTopicFilter(reconciled, scope);
+    const previousScope = topics.scope();
     state = record;
     reportComposer();
-    if (scopeChanged) { finishTopicNaming(false); cancelTopicRename?.(); cancelTopicDrag?.(); clearTimeout(topicClick); topicClick = undefined; historyRequest = undefined; historyBefore = undefined; }
-    if (!scopeChanged && reconciled !== filter) updateTopicFilter(reconciled);
-    if (scopeChanged) decide({ type: 'switch', scope: { view: record.view.id, sessionId: record.sessionId }, loaded, filtered: topicFilter() !== undefined });
-    renderTopics();
-    if (scopeChanged && (previousFilter !== topicFilter() || topicFilter() !== undefined)) { historyRequest = undefined; historyBefore = undefined; refreshTopicItems(); if (epoch && record.view.type === 'root') void reloadTopic(); }
-    if (workingChanged && previousFilter === topicFilter() && topicFilter() && priorInput?.kind === 'user') accept({ ...priorInput });
+    topics.update(record, previousScope);
+    if (scopeChanged) transcriptHistory.cancel('scope');
+    if (scopeChanged) decide({ type: 'switch', scope: { view: record.view.id, sessionId: record.sessionId }, loaded, filtered: topics.filter() !== undefined });
+    topics.render();
+    if (scopeChanged && (previousFilter !== topics.filter() || topics.filter() !== undefined)) { transcriptHistory.cancel('scope'); refreshTopicItems(); if (epoch && record.view.type === 'root') void transcriptHistory.reload(); }
+    if (workingChanged && previousFilter === topics.filter() && topics.filter() && priorInput?.kind === 'user') accept({ ...priorInput });
     windowDirty = true; schedule(); if (agentsChanged || viewChanged) { for (const seq of views.keys()) dirty.add(seq); } document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
     showJobView();
     if (viewChanged) rescopeImages();
@@ -1946,7 +1637,7 @@ function apply(record: PageRecord) {
 function leaveView(next: string) {
   const previous = state.view.id;
   closeSessions(); closePicker(); closeLightbox(); closeBarMenu();
-  editor.resetCompletion(); historyRequest = undefined; editorId = undefined; escaped = false; takingBack = undefined;
+  editor.resetCompletion(); transcriptHistory.cancel('request'); editorId = undefined; escaped = false; takingBack = undefined;
   element('error').textContent = '';
   draft.view(next);
   if (previous) drafts.set(previous, editor.text());
@@ -2158,11 +1849,11 @@ async function koFind(query: string, backwards: boolean): Promise<FindAnswer> {
   if (!needle) { find = undefined; return { index: 0, count: 0, loading: false }; }
   if (find?.query !== needle) find = { query: needle, backwards, started: false, loadedFrom: undefined, cursor: undefined };
   const mine = find, list = allMatches(needle);
-  if (more) {
-    if (!historyRequest) {
+  if (transcriptHistory.more) {
+    if (!transcriptHistory.pending) {
       if (mine.started && mine.loadedFrom === first) { find = undefined; throw Error('Could not load earlier messages'); }
       mine.started = true; mine.loadedFrom = first;
-      void older();
+      void transcriptHistory.earlier();
     }
     return { index: 0, count: list.length, loading: true };
   }
@@ -2251,40 +1942,6 @@ function connect() {
 }
 window.addEventListener('pagehide', () => { closed = true; source?.close(); clearTimeout(reconnect); });
 window.addEventListener('pageshow', event => { if (event.persisted && closed && !failed) { closed = false; connect(); } });
-function fillHistory() {
-  const scroll = element('scroll');
-  if (scroll.scrollHeight <= scroll.clientHeight || scroll.scrollTop < 80) void older();
-}
-function older() {
-  if (state.view.type === 'job' || !more || first === undefined) return;
-  if (!historyRequest) { const request = historyRequest = { before: historyBefore ?? first, ...(topicFilter() ? { topic: topicFilter() } : {}), patches: [], done: Promise.resolve() }; request.done = loadOlder(request); }
-  return historyRequest.done;
-}
-async function reloadTopic() {
-  const request = historyRequest = { before: Number.MAX_SAFE_INTEGER, ...(topicFilter() ? { topic: topicFilter() } : {}), patches: [], done: Promise.resolve() };
-  request.done = loadOlder(request);
-  return request.done;
-}
-async function loadOlder(mine: NonNullable<typeof historyRequest>) {
-  let applied = false;
-  try {
-    const response = await fetch(scoped('/items?before=' + mine.before + (mine.topic ? '&topic=' + encodeURIComponent(mine.topic) : ''), state.sessionId)); if (!response.ok) throw Error('Could not load earlier messages');
-    const result: Extract<PageRecord, { type: 'reset' }> = await response.json();
-    if (historyRequest === mine && result.epoch === epoch) {
-      enqueue({ type: 'history' });
-      more = result.more;
-      historyBefore = result.items.filter(item => !mine.topic || item.kind !== 'annotations' && item.kind !== 'topics').reduce((lowest, item) => Math.min(lowest, item.seq), mine.before);
-      for (const item of result.items) if (!items.has(item.seq)) accept(item);
-      for (const patch of mine.patches) {
-        if (patch.type === 'patch') applyPatch(patch, false);
-        else if (items.has(patch.item.seq)) apply(patch);
-        if (historyRequest !== mine) return;
-      }
-      await rendered();
-      applied = true;
-    }
-  } catch (error) { reportError(error); } finally { if (historyRequest === mine) { historyRequest = undefined; if (applied && historyBefore !== mine.before) fillHistory(); } }
-}
 const sessionHost = element('session-picker');
 const sessionSearch = node('input', undefined, 'q'); sessionSearch.placeholder = 'Search sessions…'; sessionSearch.setAttribute('aria-label', 'Search sessions');
 const sessionResults = node('div', undefined, 'rows'); sessionResults.setAttribute('role', 'listbox'); sessionResults.setAttribute('aria-label', 'Sessions');
@@ -2419,7 +2076,7 @@ async function send(mode: PromptMode = 'prompt') {
   submitting = true;
   decide({ type: 'submit' });
   try {
-    const result = await fetchJSON('/prompt', { sessionId: sendingSession, text, mode, attachments: files.map(file => file.id), ...(composerTopicName() ? { topic: composerTopicName() } : {}) });
+    const result = await fetchJSON('/prompt', { sessionId: sendingSession, text, mode, attachments: files.map(file => file.id), ...(topics.composer() ? { topic: topics.composer() } : {}) });
     if (result.disposition !== 'handled') draft.sent(files);
     if (state.view.id !== origin) { if (drafts.get(origin) === text) drafts.delete(origin); return; }
     if (state.sessionId !== sendingSession || scrolling.generation !== generation) return;
@@ -2438,7 +2095,7 @@ async function send(mode: PromptMode = 'prompt') {
   catch (error) { if (state.view.id === origin && state.sessionId === sendingSession && scrolling.generation === generation) decide({ type: 'send-result', result: 'failed' }); reportError(error); }
   finally { submitting = false; }
 }
-element('older').onclick = older;
+element('older').onclick = () => { void transcriptHistory.earlier(); };
 const isTextInput = (target: EventTarget | null) => target instanceof HTMLElement && (target.isContentEditable || !!target.closest('input,textarea,select'));
 const isControl = (target: EventTarget | null) => isTextInput(target) || target instanceof HTMLElement && !!target.closest('button,[role=button],[role=option],[role=listbox],[role=menuitem]');
 function composerReceivesKeys() { return document.hasFocus() && !element('field').inert && !state.dialogs.length && !document.querySelector('.lightbox') && (editor.hasFocus() || !isTextInput(document.activeElement)); }
@@ -2463,7 +2120,7 @@ window.addEventListener('pagehide', () => {
   decide({ type: 'visibility' }); stopFrames();
   const current = new Map(drafts);
   current.set(state.view.id, editor.text());
-  const memory: PageMemory = { scroll, drafts: [...current].filter(([view, text]) => !!view && !!text), filters: [...topicFilters], composerTopics: [...composerTopics] };
+  const memory: PageMemory = { scroll, drafts: [...current].filter(([view, text]) => !!view && !!text), ...topics.memory() };
   history.replaceState(memory, '');
 });
 document.addEventListener('visibilitychange', () => { decide({ type: 'visibility' }); cancelPending(); if (!document.hidden) { revealDirty ||= revealing.size > 0; windowDirty = true; armCap(); } schedule(); });
@@ -2522,14 +2179,14 @@ document.addEventListener('keydown', event => {
       : ['ArrowDown', 'PageDown', 'End', ' '].includes(event.key) ? 'down' : undefined;
     if (direction) decide({ type: 'input', direction });
   }
-  previewHover(event); if (previewKey(event)) return; if (event.key === 'Escape' && element('topics').dataset.mode === 'line' && element('topics').querySelector<HTMLElement>('.topic-panel')?.hidden === false) { event.preventDefault(); closeTopics(); return; } if (!barMenu.hidden && event.key === 'Escape') { event.preventDefault(); closeBarMenu(); return; } if (state.view.type === 'job') return; if (!event.defaultPrevented && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.isComposing && event.key === 'g' && composerReceivesKeys() && !editing()) { event.preventDefault(); void openEditor(); return; } if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasFailed() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
+  previewHover(event); if (previewKey(event)) return; if (event.key === 'Escape' && element('topics').dataset.mode === 'line' && element('topics').querySelector<HTMLElement>('.topic-panel')?.hidden === false) { event.preventDefault(); topics.close(); return; } if (!barMenu.hidden && event.key === 'Escape') { event.preventDefault(); closeBarMenu(); return; } if (state.view.type === 'job') return; if (!event.defaultPrevented && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.isComposing && event.key === 'g' && composerReceivesKeys() && !editing()) { event.preventDefault(); void openEditor(); return; } if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasFailed() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
-document.addEventListener('pointerdown', event => { if (topicNaming?.target.kind === 'message' && !topicNaming.chip.contains(event.target instanceof Node ? event.target : null)) finishTopicNaming(false); if (!element('topics').contains(event.target instanceof Node ? event.target : null)) closeTopics(); if (!barMenu.hidden && !barMenu.contains(event.target instanceof Node ? event.target : null) && !(event.target instanceof Element && event.target.closest('.ellipsis'))) closeBarMenu(); if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
+document.addEventListener('pointerdown', event => { topics.pointerDown(event); if (!barMenu.hidden && !barMenu.contains(event.target instanceof Node ? event.target : null) && !(event.target instanceof Element && event.target.closest('.ellipsis'))) closeBarMenu(); if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
 element('scroll').onscroll = () => {
   decide({ type: 'scroll' });
   const geo = geometry(), top = geo.top - geo.origin, half = geo.viewport / 2, total = ensureTable().starts[order.length];
   if (!mountedSpans.some(span => span.start <= Math.max(0, top - half) && span.end >= Math.min(total, top + geo.viewport + half))) { windowDirty = true; schedule(); }
-  fillHistory();
+  transcriptHistory.fill();
 };
 element('scroll').addEventListener('wheel', event => {
   if (event.deltaY && Math.abs(event.deltaY) >= Math.abs(event.deltaX)) decide({ type: 'input', direction: event.deltaY < 0 ? 'up' : 'down' });
@@ -2563,11 +2220,10 @@ function resized(entries: ResizeObserverEntry[]) {
     if (target === element('dock')) { dockResized(borderBoxSize[0].blockSize); positionPicker(); }
     if (target === element('scroll') && column) layoutBar(column);
   }
-  if (entries.some(({ target }) => target === topicMeasure) && topicCapsule) delete topicCapsule.width;
-  if (entries.some(({ target }) => target === element('scroll') || target === topicMeasure)) renderTopics();
+  topics.resize(entries);
   decide({ type: 'layout', cause: 'layout' });
 }
-layoutObserver.observe(topicMeasure);
+layoutObserver.observe(topics.measure);
 for (const id of ['scroll', 'items', 'jobv', 'dock']) layoutObserver.observe(element(id));
 setInterval(() => { job.tick(); if (state.view.type === 'job') return; for (const item of state.bash) pendingBash.get(item.id)?.update(item); }, 1000);
 window.addEventListener('resize', positionPicker);

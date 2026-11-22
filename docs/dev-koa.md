@@ -49,7 +49,10 @@ build/koa/bin/koa --browser
 make -C koa install PREFIX=/path/to/prefix
 ```
 
-`koa/Makefile` is the installed-file manifest. Its output in
+`koa/Makefile` is the installed-file manifest. It ships every root
+module except tests, fixtures and the fake provider, so a new module
+needs no list edit; `koa/koa-build.test.ts` fails when a module that
+the program, extension or page imports is not shipped. Its output in
 `build/koa/` has a launcher and a share tree with the program, built
 page, extension, skill and webview SDK. The program and SDK remain
 TypeScript; only the page is bundled. The bundle is unminified for

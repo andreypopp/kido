@@ -413,7 +413,11 @@ holds the first of them, so a page does not cut a run. A user message and an ass
 message with visible text count; tool steps, agent and job items,
 notices and metadata records do not, so a tool-heavy turn does not
 fill a page by itself. A page has no byte limit: the per-field cuts
-of tool arguments and results bound its records. Without a topic filter, the page's cursor for the next older
+of tool arguments and results bound its records.
+`koa/page/transcript-history.ts` owns the page's older-history
+requests: the cursor, the pending request and the patches that it
+holds. The page's lowest loaded item is a separate fact of the page,
+not this cursor. Without a topic filter, the cursor for the next older
 page is the lowest seq of every record that it received, metadata
 included, so a page of only metadata still moves it; a filtered
 reload's cursor ignores annotation and topic records, which can lie
@@ -806,6 +810,12 @@ use that mapping. An annotation that crosses sections is dropped.
 A partial last line that could become a marker is held until resolved.
 A label learned after an item became final is a separate metadata
 item, for the same cursor reason as annotations.
+
+`koa/page/topics.ts` owns the page's topic state: the filter and
+composer topic of each scope, the naming, rename and drag
+interactions, the chips, the topic panel and the saved topic memory.
+It asks the page for corrections and reloads; it does not change the
+transcript or its history.
 
 The page derives topic colors from order and keeps filtering local.
 The live feed is not filtered. A run's filter membership follows the

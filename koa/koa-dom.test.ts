@@ -277,6 +277,26 @@ async function page() {
   Object.assign(context, runInNewContext(stepsSource + '\n({stepInfo,stepParts,toolArgs,agentBody,noticeOf,noticeText,sessionFields})', context));
   const findSource = stripTypeScriptTypes(readFileSync(new URL('page/find.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, { markdownPlain }, runInNewContext(findSource + '\n({findSegments,matchesIn})', context));
+  for (const [name, exports] of [['topics', 'createTopics,topicsMemory'], ['transcript-history', 'createTranscriptHistory']]) {
+    const moduleSource = stripTypeScriptTypes(readFileSync(new URL('page/' + name + '.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+    const marker = name === 'topics' ? 'return {\n    update' : 'return { get more()';
+    assert.equal(moduleSource.split(marker).length, 2, name + ' factory return marker');
+    const injected = name === 'topics'
+      ? `return { debug: {
+        scopes, scopeData, interaction, setTopic, setComposerTopic,
+        clickTopic, moveTopic, topicChip, topicMode, topicAge,
+        renameTopic, dragTopic, updateTopicFilter, toggleTopics, fitTopics, topicColour,
+        newTopicChip, startTopicNaming, finishTopicNaming,
+        get topicDragged() { return topicDragged; },
+      }, update`
+      : `return { debug: {
+        get request() { return request; }, set request(value) { request = value; },
+        get before() { return before; }, set before(value) { before = value; },
+        get more() { return more; }, set more(value) { more = value; },
+      }, get more()`;
+    const debugSource = moduleSource.replace(marker, injected);
+    Object.assign(context, runInNewContext(debugSource + '\n({' + exports + '})', context));
+  }
   const workingSource = stripTypeScriptTypes(readFileSync(new URL('page/working.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   Object.assign(context, runInNewContext(workingSource + '\n({dots})', context));
   Object.assign(context, { scrollInitial, scrollMemory, scrollStored, scrollUpdate, scrollWindow });
@@ -299,7 +319,7 @@ test('filtered history renders the same mixed-topic run and notices as the live 
   assert.equal(response.status, 200);
   const history = await response.json();
   const live = (await page()).repl(), loaded = (await page()).repl();
-  for (const evaluate of [live, loaded]) evaluate("state={...state,view:{id:'root',type:'root',path:[]}};topicFilters.set(filterKey(),'one');");
+  for (const evaluate of [live, loaded]) evaluate("state={...state,view:{id:'root',type:'root',path:[]}};topics.debug.scopeData(topics.scope()).filter='one';");
   for (const record of records) if (['reset', 'item', 'patch', 'flush'].includes(record.type)) live(`apply(${JSON.stringify(record)});`);
   loaded(`apply(${JSON.stringify({ type: 'reset', ...history })});`);
   const snapshot = `refreshTopicItems();renderDirty();JSON.stringify(order.map(seq=>({seq,rows:unitRows(seq,'visible'),item:visible(seq)})))`;
@@ -339,19 +359,19 @@ test('quota history keeps the leading run and older history joins loaded runs li
   for (let index = 0; index < 99; index++) view.message({ role: 'user', content: '[topic: one]\nLater ' + index, timestamp: 4 + index }, 'end');
   request('/events');
   const live = (await page()).repl(), historyPage = await page(), loaded = historyPage.repl();
-  for (const evaluate of [live, loaded]) evaluate("state={...state,view:{id:'root',type:'root',path:[]}};topicFilters.set(filterKey(),'one');");
+  for (const evaluate of [live, loaded]) evaluate("state={...state,view:{id:'root',type:'root',path:[]}};topics.debug.scopeData(topics.scope()).filter='one';");
   for (const line of feed) live(`apply(${line.slice(6, -2)});`);
   const newest = JSON.parse(request('/items?before=100000&topic=one').join(''));
   loaded(`apply(${JSON.stringify({ type: 'reset', ...newest })});renderDirty();`);
   const snapshot = "renderDirty();JSON.stringify(order.filter(seq=>visible(seq)?.kind!=='topics').map(seq=>({seq,item:visible(seq),rows:unitRows(seq)})))";
   assert.equal(String(loaded(snapshot)), String(live(snapshot)), 'quota page must keep the earlier run owner');
   const mergedPage = await page(), merged = mergedPage.repl();
-  merged("state={...state,view:{id:'root',type:'root',path:[]}};topicFilters.set(filterKey(),'one');");
+  merged("state={...state,view:{id:'root',type:'root',path:[]}};topics.debug.scopeData(topics.scope()).filter='one';");
   const raw = JSON.parse(request('/items?before=100000').join(''));
   assert.equal(raw.items[0].seq, 0);
-  merged(`epoch=${JSON.stringify(raw.epoch)};more=true;for(const item of ${JSON.stringify(raw.items.filter((item: { seq: number }) => item.seq >= 3))})accept(item);renderDirty();`);
+  merged(`epoch=${JSON.stringify(raw.epoch)};transcriptHistory.debug.more=true;for(const item of ${JSON.stringify(raw.items.filter((item: { seq: number }) => item.seq >= 3))})accept(item);renderDirty();`);
   mergedPage.context.fetch = async () => ({ ok: true, json: async () => JSON.parse(request('/items?before=3&topic=one').join('')) });
-  const pending = merged('older()');
+  const pending = merged('transcriptHistory.earlier()');
   await settle();
   merged('tick()');
   await pending;
@@ -783,11 +803,11 @@ test('topic rename selects the name and commits Enter and blur but cancels Escap
   const app = await page(), calls: { path: string; body: { from: string; to: string } }[] = [];
   app.context.fetch = async (path?: string, options?: { body: string }) => { calls.push({ path: path ?? '', body: JSON.parse(options?.body ?? '{}') }); return { ok: true, json: async () => ({}) }; };
   const controls = app.run(`(()=>{
-    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one',last:{summary:'Summary',at:1}},{name:'two',last:{summary:'Older',at:0}}]};renderTopics();
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one',last:{summary:'Summary',at:1}},{name:'two',last:{summary:'Older',at:0}}]};topics.render();
     const row=()=>element('topics').querySelector('.topic-entry');
     const open=()=>{row().onclick({detail:1});row().onclick({detail:2});return element('topics').querySelector('.topic-rename')};
     const input=open();
-    return {selection:[input.selectionStart,input.selectionEnd],filter:()=>topicFilter(),key:(value,key)=>{const field=element('topics').querySelector('.topic-rename')??open();field.value=value;field.onkeydown({key,preventDefault(){},stopPropagation(){}})},blur:value=>{const field=open();field.value=value;field.onblur()},open};
+    return {selection:[input.selectionStart,input.selectionEnd],filter:()=>topics.filter(),key:(value,key)=>{const field=element('topics').querySelector('.topic-rename')??open();field.value=value;field.onkeydown({key,preventDefault(){},stopPropagation(){}})},blur:value=>{const field=open();field.value=value;field.onblur()},open};
   })()`);
   assert.deepEqual([...controls.selection], [0, 3]); t.mock.timers.tick(250); assert.equal(controls.filter(), undefined);
   controls.key('cancelled', 'Escape'); assert.equal(calls.length, 0);
@@ -803,18 +823,18 @@ test('topic interactions cancel on scope changes and resets without committing',
   app.context.fetch = async (path?: string) => { calls.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
   for (const transition of ["apply({...state,type:'state',sessionId:'other'})", "apply({type:'reset',epoch:'new',items:[],more:false})"]) {
     const result = app.run(`(()=>{
-      state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};renderTopics();
-      renameTopic(element('topics').querySelector('.topic-entry'),'one');
+      state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};topics.render();
+      topics.debug.renameTopic(element('topics').querySelector('.topic-entry'),'one');
       const input=element('topics').querySelector('.topic-rename');input.value='changed';
-      const plus=newTopicChip({kind:'composer'});element('field').append(plus);startTopicNaming(plus,{kind:'composer'});topicNaming.input.value='named';
+      const plus=topics.debug.newTopicChip({kind:'composer'});element('field').append(plus);topics.debug.startTopicNaming(plus,{kind:'composer'});topics.debug.interaction.naming.input.value='named';
       const handlers=new Map();document.addEventListener=(key,handler)=>handlers.set(key,handler);document.removeEventListener=key=>handlers.delete(key);
       const source=node('div'), target=node('div');target.dataset.topic='two';target.style.removeProperty=()=>{};
       element('scroll').getBoundingClientRect=()=>({left:0,right:100,top:0,bottom:100});element('scroll').scrollBy=()=>{};
       document.elementFromPoint=()=>({closest:selector=>selector.startsWith('.topic-entry')?target:null});
-      dragTopic({button:0,isPrimary:true,clientX:0,clientY:0},source,'one');handlers.get('pointermove')({clientX:10,clientY:50,preventDefault(){}});
+      topics.debug.dragTopic({button:0,isPrimary:true,clientX:0,clientY:0},source,'one');handlers.get('pointermove')({clientX:10,clientY:50,preventDefault(){}});
       const drop=handlers.get('pointerup');
       ${transition};
-      const removed=!element('topics').querySelector('.topic-rename')&&!topicNaming&&!cancelTopicDrag&&!source.classList.contains('dragging');input.onblur();drop({type:'pointerup'});
+      const removed=!element('topics').querySelector('.topic-rename')&&!topics.debug.interaction.naming&&!topics.debug.interaction.drag?.cancel&&!source.classList.contains('dragging');input.onblur();drop({type:'pointerup'});
       return removed;
     })()`);
     assert.equal(result, true);
@@ -834,9 +854,9 @@ test('topic drag selects the whole turn in sequence order after older history ar
     accept({kind:'user',seq:10,revision:1,at:1,final:true,text:'next',topic:'one'});
     accept({kind:'user',seq:0,revision:1,at:1,final:true,text:'first',topic:'one'});
     accept({kind:'assistant',seq:1,revision:1,at:1,final:true,blocks:[{type:'text',text:'reply',topic:'two'}],stop:'stop',error:''});
-    const eligible=seq=>{message.dataset.seq=String(seq);dragTopic({button:0,isPrimary:true,clientX:0,clientY:0},source,'one');handlers.get('pointermove')({clientX:10,clientY:50,preventDefault(){}});const marked=message.classList.contains('drop-target');handlers.get('pointercancel')();return marked;};
+    const eligible=seq=>{message.dataset.seq=String(seq);topics.debug.dragTopic({button:0,isPrimary:true,clientX:0,clientY:0},source,'one');handlers.get('pointermove')({clientX:10,clientY:50,preventDefault(){}});const marked=message.classList.contains('drop-target');handlers.get('pointercancel')();return marked;};
     const user=eligible(0), reply=eligible(1);items.set(1,{...items.get(1),final:false});
-    const unfinished=eligible(0);items.delete(1);updateTopicFilter('one');
+    const unfinished=eligible(0);items.delete(1);topics.debug.updateTopicFilter('one');
     return [user,reply,unfinished,eligible(0)];
   })()`);
   assert.deepEqual(Array.from(result), [true, true, false, true]);
@@ -846,11 +866,11 @@ test('an unedited astral topic rename preserves the name and naming accepts the 
   const app = await page(), calls: string[] = [];
   app.context.fetch = async (path?: string) => { calls.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
   const limit = app.run(`(()=>{
-    const name='😀'.repeat(101);state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name}]};renderTopics();
-    renameTopic(element('topics').querySelector('.topic-entry'),name);element('topics').querySelector('.topic-rename').onblur();
-    const plus=newTopicChip({kind:'composer'});element('field').append(plus);startTopicNaming(plus,{kind:'composer'});
-    const limit=topicNaming.input.maxLength;topicNaming.input.value=name;finishTopicNaming(true);
-    return [limit,composerTopicName()];
+    const name='😀'.repeat(101);state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name}]};topics.render();
+    topics.debug.renameTopic(element('topics').querySelector('.topic-entry'),name);element('topics').querySelector('.topic-rename').onblur();
+    const plus=topics.debug.newTopicChip({kind:'composer'});element('field').append(plus);topics.debug.startTopicNaming(plus,{kind:'composer'});
+    const limit=topics.debug.interaction.naming.input.maxLength;topics.debug.interaction.naming.input.value=name;topics.debug.finishTopicNaming(true);
+    return [limit,topics.composer()];
   })()`);
   assert.deepEqual(calls, []);
   assert.notEqual(limit[0], 200);
@@ -861,11 +881,11 @@ test('scope restoration and state reconciliation keep the scroll filter in agree
   const app = await page();
   const result = app.run(`(()=>{
     state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};
-    updateTopicFilter('one');apply({...state,type:'state',sessionId:'other'});scrollEvents.length=0;
+    topics.debug.updateTopicFilter('one');apply({...state,type:'state',sessionId:'other'});scrollEvents.length=0;
     apply({...state,type:'state',sessionId:'s'});
     const restored=scrolling.filtered;
     scrollEvents.length=0;apply({...state,type:'state',topics:[]});
-    return [restored,topicFilter(),scrollEvents.some(event=>event.type==='filter'&&!event.active)];
+    return [restored,topics.filter(),scrollEvents.some(event=>event.type==='filter'&&!event.active)];
   })()`);
   assert.deepEqual(Array.from(result), [true, undefined, true]);
 });
@@ -875,7 +895,7 @@ test('a stale destination filter does not erase the outgoing reader anchor', asy
   const saved = app.run(`(()=>{
     state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[]};
     scrolling={...scrollInitial({view:'root',sessionId:'s'}),kind:'reader',anchor:{item:{kind:'message',seq:7},offset:13,edge:'row'}};
-    topicFilters.set('destination:s','stale');
+    topics.debug.scopeData('destination:s').filter='stale';
     apply({...state,type:'state',view:{id:'destination',path:[],type:'root'}});
     return scrolling.saved.get('root')?.anchor;
   })()`);
@@ -886,7 +906,7 @@ test('a reconciled destination filter reloads history once per scope transition'
   const app = await page(), calls: string[] = [];
   app.context.fetch = async (path?: string) => { calls.push(path ?? ''); return new Promise(() => {}); };
   app.run(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[]};epoch='loaded';
-    topicFilters.set('destination:s','stale');topicMoves.set('destination:s',{from:'stale',to:'one'});
+    topics.debug.scopeData('destination:s').filter='stale';topics.debug.scopeData('destination:s').move={from:'stale',to:'one'};
     apply({...state,type:'state',view:{id:'destination',path:[],type:'root'},topics:[{name:'one'}]});`);
   assert.equal(calls.filter(path => path.startsWith('/items?')).length, 1);
 });
@@ -901,11 +921,11 @@ test('topic filters project blocks without changing their addresses and apply ne
   const app = await page();
   const result = app.run(`
     state = {...state, view:{id:'root',path:[],type:'root'},sessionId:'session',topics:[{name:'one',last:{summary:'**First**',at:1}},{name:'two'}]};
-    renderTopics();
+    topics.render();
     const user={kind:'user',seq:0,revision:1,at:1,final:true,text:'request',images:[],attachments:[]};
     accept(user);
     accept({kind:'assistant',seq:1,revision:1,at:2,final:true,blocks:[{type:'text',text:'visible one',topic:'one'},{type:'text',text:'hidden two',topic:'two'}],stop:'stop',error:''});
-    setTopic('one');
+    topics.debug.setTopic('one');
     const hiddenUser=!visible(0), indexes=visible(1).blocks.map(block=>block.text), copied=transcriptText();
     accept({kind:'topics',target:0,topics:['one'],seq:2,revision:1,at:3,final:true});
     const labelled=!!visible(0);
@@ -913,7 +933,7 @@ test('topic filters project blocks without changing their addresses and apply ne
     const newest=!visible(0), original=items.get(1).blocks[1].text;
     const buttons=element('topics').children.length;
     apply({...state,type:'state',topics:[{name:'two'}]});
-    const cleared=topicFilter()===undefined&&order.includes(0)&&visible(1).blocks[1].text==='hidden two';
+    const cleared=topics.filter()===undefined&&order.includes(0)&&visible(1).blocks[1].text==='hidden two';
     [hiddenUser,indexes,copied,labelled,newest,original,buttons,cleared];
   `);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [true, ['visible one', ''], 'visible one', true, true, 'hidden two', 2, true]);
@@ -926,7 +946,7 @@ test('merge and message corrections fill gaps inside loaded filtered history', a
       state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'A'},{name:'B'}]};
       accept({kind:'user',seq:10,revision:1,at:1,final:true,text:'start',topic:'B'});
       accept({kind:'user',seq:20,revision:1,at:1,final:true,text:'end',topic:'B'});
-      setTopic('B');historyRequest=undefined;historyBefore=10;after=20;
+      topics.debug.setTopic('B');transcriptHistory.debug.request=undefined;transcriptHistory.debug.before=10;after=20;
       element('scroll').scrollTop=300;
       const moved=${JSON.stringify(kind)}==='assistant'
         ? {kind:'assistant',seq:15,revision:2,at:1,final:true,blocks:[{type:'text',text:'merged reply',topic:'B'}],stop:'stop',error:''}
@@ -936,7 +956,7 @@ test('merge and message corrections fill gaps inside loaded filtered history', a
       const entered=!!visible(15),metadata=topicItems.get(15)?.topics[0];
       apply({type:'item',item:${JSON.stringify(kind)}==='assistant'?{...moved,revision:3,blocks:[{type:'text',text:'merged reply',topic:'A'}]}:{...moved,revision:3,topic:'A'}});
       apply({type:'item',item:{kind:'topics',seq:16,revision:3,at:1,final:true,target:15,topics:['A']}});
-      [entered,metadata,!visible(15),topicFilter(),element('scroll').scrollTop,historyBefore];
+      [entered,metadata,!visible(15),topics.filter(),element('scroll').scrollTop,transcriptHistory.debug.before];
     `);
     assert.deepEqual(JSON.parse(JSON.stringify(result)), [true, 'B', true, 'B', 300, 10], kind);
   }
@@ -948,7 +968,7 @@ test('same-seq topic corrections update inferred prompt visibility', async () =>
     state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'A'},{name:'B'}]};
     accept({kind:'user',seq:10,revision:1,at:1,final:true,text:'inferred prompt'});
     accept({kind:'topics',seq:12,revision:1,at:1,final:true,target:10,topics:['A']});
-    setTopic('B');historyRequest=undefined;historyBefore=10;
+    topics.debug.setTopic('B');transcriptHistory.debug.request=undefined;transcriptHistory.debug.before=10;
     const hidden=!visible(10);
     apply({type:'item',item:{kind:'topics',seq:12,revision:2,at:1,final:true,target:10,topics:['B']}});
     [hidden,topicItems.get(10).topics,topicItems.get(10).revision,!!visible(10),order.includes(10)];
@@ -962,7 +982,7 @@ test('filtered run boundaries keep both tools reachable across hidden prose', as
     state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};
     const tool=(id)=>({type:'tool',id,name:'bash',topic:'one',args:{text:'{"command":"'+id+'"}',cut:0},state:{type:'done',error:false,result:{text:id,cut:0,images:[]}}});
     accept({kind:'assistant',seq:0,revision:1,at:1,final:true,stop:'stop',error:'',blocks:[tool('first'),{type:'text',topic:'two',text:'hidden'},tool('second')]});
-    setTopic('one');renderItem(visible(0));reconcileRuns();
+    topics.debug.setTopic('one');renderItem(visible(0));reconcileRuns();
     [...views.get(0).slots.values()].filter(slot=>slot.type==='run').flatMap(slot=>runMarks.get(slot.view.firstElementChild)?.steps.map(step=>step.key)??[]);
   `);
   assert.deepEqual(Array.from(result), ['0:0','0:2']);
@@ -990,9 +1010,9 @@ test('an open topic panel keeps its scroll through state updates and closes by E
   const app = await page();
   const ui = app.run(`
     state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:Array.from({length:20},(_,index)=>({name:'topic-'+index,last:{summary:'Before',at:1}}))};
-    renderTopics();toggleTopics();element('topics').querySelector('.topic-panel').scrollTop=80;
+    topics.render();topics.debug.toggleTopics();element('topics').querySelector('.topic-panel').scrollTop=80;
     apply({...state,type:'state',topics:state.topics.map((topic,index)=>index===0?{...topic,last:{summary:'After',at:2}}:topic)});
-    ({values:[!element('topics').querySelector('.topic-panel').hidden,element('topics').querySelector('.topic-panel').scrollTop,element('topics').querySelector('.topic-summary').textContent],panel:()=>element('topics').querySelector('.topic-panel'),toggle:toggleTopics});
+    ({values:[!element('topics').querySelector('.topic-panel').hidden,element('topics').querySelector('.topic-panel').scrollTop,element('topics').querySelector('.topic-summary').textContent],panel:()=>element('topics').querySelector('.topic-panel'),toggle:topics.debug.toggleTopics});
   `);
   assert.deepEqual(Array.from(ui.values), [true,80,'After']);
   app.listeners.get('keydown')?.({ key:'Escape',target:app.context.document.body,preventDefault(){} });
@@ -1015,11 +1035,11 @@ test('reply sections carry interactive topic chips or a plain time with no marks
     const plainInfo=[plain?.children.find(node=>node.tagName==='TIME')?.textContent,plain?.getAttribute('role'),typeof plain?.onclick==='function'];
     const noMarks=all(views.get(0).view).every(node=>!node.classList.contains('topic-mark')&&!node.classList.contains('topic-edge'));
     headers[0]?.querySelector('.topic-chip')?.onclick?.();
-    const selected=[composerTopicName(),topicFilter()];setTopic('one');renderDirty();
+    const selected=[topics.composer(),topics.filter()];topics.debug.setTopic('one');renderDirty();
     put({seq:2,at,kind:'user',revision:0,final:true,text:'pending',images:[],attachments:[]});
     const pending=all(views.get(2).view).some(node=>node.classList.contains('topic-waiting')||node.classList.contains('topic-pending'));
     const filtered=all(views.get(0).view).filter(node=>node.classList.contains('message-header')).map(header=>[header.children.find(node=>node.tagName==='TIME')?.textContent,!!header.querySelector('.topic-name'),header.querySelector('.topic-name')?.parentNode?.getAttribute('role')??null,typeof header.querySelector('.topic-name')?.parentNode?.onclick==='function']);
-    return [labels,plainInfo,noMarks,topicFilter(),pending,timestamp(at),filtered,selected];
+    return [labels,plainInfo,noMarks,topics.filter(),pending,timestamp(at),filtered,selected];
   })()`);
   const value=JSON.parse(JSON.stringify(result));
   assert.deepEqual(value.slice(0,5), [[['one',value[5],'button',true],['two',null,'button',true]],[value[5],null,false],true,'one',false]);
@@ -1047,12 +1067,12 @@ test('message headers exclude runs and notices and the composer clear preserves 
     const implicit=[6,8,10].map(seq=>[count(views.get(seq).view,'message-header'),count(views.get(seq).view,'topic-chip')]);
     const counts=[0,1,2,3,4,5].map(seq=>[count(views.get(seq).view,'message-header'),count(views.get(seq).view,'topic-chip')]);
     views.get(0).view.querySelector('.topic-chip').onclick();
-    setTopic('one');renderDirty();
-    const filtered=[topicFilter(),!!element('field').querySelector('.composer-topic')?.querySelector('.topic-chip'),!!element('topics').querySelector('.topic-clear'),count(views.get(0).view,'topic-chip'),count(views.get(1).view,'topic-chip')];
+    topics.debug.setTopic('one');renderDirty();
+    const filtered=[topics.filter(),!!element('field').querySelector('.composer-topic')?.querySelector('.topic-chip'),!!element('topics').querySelector('.topic-clear'),count(views.get(0).view,'topic-chip'),count(views.get(1).view,'topic-chip')];
     element('field').querySelector('.topic-clear').onclick();
-    const dropped=[composerTopicName(),topicFilter(),!!element('field').querySelector('.topic-new')];
+    const dropped=[topics.composer(),topics.filter(),!!element('field').querySelector('.topic-new')];
     element('topics').querySelector('.topic-clear').onclick();
-    return [counts,filtered,topicFilter(),!!element('field').querySelector('.composer-topic'),queueCounts,implicit,dropped];
+    return [counts,filtered,topics.filter(),!!element('field').querySelector('.composer-topic'),queueCounts,implicit,dropped];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [[[1,1],[1,1],[0,0],[0,0],[0,0],[0,0]],['one',true,true,0,0],null,true,[0,0],[[1,1],[1,0],[1,0]],[null,'one',true]]);
 });
@@ -1062,7 +1082,7 @@ test('find ignores message header names and times and export contains only prose
   const result = app.run(`(()=>{
     const at=Date.now(),results=[];
     for(const text of ['one',timestamp(at)]){
-      const row=node('div'),header=messageHeader('one',at),paragraph=node('p'),leaf=document.createTextNode(text); paragraph.append(leaf);row.append(header,paragraph);
+      const row=node('div'),header=topics.header('one',at),paragraph=node('p'),leaf=document.createTextNode(text); paragraph.append(leaf);row.append(header,paragraph);
       const found=locate(row,[{text,lowered:text,folds:[],fences:[]}],{seq:0,segment:0,start:0},text.length);
       results.push(found?.start.node===leaf&&found?.end.node===leaf);
     }
@@ -1075,7 +1095,7 @@ test('find ignores message header names and times and export contains only prose
 test('whole transcript selection starts at prose rather than an unselectable message header', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    const row=node('div'),header=messageHeader('one',Date.now()),first=document.createTextNode('First'),last=document.createTextNode('Last');
+    const row=node('div'),header=topics.header('one',Date.now()),first=document.createTextNode('First'),last=document.createTextNode('Last');
     row.append(header,first,last);element('items').replaceChildren(row);order.push(0);
     getSelection=()=>({rangeCount:1,isCollapsed:false,getRangeAt:()=>({startContainer:first,startOffset:0,endContainer:last,endOffset:4}),containsNode:()=>false});
     return wholeSelection();
@@ -1088,13 +1108,13 @@ test('a message chip labels submissions and stays after send without filtering',
   const result = await app.run(`(async()=>{
     state={...state,life:{type:'ready'},working:true,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};
     accept({kind:'user',seq:0,revision:1,at:1,final:true,text:'pending',images:[],attachments:[]});
-    const mark=topicChip('one'),clickable=typeof mark.onclick==='function';mark.onclick?.();renderItem(visible(0));
+    const mark=topics.debug.topicChip('one'),clickable=typeof mark.onclick==='function';mark.onclick?.();renderItem(visible(0));
     const waiting=views.get(0).view.querySelector('.topic-waiting');
     const text=node=>node.textContent+node.children.map(text).join('');
-    renderTopics();const capsule=text(element('topics').querySelector('.topic-capsule'));
+    topics.render();const capsule=text(element('topics').querySelector('.topic-capsule'));
     let sent;rendered=async()=>{};fetchJSON=async(path,body)=>{sent=body;return {disposition:'queued'}};
     editor.setText('continue');await send();
-    return [mark.tagName,mark.getAttribute('role'),clickable,topicFilter(),capsule,sent.topic,waiting?.tagName,typeof waiting?.onclick==='function',composerTopicName()];
+    return [mark.tagName,mark.getAttribute('role'),clickable,topics.filter(),capsule,sent.topic,waiting?.tagName,typeof waiting?.onclick==='function',topics.composer()];
   })()`);
   assert.deepEqual(Array.from(result),['SPAN','button',true,undefined,'#one…','one',undefined,false,'one']);
 });
@@ -1105,13 +1125,13 @@ test('filtering selects the composer topic but dropping it submits unlabelled wi
     state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};refreshComposer();
     const initial=!!element('field').querySelector('.topic-new');
     const sent=[];rendered=async()=>{};fetchJSON=async(path,body)=>{sent.push(body);return {disposition:'queued'}};
-    setTopic('one');const selected=[composerTopicName(),topicFilter()];
-    editor.setText('first');await send();const sticky=composerTopicName();
-    setComposerTopic('two');editor.setText('second');await send();
+    topics.debug.setTopic('one');const selected=[topics.composer(),topics.filter()];
+    editor.setText('first');await send();const sticky=topics.composer();
+    topics.debug.setComposerTopic('two');editor.setText('second');await send();
     element('field').querySelector('.topic-clear').onclick();
-    editor.setText('classify this');await send();const filterAfterDrop=topicFilter();
-    setTopic('two');element('topics').querySelector('.topic-clear').onclick();
-    return [initial,selected,sticky,sent.map(body=>body.topic),filterAfterDrop,topicFilter(),composerTopicName(),!!element('field').querySelector('.composer-topic')];
+    editor.setText('classify this');await send();const filterAfterDrop=topics.filter();
+    topics.debug.setTopic('two');element('topics').querySelector('.topic-clear').onclick();
+    return [initial,selected,sticky,sent.map(body=>body.topic),filterAfterDrop,topics.filter(),topics.composer(),!!element('field').querySelector('.composer-topic')];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [true,['one','one'],'one',['one','two',null],'one',null,null,true]);
 });
@@ -1119,17 +1139,17 @@ test('filtering selects the composer topic but dropping it submits unlabelled wi
 test('composer topics stay with their root draft across reload and do not enter child or job views', async () => {
   const app = await page();
   const evaluate = app.repl();
-  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};setTopic('one');setComposerTopic('two');editor.setText('draft');`);
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};topics.debug.setTopic('one');topics.debug.setComposerTopic('two');editor.setText('draft');`);
   app.windowListeners.get('pagehide')?.();
   evaluate("element('field').replaceChildren()");
   const restored = app.repl();
   const result = restored(`(()=>{
     state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'}};refreshComposer();
-    const root=[topicFilter(),composerTopicName(),drafts.get('root')];
+    const root=[topics.filter(),topics.composer(),drafts.get('root')];
     const rows=[];
-    for(const type of ['agent','job']){state={...state,view:{id:'child',path:[],type}};refreshComposer();rows.push([!!element('field').querySelector('.composer-topic'),composerTopicName()]);}
+    for(const type of ['agent','job']){state={...state,view:{id:'child',path:[],type}};refreshComposer();rows.push([!!element('field').querySelector('.composer-topic'),topics.composer()]);}
     state={...state,sessionId:'other',view:{id:'root',path:[],type:'root'}};refreshComposer();
-    return [root,rows,composerTopicName(),!!element('field').querySelector('.topic-new')];
+    return [root,rows,topics.composer(),!!element('field').querySelector('.topic-new')];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [['one','two','draft'],[[false,null],[false,null]],null,true]);
 });
@@ -1140,13 +1160,13 @@ test('clearing a widget filter drops its matching composer topic but keeps an in
     state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};
     const results=[];
     for(const control of ['capsule','all','active']) for(const choice of ['same','other','following']) {
-      setTopic('one');
-      if(choice==='other') topicChip('two').onclick();
-      if(choice==='following') composerTopics.delete(filterKey());
+      topics.debug.setTopic('one');
+      if(choice==='other') topics.debug.topicChip('two').onclick();
+      if(choice==='following') delete topics.debug.scopeData(topics.scope()).composer;
       if(control==='capsule') element('topics').querySelector('.topic-clear').onclick();
       else if(control==='all') element('topics').querySelector('.topic-all').onclick();
       else element('topics').querySelector('.current').onclick({detail:0});
-      results.push([topicFilter(),composerTopicName()]);
+      results.push([topics.filter(),topics.composer()]);
     }
     return results;
   })()`);
@@ -1155,39 +1175,39 @@ test('clearing a widget filter drops its matching composer topic but keeps an in
 
 test('a restored filter supplies only an unset composer topic and preserves an explicit drop', async () => {
   const app = await page(), evaluate = app.repl();
-  assert.deepEqual(JSON.parse(JSON.stringify(evaluate(`(()=>{state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'}};topicFilters.set(filterKey(),'one');const derived=composerTopicName();setComposerTopic('two');const chosen=composerTopicName();setComposerTopic(undefined);return [derived,chosen,composerTopicName()]})()`))), ['one','two',null]);
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate(`(()=>{state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'}};topics.debug.scopeData(topics.scope()).filter='one';const derived=topics.composer();topics.debug.setComposerTopic('two');const chosen=topics.composer();topics.debug.setComposerTopic(undefined);return [derived,chosen,topics.composer()]})()`))), ['one','two',null]);
   app.windowListeners.get('pagehide')?.();
   const restored = app.repl();
-  assert.equal(restored(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'}};composerTopicName()`), undefined);
-  assert.equal(restored('topicFilter()'), 'one');
+  assert.equal(restored(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'}};topics.composer()`), undefined);
+  assert.equal(restored('topics.filter()'), 'one');
 });
 
 test('a delayed topic click cannot select a filter after a scope switch or a newer filter action', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const app = await page(), evaluate = app.repl();
-  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};clickTopic({detail:1},node('div'),'one');state={...state,sessionId:'other'};`);
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};topics.debug.clickTopic({detail:1},node('div'),'one');state={...state,sessionId:'other'};`);
   t.mock.timers.tick(250);
-  assert.equal(evaluate('topicFilter()'), undefined);
-  evaluate(`clickTopic({detail:1},node('div'),'one');setTopic('two');`);
+  assert.equal(evaluate('topics.filter()'), undefined);
+  evaluate(`topics.debug.clickTopic({detail:1},node('div'),'one');topics.debug.setTopic('two');`);
   t.mock.timers.tick(250);
-  assert.equal(evaluate('topicFilter()'), 'two');
+  assert.equal(evaluate('topics.filter()'), 'two');
 });
 
 test('a pending topic move updates only its original scope and does not replace a newer filter', async () => {
   const app = await page(), evaluate = app.repl();
-  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'A'},{name:'B'},{name:'C'}]};setTopic('A');fetchJSON=()=>new Promise(resolve=>window.finishMove=resolve);window.moving=moveTopic('A','B',filterKey(),state.sessionId);state={...state,sessionId:'other'};setTopic('C');window.finishMove({});`);
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'A'},{name:'B'},{name:'C'}]};topics.debug.setTopic('A');fetchJSON=()=>new Promise(resolve=>window.finishMove=resolve);window.moving=topics.debug.moveTopic('A','B',topics.scope(),state.sessionId);state={...state,sessionId:'other'};topics.debug.setTopic('C');window.finishMove({});`);
   await evaluate('window.moving');
-  assert.deepEqual(JSON.parse(JSON.stringify(evaluate(`[topicFilter(),composerTopicName(),topicFilters.get('root:s'),composerTopics.get('root:s')]`))), ['C','C','B',{type:'topic',name:'B'}]);
-  evaluate(`setTopic('A');window.moving=moveTopic('A','B',filterKey(),state.sessionId);setTopic('C');window.finishMove({});`);
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate(`[topics.filter(),topics.composer(),topics.debug.scopes.get('root:s')?.filter,topics.debug.scopes.get('root:s')?.composer]`))), ['C','C','B',{type:'topic',name:'B'}]);
+  evaluate(`topics.debug.setTopic('A');window.moving=topics.debug.moveTopic('A','B',topics.scope(),state.sessionId);topics.debug.setTopic('C');window.finishMove({});`);
   await evaluate('window.moving');
-  assert.deepEqual(JSON.parse(JSON.stringify(evaluate('[topicFilter(),composerTopicName()]'))), ['C','C']);
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate('[topics.filter(),topics.composer()]'))), ['C','C']);
 });
 
 test('a topic move follows its target when state arrives before the response', async () => {
   const app = await page(), evaluate = app.repl();
-  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'A'},{name:'B'}]};setTopic('A');fetchJSON=()=>new Promise(resolve=>window.finishMove=resolve);window.moving=moveTopic('A','B',filterKey(),state.sessionId);apply({...state,type:'state',topics:[{name:'B'}]});window.finishMove({});`);
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'A'},{name:'B'}]};topics.debug.setTopic('A');fetchJSON=()=>new Promise(resolve=>window.finishMove=resolve);window.moving=topics.debug.moveTopic('A','B',topics.scope(),state.sessionId);apply({...state,type:'state',topics:[{name:'B'}]});window.finishMove({});`);
   await evaluate('window.moving');
-  assert.equal(evaluate('topicFilter()'), 'B');
+  assert.equal(evaluate('topics.filter()'), 'B');
 });
 
 test('moving a topic updates its composer chip without replacing an independent composer topic', async () => {
@@ -1195,10 +1215,10 @@ test('moving a topic updates its composer chip without replacing an independent 
   const result = await app.run(`(async()=>{
     state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'A'},{name:'B'},{name:'C'}]};
     fetchJSON=async()=>({});
-    topicChip('A').onclick();await moveTopic('A','B',filterKey(),state.sessionId);
-    const renamed=[topicFilter(),composerTopicName(),element('field').querySelector('.topic-name').title];
-    setTopic('A');topicChip('C').onclick();await moveTopic('A','B',filterKey(),state.sessionId);
-    return [renamed,[topicFilter(),composerTopicName(),element('field').querySelector('.topic-name').title]];
+    topics.debug.topicChip('A').onclick();await topics.debug.moveTopic('A','B',topics.scope(),state.sessionId);
+    const renamed=[topics.filter(),topics.composer(),element('field').querySelector('.topic-name').title];
+    topics.debug.setTopic('A');topics.debug.topicChip('C').onclick();await topics.debug.moveTopic('A','B',topics.scope(),state.sessionId);
+    return [renamed,[topics.filter(),topics.composer(),element('field').querySelector('.topic-name').title]];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [[null,'B','B'],['B','C','C']]);
 });
@@ -1208,12 +1228,12 @@ test('composer naming commits with Enter or Tab, keeps its input on refresh and 
   const result = app.run(`(()=>{
     state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'existing'}]};refreshComposer();
     const key=value=>({key:value,preventDefault(){},stopPropagation(){}}),open=()=>{element('field').querySelector('.topic-new').onclick();return element('field').querySelector('.topic-input')};
-    let input=open();const initial=[input.placeholder,input.style.width,topicNaming.chip.style['--topic-color']];input.value='existing';input.oninput();const existing=topicNaming.chip.style['--topic-color'];refreshComposer();const retained=element('field').querySelector('.topic-input')===input&&document.activeElement===input;
-    input.onkeydown(key('Tab'));const committed=[composerTopicName(),topicFilter(),editor.hasFocus()];
-    element('field').querySelector('.topic-clear').onclick();input=open();input.value='New topic';input.onkeydown(key('Enter'));const named=[composerTopicName(),editor.hasFocus()];
-    element('field').querySelector('.topic-clear').onclick();input=open();input.value='Cancelled';input.onkeydown(key('Escape'));const escaped=[composerTopicName(),!!element('field').querySelector('.topic-new')];
+    let input=open();const initial=[input.placeholder,input.style.width,topics.debug.interaction.naming.chip.style['--topic-color']];input.value='existing';input.oninput();const existing=topics.debug.interaction.naming.chip.style['--topic-color'];refreshComposer();const retained=element('field').querySelector('.topic-input')===input&&document.activeElement===input;
+    input.onkeydown(key('Tab'));const committed=[topics.composer(),topics.filter(),editor.hasFocus()];
+    element('field').querySelector('.topic-clear').onclick();input=open();input.value='New topic';input.onkeydown(key('Enter'));const named=[topics.composer(),editor.hasFocus()];
+    element('field').querySelector('.topic-clear').onclick();input=open();input.value='Cancelled';input.onkeydown(key('Escape'));const escaped=[topics.composer(),!!element('field').querySelector('.topic-new')];
     input=open();element('field').querySelector('.topic-clear').onclick();
-    return [initial,existing,retained,committed,named,escaped,composerTopicName(),!!element('field').querySelector('.topic-new')];
+    return [initial,existing,retained,committed,named,escaped,topics.composer(),!!element('field').querySelector('.topic-new')];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [['topic name','10ch','var(--topic-1)'],'var(--topic-0)',true,['existing',null,true],['New topic',true],[null,true],null,true]);
 });
@@ -1225,7 +1245,7 @@ test('a late topic label cancels reply naming and removes its naming control', a
     put({seq:0,at:1,revision:0,kind:'assistant',final:true,blocks:[{type:'text',text:'Reply'}]});
     views.get(0).view.querySelector('.topic-new').onclick();
     put({kind:'topics',target:0,topics:['one'],seq:1,revision:0,at:2,final:true});renderDirty();
-    return [topicNaming,!!views.get(0).view.querySelector('.topic-new'),!!views.get(0).view.querySelector('.topic-input'),views.get(0).view.querySelector('.topic-name')?.title];
+    return [topics.debug.interaction.naming,!!views.get(0).view.querySelector('.topic-new'),!!views.get(0).view.querySelector('.topic-input'),views.get(0).view.querySelector('.topic-name')?.title];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [null,false,false,'one']);
 });
@@ -1256,8 +1276,8 @@ test('message naming keeps focus and text through updates and ignores composing 
       put({...item,revision:1,...(kind==='user'?{text:'Updated'}:{blocks:[{type:'text',text:'Reply grows'}]})});renderDirty();
       results.push([document.activeElement===input,input.value,views.get(seq).view.querySelector('.topic-input')===input,requests.length]);input.onkeydown(key('Enter',false));
     }
-    refreshComposer();element('field').querySelector('.topic-new').onclick();const input=element('field').querySelector('.topic-input');input.value='Composer';input.onkeydown({key:'Enter',isComposing:true,stopPropagation(){}});const composing=composerTopicName();input.onkeydown({key:'Enter',isComposing:false,stopPropagation(){},preventDefault(){}});
-    return [results,requests,composing,composerTopicName()];
+    refreshComposer();element('field').querySelector('.topic-new').onclick();const input=element('field').querySelector('.topic-input');input.value='Composer';input.onkeydown({key:'Enter',isComposing:true,stopPropagation(){}});const composing=topics.composer();input.onkeydown({key:'Enter',isComposing:false,stopPropagation(){},preventDefault(){}});
+    return [results,requests,composing,topics.composer()];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [[[true,'New topic',true,0],[true,'New topic',true,1]],[{sessionId:'s',seq:0,topic:'New topic'},{sessionId:'s',seq:1,topic:'New topic'}],null,'Composer']);
 });
@@ -1270,23 +1290,23 @@ test('message naming sends its turn identity and cancels on Escape, outside clic
   evaluate(`window.openName().onkeydown(window.key('Escape'));window.openName();views.get(0).view.querySelector('.topic-clear').onclick();window.openName()`);
   app.listeners.get('pointerdown')?.({ target:app.context.document.body });
   assert.equal(evaluate("!!views.get(0).view.querySelector('.topic-input')"), false);
-  evaluate(`window.openName();renderTopics();element('topics').querySelector('.topic-panel').querySelector('.topic-entry').querySelector('.topic-archive').onpointerdown({stopPropagation(){}})`);
+  evaluate(`window.openName();topics.render();element('topics').querySelector('.topic-panel').querySelector('.topic-entry').querySelector('.topic-archive').onpointerdown({stopPropagation(){}})`);
   assert.equal(evaluate("!!views.get(0).view.querySelector('.topic-input')"), false);
   evaluate(`window.openName();state={...state,sessionId:'replacement'};refreshComposer()`);
-  assert.deepEqual(JSON.parse(JSON.stringify(evaluate('[window.requests.length,topicNaming,composerTopicName(),topicFilter()]'))), [1,null,null,null]);
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate('[window.requests.length,topics.debug.interaction.naming,topics.composer(),topics.filter()]'))), [1,null,null,null]);
 });
 
 test('archive controls do not filter or drag and archived rows follow live rows without entering the capsule counts', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'archived',archived:true,last:{summary:'Old',at:30}},{name:'live',last:{summary:'Live',at:20}},{name:'older',archived:true,last:{summary:'Older',at:10}}]};renderTopics();
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'archived',archived:true,last:{summary:'Old',at:30}},{name:'live',last:{summary:'Live',at:20}},{name:'older',archived:true,last:{summary:'Older',at:10}}]};topics.render();
     const text=root=>root.textContent+root.children.map(text).join(''),panel=element('topics').querySelector('.topic-panel'),rows=panel.querySelectorAll('.topic-entry'),order=rows.map(row=>row.dataset.topic),capsule=text(element('topics').querySelector('.topic-capsule'));
     const requests=[];let stopped=0;fetchJSON=async(path,body)=>{requests.push([path,body]);return {}};
     const action=rows[0].querySelector('.topic-archive');action.onpointerdown({stopPropagation(){stopped++}});action.onclick({stopPropagation(){stopped++}});
     rows[1].querySelector('.topic-archive').onclick({stopPropagation(){stopped++}});
-    const actions=[rows[0].tagName,action.tagName,action.textContent,rows[1].querySelector('.topic-archive').textContent,stopped,topicFilter(),topicDragged,renaming];
-    setTopic('archived');const selected=element('topics').querySelector('.topic-capsule').querySelector('.topic-name').classList.contains('archived');
-    setTopic(undefined);state={...state,topics:state.topics.map(topic=>({...topic,archived:true}))};renderTopics();const empty=text(element('topics').querySelector('.topic-capsule'));
+    const actions=[rows[0].tagName,action.tagName,action.textContent,rows[1].querySelector('.topic-archive').textContent,stopped,topics.filter(),topics.debug.topicDragged,!!topics.debug.interaction.rename];
+    topics.debug.setTopic('archived');const selected=element('topics').querySelector('.topic-capsule').querySelector('.topic-name').classList.contains('archived');
+    topics.debug.setTopic(undefined);state={...state,topics:state.topics.map(topic=>({...topic,archived:true}))};topics.render();const empty=text(element('topics').querySelector('.topic-capsule'));
     return [order,capsule,requests,actions,selected,empty];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [['live','archived','older'],'#live…',[['/topics/archive',{sessionId:'s',name:'live',archived:true}],['/topics/archive',{sessionId:'s',name:'archived',archived:false}]],['DIV','BUTTON','×','↺',3,null,false,false],true,'…']);
@@ -1294,7 +1314,7 @@ test('archive controls do not filter or drag and archived rows follow live rows 
 
 test('block topic updates preserve the scrolled panel position', async () => {
   const app=await page();
-  const result=app.run(`(()=>{topicMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:Array.from({length:32},(_,index)=>({name:'topic-'+index,last:{summary:'Before',at:index}}))};renderTopics();element('topics').querySelector('.topic-panel').scrollTop=140;apply({...state,type:'state',topics:state.topics.map(topic=>({...topic,last:{...topic.last,summary:'After'}}))});return element('topics').querySelector('.topic-panel').scrollTop})()`);
+  const result=app.run(`(()=>{topics.measure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:Array.from({length:32},(_,index)=>({name:'topic-'+index,last:{summary:'Before',at:index}}))};topics.render();element('topics').querySelector('.topic-panel').scrollTop=140;apply({...state,type:'state',topics:state.topics.map(topic=>({...topic,last:{...topic.last,summary:'After'}}))});return element('topics').querySelector('.topic-panel').scrollTop})()`);
   assert.equal(result,140);
 });
 
@@ -1306,20 +1326,20 @@ test('divider insertion movement and removal update rhythm across rows and reply
 
 test('streamed prose in a run follower updates only its preceding rhythm neighbour', async () => {
   const app=await page();
-  const result=app.run(`(()=>{element('items').hidden=false;state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};setTopic('one');const tool={type:'tool',topic:'one',id:'tool',name:'bash',args:{text:'{}'},state:{type:'done',error:false,result:{text:'',cut:0,images:[]}}};const reply=(seq,blocks,revision=0)=>({seq,revision,at:1,kind:'assistant',final:true,blocks,stop:'stop',error:''});put({seq:0,revision:0,at:1,kind:'agent',final:true,topic:'one',direction:'in',from:{name:'helper'},inbound:{form:'report',relation:'child'},text:{text:'ready',cut:0}});put(reply(1,[tool]));put(reply(2,[{type:'text',topic:'two',text:'hidden boundary'}]));put(reply(3,[tool]));const previous=views.get(0).view.querySelector('.run'),next=views.get(3).view.querySelector('.run'),before=previous.dataset.rhythm;Object.defineProperty(next.dataset,'rhythm',{get:()=> 'block',set:()=>{throw Error('Untouched row was rewritten')}});put(reply(1,[tool,{type:'text',topic:'one',text:'Streamed prose'}],1));return [before,previous.dataset.rhythm]})()`);
+  const result=app.run(`(()=>{element('items').hidden=false;state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};topics.debug.setTopic('one');const tool={type:'tool',topic:'one',id:'tool',name:'bash',args:{text:'{}'},state:{type:'done',error:false,result:{text:'',cut:0,images:[]}}};const reply=(seq,blocks,revision=0)=>({seq,revision,at:1,kind:'assistant',final:true,blocks,stop:'stop',error:''});put({seq:0,revision:0,at:1,kind:'agent',final:true,topic:'one',direction:'in',from:{name:'helper'},inbound:{form:'report',relation:'child'},text:{text:'ready',cut:0}});put(reply(1,[tool]));put(reply(2,[{type:'text',topic:'two',text:'hidden boundary'}]));put(reply(3,[tool]));const previous=views.get(0).view.querySelector('.run'),next=views.get(3).view.querySelector('.run'),before=previous.dataset.rhythm;Object.defineProperty(next.dataset,'rhythm',{get:()=> 'block',set:()=>{throw Error('Untouched row was rewritten')}});put(reply(1,[tool,{type:'text',topic:'one',text:'Streamed prose'}],1));return [before,previous.dataset.rhythm]})()`);
   assert.deepEqual(Array.from(result),['compact','block']);
 });
 
 test('topic modes switch at thirty measured cells and resize across the threshold', async () => {
   const app = await page();
-  assert.deepEqual(Array.from(app.run(`[topicMode(720+28+29.9*8,720,8),topicMode(720+28+30*8,720,8)]`)),['line','block']);
-  const result=app.run(`(()=>{topicMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};const modes=[];for(const width of [987.2,988,987.2]){document.documentElement.clientWidth=width;renderTopics();resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);modes.push(element('topics').dataset.mode)}return modes})()`);
+  assert.deepEqual(Array.from(app.run(`[topics.debug.topicMode(720+28+29.9*8,720,8),topics.debug.topicMode(720+28+30*8,720,8)]`)),['line','block']);
+  const result=app.run(`(()=>{topics.measure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};const modes=[];for(const width of [987.2,988,987.2]){document.documentElement.clientWidth=width;topics.render();resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);modes.push(element('topics').dataset.mode)}return modes})()`);
   assert.deepEqual(Array.from(result),['line','block','line']);
 });
 
 test('the permanent topic block does not consume Escape', async () => {
   const app=await page();
-  const result=app.run(`(()=>{topicMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,working:true,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};let stopped=0;stop=async()=>{stopped++};renderTopics();return {get stopped(){return stopped},get hidden(){return element('topics').querySelector('.topic-panel').hidden}}})()`);
+  const result=app.run(`(()=>{topics.measure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,working:true,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};let stopped=0;stop=async()=>{stopped++};topics.render();return {get stopped(){return stopped},get hidden(){return element('topics').querySelector('.topic-panel').hidden}}})()`);
   app.listeners.get('keydown')?.({key:'Escape',target:app.context.document.body,preventDefault(){}});
   assert.equal(result.stopped,1);
   assert.equal(result.hidden,false);
@@ -1327,13 +1347,13 @@ test('the permanent topic block does not consume Escape', async () => {
 
 test('line topic names apply their filter directly', async () => {
   const app=await page();
-  const result=app.run(`state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};renderTopics();element('topics').querySelector('.topic-capsule').querySelector('.topic-name').onclick?.();topicFilter()`);
+  const result=app.run(`state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};topics.render();element('topics').querySelector('.topic-capsule').querySelector('.topic-name').onclick?.();topics.filter()`);
   assert.equal(result,'one');
 });
 
 test('topic block rows toggle filters and line names filter without opening the panel', async () => {
   const app=await page();
-  const result=app.run(`(()=>{topicMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one',last:{summary:'Last message',at:1}}]};renderTopics();const block=[element('topics').dataset.mode,!element('topics').querySelector('.topic-capsule'),element('topics').querySelector('.topic-panel').hidden];element('topics').querySelector('.topic-entry').onclick({detail:0});block.push(topicFilter(),element('topics').querySelector('.topic-entry').classList.contains('current'));element('topics').querySelector('.topic-entry').onclick({detail:0});block.push(topicFilter());setTopic('one');element('topics').querySelector('.topic-all').onclick();block.push(topicFilter());document.documentElement.clientWidth=600;renderTopics();const capsule=element('topics').querySelector('.topic-capsule');capsule.querySelector('.topic-name').onclick();const line=[topicFilter(),element('topics').querySelector('.topic-panel').hidden];setTopic(undefined);element('topics').querySelector('.topic-overflow').onclick();line.push(element('topics').querySelector('.topic-panel').hidden);return [block,line]})()`);
+  const result=app.run(`(()=>{topics.measure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one',last:{summary:'Last message',at:1}}]};topics.render();const block=[element('topics').dataset.mode,!element('topics').querySelector('.topic-capsule'),element('topics').querySelector('.topic-panel').hidden];element('topics').querySelector('.topic-entry').onclick({detail:0});block.push(topics.filter(),element('topics').querySelector('.topic-entry').classList.contains('current'));element('topics').querySelector('.topic-entry').onclick({detail:0});block.push(topics.filter());topics.debug.setTopic('one');element('topics').querySelector('.topic-all').onclick();block.push(topics.filter());document.documentElement.clientWidth=600;topics.render();const capsule=element('topics').querySelector('.topic-capsule');capsule.querySelector('.topic-name').onclick();const line=[topics.filter(),element('topics').querySelector('.topic-panel').hidden];topics.debug.setTopic(undefined);element('topics').querySelector('.topic-overflow').onclick();line.push(element('topics').querySelector('.topic-panel').hidden);return [block,line]})()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)),[['block',true,false,'one',true,null,null],['one',true,false]]);
 });
 
@@ -1341,7 +1361,7 @@ test('the capsule shows every name when all measured names fit', async () => {
   const app = await page();
   const result = app.run(`
     state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:['one','two','three'].map((name,index)=>({name,last:{summary:name,at:3-index}}))};
-    renderTopics();
+    topics.render();
     element('topics').querySelector('.topic-open').children.filter(node=>node.classList.contains('topic-name')).map(node=>node.dataset.topic);
   `);
   assert.deepEqual(Array.from(result),['one','two','three']);
@@ -1350,7 +1370,7 @@ test('the capsule shows every name when all measured names fit', async () => {
 test('measured capsule overflow and resize keep whole names and skip unchanged streaming state', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:['one','two','three'].map((name,index)=>({name,last:{summary:name,at:3-index}}))};renderTopics();
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:['one','two','three'].map((name,index)=>({name,last:{summary:name,at:3-index}}))};topics.render();
     const capsule=element('topics').querySelector('.topic-capsule'),button=capsule.querySelector('.topic-open');
     capsule.getBoundingClientRect=()=>({width:100});button.getBoundingClientRect=()=>({width:80});
     const nameWidths={one:80,two:90,three:100};
@@ -1361,15 +1381,15 @@ test('measured capsule overflow and resize keep whole names and skip unchanged s
     let reads=0;
     Object.defineProperty(button,'scrollWidth',{get(){reads++;return Math.round(button.children.reduce((sum,child)=>sum+widthOf(child),5*(button.children.length-1)))}});
     const snapshot=()=>[button.children.filter(child=>child.classList.contains('topic-name')).map(child=>child.dataset.topic),button.querySelector('.topic-more')?.textContent??''];
-    fitTopics(500);const all=snapshot();
+    topics.debug.fitTopics(500);const all=snapshot();
     document.documentElement.clientWidth=300;resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);const overflow=snapshot();
     document.documentElement.clientWidth=200;resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);const smaller=snapshot();
     document.documentElement.clientWidth=400;resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);const larger=snapshot();
     const before=reads;apply({...state,type:'state',topics:state.topics.map(topic=>({...topic,last:{...topic.last,summary:'Streaming'}}))});const unchanged=reads===before;
     document.documentElement.clientWidth=120;resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);
     const smallest=snapshot(),single=button.classList.contains('single');
-    Object.assign(nameWidths,{one:80.2,two:90.2,three:100.2});fitTopics(286);const fractionalFit=snapshot();
-    Object.assign(nameWidths,{one:80.1,two:90.2,three:100.1});fitTopics(285.95);const fractionalOverflow=snapshot();
+    Object.assign(nameWidths,{one:80.2,two:90.2,three:100.2});topics.debug.fitTopics(286);const fractionalFit=snapshot();
+    Object.assign(nameWidths,{one:80.1,two:90.2,three:100.1});topics.debug.fitTopics(285.95);const fractionalOverflow=snapshot();
     return [all,overflow,smaller,larger,unchanged,smallest,single,fractionalFit,fractionalOverflow];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)),[[['one','two','three'],''],[['one','two'],'+1'],[['one'],'+2'],[['one','two','three'],''],true,[['one'],'+2'],true,[['one','two'],'+1'],[['one'],'+2']]);
@@ -1378,7 +1398,7 @@ test('measured capsule overflow and resize keep whole names and skip unchanged s
 
 test('topic ages use now, minutes, hours and days', async () => {
   const app = await page();
-  assert.deepEqual(Array.from(app.run(`[topicAge(0,59000),topicAge(0,60000),topicAge(0,3600000),topicAge(0,86400000)]`)), ['now','1m','1h','1d']);
+  assert.deepEqual(Array.from(app.run(`[topics.debug.topicAge(0,59000),topics.debug.topicAge(0,60000),topics.debug.topicAge(0,3600000),topics.debug.topicAge(0,86400000)]`)), ['now','1m','1h','1d']);
 });
 
 test('topic capsules sort activity, keep palette identity and show the filter controls', async () => {
@@ -1386,15 +1406,15 @@ test('topic capsules sort activity, keep palette identity and show the filter co
   const result = app.run(`
     const text=node=>node.textContent+node.children.map(text).join('');
     state={...state,name:'pi',life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'s',topics:[{name:'one',last:{summary:'**First**',at:1}},{name:'two',last:{summary:'Second',at:2}}]};
-    renderTopics();const two=text(element('topics').querySelector('.topic-capsule'));
-    state={...state,topics:[state.topics[0]]};renderTopics();const one=text(element('topics').querySelector('.topic-capsule'));
+    topics.render();const two=text(element('topics').querySelector('.topic-capsule'));
+    state={...state,topics:[state.topics[0]]};topics.render();const one=text(element('topics').querySelector('.topic-capsule'));
     state={...state,topics:['one','two','three','four','five','six','seven'].map((name,index)=>({name,last:{summary:name,at:index+1}}))};
-    renderTopics();const many=text(element('topics').querySelector('.topic-capsule'));
-    const colours=[topicColour('one'),topicColour('two'),topicColour('seven')];
-    state={...state,topics:[...state.topics,{name:'pending-old'},{name:'pending-new'}]};renderTopics();const pendingNames=element('topics').querySelector('.topic-open').children.filter(node=>node.classList.contains('topic-name')).slice(0,2).map(node=>node.dataset.topic);
-    setTopic('two');renderTopics();refreshComposer();
+    topics.render();const many=text(element('topics').querySelector('.topic-capsule'));
+    const colours=[topics.debug.topicColour('one'),topics.debug.topicColour('two'),topics.debug.topicColour('seven')];
+    state={...state,topics:[...state.topics,{name:'pending-old'},{name:'pending-new'}]};topics.render();const pendingNames=element('topics').querySelector('.topic-open').children.filter(node=>node.classList.contains('topic-name')).slice(0,2).map(node=>node.dataset.topic);
+    topics.debug.setTopic('two');topics.render();refreshComposer();
     const filtered=text(element('topics').querySelector('.topic-capsule')),foot=!!element('field').querySelector('.topic-cell'),placeholder=element('prompt').children[0].placeholder;
-    toggleTopics();const panel=!element('topics').querySelector('.topic-panel').hidden;
+    topics.debug.toggleTopics();const panel=!element('topics').querySelector('.topic-panel').hidden;
     [one,two,many,colours,filtered,foot,placeholder,panel,pendingNames];
   `);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), ['#one…','#two·#one…','#seven·#six·#five·#four·#three·#two·#one…',['var(--topic-0)','var(--topic-1)','var(--topic-0)'],'#two×',false,'Message koa…',true,['pending-new','pending-old']]);
@@ -1408,8 +1428,8 @@ test('unfiltered roots keep the original foot and wrap replies without a topic',
   const result = app.run(`(()=>{
     const foot=node('div'),model=element('model-cell'),initial=element(${JSON.stringify(first)});model.id='model-cell';initial.id=${JSON.stringify(first)};foot.append(initial);if(initial!==model)foot.append(model);
     const cases=[];
-    for(const topics of [[],[{name:'work'}]]){
-      state={...state,life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'old-dom',topics};renderTopics();
+    for(const names of [[],[{name:'work'}]]){
+      state={...state,life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'old-dom',topics:names};topics.render();
       const item={kind:'assistant',seq:0,revision:1,at:1,final:true,blocks:[{type:'text',text:'plain reply'}],stop:'stop',error:''};accept(item);renderItem(visible(0));
       const reply=views.get(0).view;cases.push([foot.children[0].id,foot.children.some(child=>child.className.includes('topic-')),reply.children.map(child=>child.className),reply.querySelectorAll('.topic-section,.topic-mark,.topic-name').length]);
     }
@@ -1421,7 +1441,7 @@ test('unfiltered roots keep the original foot and wrap replies without a topic',
 test('a filtered composer keeps the working and compaction verbs', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    state={...state,name:'ko',life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'verb',topics:[{name:'work'}]};setTopic('work');
+    state={...state,name:'ko',life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'verb',topics:[{name:'work'}]};topics.debug.setTopic('work');
     const hints=[];
     for(const [working,compaction] of [[true,'idle'],[true,'running'],[false,'idle']]){state={...state,working,compaction};refreshComposer();hints.push(element('prompt').children[0].placeholder)}
     return hints;
@@ -1451,12 +1471,12 @@ test('only pending implicit users show under a filter and chips stay on reply se
     state={...state,working:true,view:{id:'root',path:[],type:'root'},sessionId:'s',topics:[{name:'one'},{name:'two'}]};
     const user=seq=>({kind:'user',seq,revision:1,at:1,final:true,text:'request',images:[],attachments:[]});
     const reply=(seq,blocks)=>({kind:'assistant',seq,revision:1,at:2,final:true,blocks,stop:'stop',error:''});
-    accept(user(0));setTopic('one');const waits=!!visible(0);
+    accept(user(0));topics.debug.setTopic('one');const waits=!!visible(0);
     if(visible(0))renderItem(visible(0));const waiting=views.get(0)?.view.querySelector('.topic-waiting')?.textContent;
     accept({kind:'topics',seq:1,revision:1,at:2,final:true,target:0,topics:['two']});const removed=!visible(0);
     accept(user(2));accept({kind:'topics',seq:3,revision:1,at:2,final:true,target:2,topics:['one']});const stayed=!!visible(2);
     accept(user(4));const waitingAgain=!!visible(4);apply({...state,type:'state',working:false});const settled=!visible(4);
-    setTopic(undefined);
+    topics.debug.setTopic(undefined);
     accept(reply(5,[{type:'text',topic:'one',text:'First'}]));
     accept(user(6));accept(reply(7,[{type:'text',topic:'one',text:'Same'},{type:'text',text:'Without a topic'},{type:'text',topic:'two',text:'Other'}]));
     renderItem(visible(5));renderItem(visible(6));renderItem(visible(7));
@@ -1473,11 +1493,11 @@ test('a resumed reset before state clears the old filter and restores rows', asy
   const result = app.run(`
     state={...state,sessionId:'old',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};
     fetch=async()=>({ok:true,json:async()=>({epoch:'new',more:false,items:[]})});
-    setTopic('one');
+    topics.debug.setTopic('one');
     apply({type:'reset',epoch:'new',more:false,items:[{kind:'user',seq:0,revision:1,at:1,final:true,topic:'two',text:'new session',images:[],attachments:[]}]});
     const hidden=order.length===0;
     apply({...state,type:'state',sessionId:'new',topics:[{name:'two'}]});
-    [hidden,order.includes(0),historyRequest?.topic===undefined];
+    [hidden,order.includes(0),transcriptHistory.debug.request?.topic===undefined];
   `);
   assert.deepEqual(Array.from(result), [true,true,true]);
 });
@@ -1487,8 +1507,8 @@ test('topic changes discard in-flight history and composer sends only the active
   const result = await app.run(`(async()=>{
     state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},life:{type:'ready'},topics:[{name:'one'},{name:'two'}]};
     epoch='e';const held=[];rendered=async()=>{};fetch=async()=>new Promise(resolve=>{held.push(resolve)});
-    setTopic('one');const previous=historyRequest;
-    setTopic('two');const current=historyRequest;
+    topics.debug.setTopic('one');const previous=transcriptHistory.debug.request;
+    topics.debug.setTopic('two');const current=transcriptHistory.debug.request;
     held[1]({ok:true,json:async()=>({epoch:'e',more:false,items:[{kind:'user',seq:2,revision:1,at:1,final:true,topic:'two',text:'two',images:[],attachments:[]}]})});
     await current.done;
     held[0]({ok:true,json:async()=>({epoch:'e',more:false,items:[{kind:'user',seq:0,revision:1,at:1,final:true,topic:'one',text:'stale',images:[],attachments:[]}]})});
@@ -1502,7 +1522,7 @@ test('topic changes discard in-flight history and composer sends only the active
     editor.setText('child');await send();
     const child=sent.topic;
     apply({...state,type:'state',sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]});
-    return [previous!==current,dropped,two,child===undefined,topicFilter(),historyBefore];
+    return [previous!==current,dropped,two,child===undefined,topics.filter(),transcriptHistory.debug.before];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [true, true, 'two', true, 'two', null]);
 });
@@ -1585,7 +1605,7 @@ test("composer handlers send the selected mode and quit", async () => {
 
 async function connectSource(name: string) {
   const source = stripTypeScriptTypes(await readFile(new URL(name, import.meta.url), "utf8"));
-  return source.slice(source.indexOf("let source"), source.indexOf("function older()"));
+  return source.slice(source.indexOf("let source"), source.indexOf("const sessionHost"));
 }
 
 test("starting and switching show a placeholder over an inert field and no status cell", async () => {
@@ -2294,7 +2314,7 @@ test("buffered patches drain against the snapshot by revision", async () => {
     const app = await page();
     let release: (value: { ok: boolean; json: () => Promise<object> }) => void = () => {};
     app.context.fetch = () => new Promise(resolve => { release = resolve; });
-    const result = app.run(`let connects=0;connect=()=>{connects++};accept=item=>items.set(item.seq,item);rendered=()=>Promise.resolve();epoch='e';first=4;more=true;${setup};const loading=older();const patch=(seq,baseRevision,revision,suffix)=>apply({type:'patch',seq,baseRevision,revision,final:false,stop:'',error:'',blocks:[{index:0,suffix}]});${buffered};loading.then(()=>[items.get(3).blocks[0].text,items.get(2)?.blocks[0].text,connects])`);
+    const result = app.run(`let connects=0;connect=()=>{connects++};accept=item=>items.set(item.seq,item);rendered=()=>Promise.resolve();epoch='e';first=4;transcriptHistory.debug.more=true;${setup};const loading=transcriptHistory.earlier();const patch=(seq,baseRevision,revision,suffix)=>apply({type:'patch',seq,baseRevision,revision,final:false,stop:'',error:'',blocks:[{index:0,suffix}]});${buffered};loading.then(()=>[items.get(3).blocks[0].text,items.get(2)?.blocks[0].text,connects])`);
     release({ ok: true, json: async () => ({ epoch: "e", more: false, items }) });
     return Array.from(await result);
   };
@@ -2312,15 +2332,15 @@ test("a history reply from before an epoch reset is dropped and does not block t
     count: () => releases.length,
   });
   const result = await app.run(`(async()=>{
-    accept=item=>items.set(item.seq,item);rendered=()=>Promise.resolve();epoch='e';first=4;more=true;
-    const one=older();
+    accept=item=>items.set(item.seq,item);rendered=()=>Promise.resolve();epoch='e';first=4;transcriptHistory.debug.more=true;
+    const one=transcriptHistory.earlier();
     apply({type:'reset',epoch:'f',more:true,items:[{seq:7,revision:0,kind:'assistant',final:true,blocks:[]}]});first=7;
-    const two=older(), started=count();
-    release(0,'f',3);await one;older();
+    const two=transcriptHistory.earlier(), started=count();
+    release(0,'f',3);await one;transcriptHistory.earlier();
     const stale=[items.has(3),count()];
     release(1,'e',5);await two;
-    const wrong=[items.has(5),more];
-    const third=older();release(2,'f',6);await third;
+    const wrong=[items.has(5),transcriptHistory.more];
+    const third=transcriptHistory.earlier();release(2,'f',6);await third;
     return {started,stale,wrong,added:[count(),items.has(6)]};
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), { started: 2, stale: [false, 2], wrong: [false, true], added: [3, true] });
@@ -2526,13 +2546,13 @@ test('assistant steps without a topic and a job with a topic share one run witho
     put({seq:3,at:3,kind:'agent',topic:'other',final:true,direction:'in',from:{name:'worker'},text:{text:'Report',cut:0},inbound:{form:'report'}});
     put({seq:4,at:4,kind:'notice',final:true,customType:'notice',from:'worker',text:'Notice'});
     const unfiltered=[[...openers.keys()].filter(key=>key.startsWith('run:')), [1,3,4].map(seq=>views.get(seq).view.querySelectorAll('.topic-mark,.topic-name').length)];
-    topicFilters.set(filterKey(),'topics'); refreshTopicItems(); renderDirty();
+    topics.debug.scopeData(topics.scope()).filter='topics'; refreshTopicItems(); renderDirty();
     const filtered=[visible(0)?.blocks.length,!!visible(1),visible(2)?.blocks.length,!!visible(3)];
-    topicFilters.set(filterKey(),'other'); refreshTopicItems();
+    topics.debug.scopeData(topics.scope()).filter='other'; refreshTopicItems();
     const other=[0,1,2,3].map(seq=>!!visible(seq));
-    topicFilters.delete(filterKey()); refreshTopicItems();
+    delete topics.debug.scopeData(topics.scope()).filter; refreshTopicItems();
     put(reply(5,[{type:'text',text:'Boundary'}])); put(reply(6,[tool('read')]));
-    topicFilters.set(filterKey(),'topics'); refreshTopicItems();
+    topics.debug.scopeData(topics.scope()).filter='topics'; refreshTopicItems();
     return [unfiltered,filtered,other,!!visible(6)];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [[['run:0:0'], [0,0,0]], [2,true,2,true], [false,false,false,false], false]);
@@ -2554,7 +2574,7 @@ test('notices join an open run but do not open one after prose', async () => {
     put({seq:4,at:4,kind:'notice',final:true,customType:'note',from:'worker',text:'Lone notice'});
     put(reply(5,[tool('third')]));
     const standalone=!!views.get(4).view.querySelector('.nrow'), next=runOwner(runContext(),{kind:'block',seq:5,index:0});
-    topicFilters.set(filterKey(),'one'); refreshTopicItems();
+    topics.debug.scopeData(topics.scope()).filter='one'; refreshTopicItems();
     return [steps,marks.names.children.map(child=>child.textContent).join(', '),find.folds,find.step,copied.includes('Careful'),standalone,next,!!visible(1),visible(2)?.error,body.folds];
   })()`);
   const value = JSON.parse(JSON.stringify(result));
@@ -2594,7 +2614,7 @@ test('a filtered bang row keeps the runs on either side separate', async () => {
   const result = app.run(`(()=>{
     const tool=id=>({type:'tool',id,name:'read',topic:'one',args:{text:'{}'},state:{type:'pending'}}),reply=(seq)=>({seq,at:seq,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks:[tool(String(seq))]});
     put(reply(0)); put({seq:1,at:1,kind:'bash',final:true,command:'true',excludeFromContext:false,result:{output:{text:'',cut:0},cancelled:false,truncated:false}}); put(reply(2));
-    topicFilters.set(filterKey(),'one'); refreshTopicItems();
+    topics.debug.scopeData(topics.scope()).filter='one'; refreshTopicItems();
     return runOwner(runContext(),{kind:'block',seq:2,index:0});
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), {kind:'block',seq:2,index:0});
@@ -2630,7 +2650,7 @@ test('step-only replies never render a topic mark and streaming keeps active fin
     put(reply(0,'one','Before')); put(reply(1,undefined,'Late'));
     put({seq:2,at:2,kind:'topics',final:true,target:1,topics:['one']});
     const marks=[0,1].map(seq=>views.get(seq).view.querySelectorAll('.topic-section>.topic-mark').length);
-    topicFilters.set(filterKey(),'one'); refreshTopicItems();
+    topics.debug.scopeData(topics.scope()).filter='one'; refreshTopicItems();
     const active={query:'Before',backwards:false,started:true}; find=active;
     put(reply(0,'one','Before and after'));
     return [marks,find===active];
@@ -2652,7 +2672,7 @@ test('mixed run find keeps hidden prose as a boundary under a topic filter', asy
     agent.folds.forEach(key=>openers.get(key).open());
     put({seq:3,at:3,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{type:'text',text:'Hidden prose',topic:'two'}]});
     put({seq:4,at:4,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{...tool,id:'after'}]});
-    topicFilters.set(filterKey(),'one'); refreshTopicItems();
+    topics.debug.scopeData(topics.scope()).filter='one'; refreshTopicItems();
     const after=findSegments(visible(4),findContext()).find(segment=>segment.text==='read output');
     return [agent.folds,output.folds,(copied.match(/Unique report/g)||[]).length,copied.includes('Unique output'),after.folds[0]];
   })()`);
@@ -3454,7 +3474,7 @@ test('an older page keeps the reader where they are now, also after they moved w
   page.reader(200);
   states.push(diagnostic());
   const release = page.gate([5, 6, 7, 8, 9].map(page.text));
-  void page.evaluate('older()');
+  void page.evaluate('transcriptHistory.earlier()');
   page.reader(300);
   states.push(diagnostic());
   release();
@@ -4622,7 +4642,7 @@ test('a reset followed by its initial state still fills short history', async ()
   page.evaluate(`apply({type:'reset',epoch:'a',more:true,items:${JSON.stringify(page.rows(20, 21))}});apply({...state,type:'state',sessionId:'initial',view:{id:'initial',type:'root',path:[]}})`);
   for (let turn = 0; turn < 6; turn++) { page.settle(4); await page.settled(); }
   assert.equal(requests.length, 1);
-  assert.equal(page.evaluate('more'), false);
+  assert.equal(page.evaluate('transcriptHistory.more'), false);
 });
 
 test('a short reset continues through multiple older pages', async () => {
@@ -5031,7 +5051,7 @@ test('metadata-only history advances the cursor and stops requesting after the l
   page.open(page.rows(20, 21), true);
   for (let turn = 0; turn < 8; turn++) { page.settle(4); await page.settled(); }
   const auto = [...requests];
-  void page.evaluate('older()');
+  void page.evaluate('transcriptHistory.earlier()');
   for (let turn = 0; turn < 4; turn++) { page.settle(4); await page.settled(); }
   assert.deepEqual({ auto, afterClick: requests }, { auto: [20, 17], afterClick: [20, 17] });
 });

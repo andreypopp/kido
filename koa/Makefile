@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := build
 OUT ?= ../build/koa
 PREFIX ?= $(HOME)/.local
-KOA_SRC := koa-classify.ts koa-timer.ts koa-editor.ts koa-float.ts koa-feed.ts koa-job-log.ts koa-job-view.ts koa-records.ts koa-transcript.ts koa-image.ts koa-http.ts koa.ts koa-attach.ts koa-queue.ts koa-complete.ts koa-shell.ts koa-shell.sh koa-child.ts koa-sdk.ts koa-resume.ts koa-agents.ts koa-status.ts koa-view.ts koa-inbox.ts koa-args.ts koa-commands.ts koa-session-dir.ts koa-identity.ts koa-assemble.ts koa-agent.ts text.ts markdown-line.ts agents.ts token.ts path-token.ts records.ts topic-list.ts topic-turn.ts topic-run.ts completion-context.ts runtime-exec.ts prompt.ts package.json
+KOA_SRC := $(filter-out %.test.ts %-fixture.ts koa-fake-provider.ts,$(wildcard *.ts)) koa-shell.sh package.json
 KOA_ESBUILD = node_modules/.bin/esbuild page/page.ts page/page.css page/page.html --loader:.html=copy --bundle --format=esm --platform=browser --target=safari26 --outdir=$(OUT)/share/koa/koa
 
 .PHONY: build watch install typecheck lint test check prompts visual verify
