@@ -120,9 +120,9 @@ function captureTarget(name: string, scenario: Scenario): { selector: string; pa
       return { selector: '#field', padding: { top: 8, left: 8, bottom: 8, right: 8 } };
     case "threads/thread-create-reply-hover":
     case "threads/thread-create-message-name":
-      return { selector: '#items > [data-seq="8"] .msg.prose', padding: { top: 8, left: 8, bottom: 8, right: 8 } };
+      return { selector: '#items > [data-seq="11"] .msg.prose', padding: { top: 8, left: 8, bottom: 8, right: 8 } };
     case "threads/thread-create-user-hover":
-      return { selector: '#items > [data-seq="7"]', padding: { top: 8, left: 8, bottom: 8, right: 8 } };
+      return { selector: '#items > [data-seq="10"]', padding: { top: 8, left: 8, bottom: 8, right: 8 } };
     case "threads/thread-archive-panel-live":
     case "threads/thread-archive-panel-restore":
     case "threads/thread-archive-block":
@@ -322,6 +322,8 @@ async function prepareCapture(name: string, scenario: Scenario, measured: boolea
                 ready = "document.querySelector('#items').textContent.includes('Then the save step stays as mocked: four rows, the session row last.')"
             break;
             default:
+                if (name === 'thread-create-placement-geometry') { ready = "document.querySelector('#items').textContent.includes('Then the save step stays as mocked: four rows, the session row last.')"; break; }
+                if (name.startsWith('thread-create-filter-')) { ready = "document.querySelector('#items').textContent.includes('Verification passed; I merge the unit next.')"; break; }
                 if (name.startsWith('thread-create-')) { ready = "document.querySelector('#items').textContent.includes('A fix is in the test’s wait.')"; break; }
                 if (name.startsWith('thread-archive-')) { ready = "document.querySelector('#items').textContent.includes('Then the save step stays as mocked: four rows, the session row last.')"; break; }
                 require(false, `No thread capture phase for ${name}`)
@@ -370,7 +372,7 @@ async function prepareCapture(name: string, scenario: Scenario, measured: boolea
 async function driveThreads(web: Page, phases: string[], capture: (name: string) => Promise<void>, advance: () => Promise<void>) {
         for (const [index, name] of phases.entries()) {
             if (index > 0) {
-                await webviewJS(web, "(()=>{document.querySelector('.thread-clear')?.click();document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));window.composer.setText('');return true})()")
+                await webviewJS(web, "(()=>{document.querySelector('.thread-clear')?.click();if(document.querySelector('.thread-input,.thread-rename'))document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));const threads=document.querySelector('#threads');if(threads.dataset.mode==='line'&&threads.querySelector('.thread-panel')?.hidden===false)(threads.querySelector('.thread-overflow')??threads.querySelector('.thread-open'))?.click();window.composer.setText('');return true})()")
                 await advance()
             }
             await web.setViewportSize({ width: name === 'thread-archive-block' ? 1280 : name == "threads-marks-narrow" ? 448 : name.startsWith("threads-drag") || name == "threads-rename" || name == "threads-pending" ? 980 : 960, height: 557 })
@@ -394,7 +396,7 @@ async function driveThreads(web: Page, phases: string[], capture: (name: string)
             const filtered = await webviewJS(web, "document.querySelector('#items .thread-chip:not(.thread-new)')===null&&document.querySelector('#thread-cell')===null&&document.querySelector('.composer-thread .thread-name').textContent==='#sidebar'&&document.querySelector('.thread-capsule .thread-clear')!==null")
             equal(filtered, true, "Filtered messages have time-only headers and the composer owns the chip")
         }
-        if (name.includes("many") || name.endsWith("panel")) {
+        if (name.includes("many") || name === 'threads-filter-panel') {
             await webviewJS(web, "(()=>{document.querySelector(document.querySelector('.thread-clear')?'.thread-open':'.thread-overflow').click();return true})()")
             await webviewUntil(web, "!document.querySelector('.thread-panel').hidden")
         }
@@ -416,12 +418,88 @@ async function driveThreads(web: Page, phases: string[], capture: (name: string)
                 await webviewUntil(web, "document.querySelector('.drop-target')!==null")
             }
         }
-        if (name.startsWith('thread-create-')) {
+        if (name.startsWith('thread-create-filter-')) {
+            await webviewUntil(web, "document.querySelector('#items').textContent.includes('Verification passed; I merge the unit next.')")
+            await koaMeasured(web, '#threads')
+            if (name.endsWith('-block')) {
+                await web.setViewportSize({ width: 1280, height: 557 })
+                await webviewUntil(web, "document.querySelector('#threads').dataset.mode==='block'")
+                await web.locator('.thread-entry[data-thread=sidebar]').click()
+            } else if (name.endsWith('-panel')) {
+                await web.setViewportSize({ width: 800, height: 557 })
+                await webviewUntil(web, "document.querySelector('#threads').dataset.mode==='line'")
+                await web.locator('.thread-overflow').click()
+                await webviewUntil(web, "!document.querySelector('.thread-panel').hidden")
+                await web.locator('.thread-entry[data-thread=sidebar]').click()
+            } else if (name.endsWith('-capsule')) await web.locator('.thread-open>.thread-name[data-thread=sidebar]').click()
+            await webviewUntil(web, "document.querySelector('.thread-entry.current')?.dataset.thread==='sidebar'")
+            equal(await web.locator('.composer-thread .thread-name').allTextContents(), ['#sidebar'], 'An active filter supplies the composer thread')
+            await web.locator('.composer-thread .thread-clear').click()
+            await web.setViewportSize({ width: 1280, height: 600 })
+            equal(await web.locator('.composer-thread .thread-new').isVisible(), true, 'An explicit drop remains dropped under the active filter')
+            if (name.endsWith('-block')) {
+                await webviewJS(web, "(()=>{for(let seq=100;seq<112;seq++)window.threadSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'item',item:{kind:'assistant',seq,revision:0,at:Date.now(),final:true,stop:'stop',error:'',blocks:[{type:'text',thread:'palette',text:seq===100?'Unread palette start.':'More unread palette content. '.repeat(50)}]}})}));return true})()")
+                await web.locator('.thread-entry[data-thread=palette]').click()
+                await webviewUntil(web, "document.querySelector('.newmsgs')!==null")
+                await koaMeasured(web, '#items')
+                const divider = await web.locator('.newmsgs').boundingBox(), viewport = await web.locator('#scroll').boundingBox()
+                require(divider !== null && viewport !== null && divider.y >= viewport.y && divider.y <= viewport.y + 20, `Filter placement keeps the divider visible at the top: ${JSON.stringify({divider,viewport})}`)
+            }
+            if (!name.endsWith('-restored')) {
+                const step = await webviewJS<number>(web, "fetch('/replay/status').then(r=>r.json()).then(s=>s.step)")
+                await web.locator('.thread-all').click()
+                await webviewUntil(web, `fetch('/replay/status').then(r=>r.json()).then(s=>s.step>${step})`)
+            }
+        } else if (name === 'thread-create-placement-geometry') {
+            equal(await web.locator('.thread-capsule').evaluate(node => node.getBoundingClientRect().top), 8, 'Line capsule stays at 8px')
+            const transcriptTop = await web.locator('#transcript').evaluate(node => node.getBoundingClientRect().top)
+            await web.setViewportSize({ width: 1280, height: 557 })
+            await webviewUntil(web, "document.querySelector('#threads').dataset.mode==='block'")
+            equal(await web.locator('#threads').evaluate(node => node.getBoundingClientRect().top), 48, 'Block widget clears the hover toolbar')
+            equal(await web.locator('#transcript').evaluate(node => node.getBoundingClientRect().top), transcriptTop, 'Block mode preserves transcript top')
+            equal(await web.locator('.thread-panel').evaluate(node => getComputedStyle(node).maxHeight), '501px', 'Block panel keeps its bottom gap')
+            await web.setViewportSize({ width: 1280, height: 180 })
+            equal(await web.locator('.thread-panel').evaluate(node => node.getBoundingClientRect().bottom <= innerHeight - 8), true, 'Many-thread block list fits a short viewport')
+            await web.setViewportSize({ width: 960, height: 557 })
+        } else if (name === 'thread-create-hover-geometry') {
+            for (const kind of ['user', 'assistant']) for (const threaded of [true, false]) {
+                await web.mouse.move(0, 556)
+                const row = web.locator(`#items .${kind} .message-header`).filter({ has: web.locator(threaded ? '.thread-chip:not(.thread-new)' : '.thread-new:first-child') }).last()
+                await row.scrollIntoViewIfNeeded()
+                const measure = () => row.evaluate(header => [header, header.querySelector('.thread-chip:not(.thread-new)'), header.nextElementSibling, header.querySelector('time')].map(node => node?.getBoundingClientRect().toJSON() ?? null))
+                const before = await measure()
+                await (threaded ? row.locator('.thread-chip:not(.thread-new)') : row).hover()
+                equal(await measure(), before, `Hover preserves ${kind} ${threaded ? 'threaded' : 'unthreaded'} header, chip, body and time geometry`)
+            }
+            await web.mouse.move(0, 556)
+        } else if (name === 'thread-create-drag-geometry') {
+            for (const mode of ['line','block']) for (const targetText of ['Check both:', 'Check one more detail.', 'Done. The unit’s twelve snapshots']) {
+                await web.setViewportSize({ width: mode === 'block' ? 1280 : 800, height: 557 })
+                await webviewUntil(web, `document.querySelector('#threads').dataset.mode==='${mode}'`)
+                const target = web.locator('#items > [data-seq]').filter({ hasText: targetText })
+                await target.evaluate(node => node.scrollIntoView({ block: 'center' }))
+                if (mode === 'line' && await web.locator('.thread-panel').isHidden()) await web.locator('.thread-overflow').click()
+                const source = web.locator('.thread-entry[data-thread="remote-mtls-pairing-ios"]')
+                const start = requireValue(await source.boundingBox()), end = requireValue(await target.boundingBox())
+                const step = await webviewJS<number>(web, "fetch('/replay/status').then(r=>r.json()).then(s=>s.step)")
+                await web.mouse.move(start.x + 30, start.y + start.height / 2)
+                await web.mouse.down()
+                await web.mouse.move(end.x + end.width - 24, end.y + end.height / 2, { steps: 6 })
+                equal(await target.evaluate(node => node.classList.contains('drop-target')), true, `${mode} thread row highlights ${targetText}`)
+                await web.mouse.up()
+                await webviewUntil(web, `fetch('/replay/status').then(r=>r.json()).then(s=>s.step>${step})`)
+            }
+            const status = await webviewJS<{ mismatches: number; last?: string }>(web, "fetch('/replay/status').then(r=>r.json())")
+            equal(status.mismatches, 0, `Drag requests match the script: ${status.last}`)
+        } else if (name.startsWith('thread-create-')) {
             if (name === 'thread-create-empty' || name === 'thread-create-typed') {
                 await web.locator('.composer-thread .thread-new').click()
                 if (name === 'thread-create-typed') await web.locator('.composer-thread .thread-input').fill('release-notes')
             } else {
-                const row = name === 'thread-create-user-hover' ? web.locator('#items .user .message-header').last() : web.locator('#items .assistant .message-header').last()
+                const user = name === 'thread-create-user-hover'
+                const message = web.locator(user ? '#items > .user' : '#items > .assistant').filter({ hasText: user ? 'Check one more detail.' : 'I will check it next.' })
+                await message.waitFor({ state: 'visible' })
+                const row = message.locator('.message-header')
                 await row.hover()
                 equal(await row.locator('.thread-new').isVisible(), true, 'Message hover exposes the naming chip')
                 if (name === 'thread-create-message-name') { await row.locator('.thread-new').click(); await row.locator('.thread-input').fill('sweep-test') }
@@ -878,6 +956,8 @@ async function koaWebview(key: string, width: number, height: number, scenario: 
         if (phases.includes("foot-responsive") || phases.includes("foot-editing") || phases.includes("narrow-foot-editing")) {
             initialScript = initialScript + "const FootSource=EventSource;window.EventSource=class extends FootSource{constructor(...args){super(...args);window.footSource=this;this.addEventListener('message',event=>{const record=JSON.parse(event.data);if(record.type==='state')window.footState=record})}};"
         }
+        if (key === 'ThreadsGeometry') initialScript += "const ThreadSource=EventSource;window.EventSource=class extends ThreadSource{constructor(...args){super(...args);window.threadSource=this}};"
+        if (key === 'ThreadsFilterRestored') initialScript += "history.replaceState({scroll:[],drafts:[],filters:[['00000000-0000-7000-8000-000000000001:00000000-0000-7000-8000-000000000001','sidebar']],composerThreads:[]},'');"
         let initial = initialScript
         initial = "Element.prototype.animate=function(){return {}};" + paneFocus + (scenario == "latest" || scenario == "jobs" ? "" : hideLatest) + initial
 
@@ -1755,6 +1835,9 @@ const entries: Record<string, () => Promise<void>> = {
   "Failed": () => koaWebview("Failed", 960, 557, "failed", true, ["exited"]),
   "Rhythm": testKoaWebviewRhythm,
   "Threads": () => koaWebview("Threads", 960, 557, "threads", false, ["threads-two", "threads-many", "threads-marks", "threads-marks-narrow"]),
+  "ThreadsGeometry": () => koaWebview("ThreadsGeometry", 960, 557, "threads", false, ["thread-create-placement-geometry", "thread-create-hover-geometry", "thread-create-filter-block", "thread-create-filter-panel", "thread-create-filter-capsule", "thread-create-drag-geometry"]),
+  "ThreadsFilterRestored": () => koaWebview("ThreadsFilterRestored", 960, 557, "threads", false, ["thread-create-filter-restored"]),
+
   "ThreadsCreate": () => koaWebview("ThreadsCreate", 960, 557, "threads", false, ["thread-create-empty", "thread-create-typed", "thread-create-reply-hover", "thread-create-user-hover", "thread-create-message-name"]),
   "ThreadsArchive": () => koaWebview("ThreadsArchive", 960, 557, "threads", false, ["thread-archive-panel-live", "thread-archive-panel-restore", "thread-archive-block", "thread-archive-filter", "thread-archive-all"]),
   "ThreadsEdit": () => koaWebview("ThreadsEdit", 980, 557, "threads", false, ["threads-drag-row", "threads-drag-reply", "threads-rename", "threads-pending"]),

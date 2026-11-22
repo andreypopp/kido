@@ -870,7 +870,7 @@ test('filtering selects the composer thread but dropping it submits unlabelled w
     setThread('two');element('threads').querySelector('.thread-clear').onclick();
     return [initial,selected,sticky,sent.map(body=>body.thread),filterAfterDrop,threadFilter(),composerThreadName(),!!element('field').querySelector('.composer-thread')];
   })()`);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), [true,['one','one'],'one',['one','two',null],'one',null,'two',true]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [true,['one','one'],'one',['one','two',null],'one',null,null,true]);
 });
 
 test('composer threads stay with their root draft across reload and do not enter child or job views', async () => {
@@ -889,6 +889,55 @@ test('composer threads stay with their root draft across reload and do not enter
     return [root,rows,composerThreadName(),!!element('field').querySelector('.thread-new')];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [['one','two','draft'],[[false,null],[false,null]],null,true]);
+});
+
+test('clearing a widget filter drops its matching composer thread but keeps an independent choice', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]};
+    const results=[];
+    for(const control of ['capsule','all','active']) for(const choice of ['same','other','following']) {
+      setThread('one');
+      if(choice==='other') threadChip('two').onclick();
+      if(choice==='following') composerThreads.delete(filterKey());
+      if(control==='capsule') element('threads').querySelector('.thread-clear').onclick();
+      else if(control==='all') element('threads').querySelector('.thread-all').onclick();
+      else element('threads').querySelector('.current').onclick({detail:0});
+      results.push([threadFilter(),composerThreadName()]);
+    }
+    return results;
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), Array.from({length:3}, () => [[null,null],[null,'two'],[null,null]]).flat());
+});
+
+test('a restored filter supplies only an unset composer thread and preserves an explicit drop', async () => {
+  const app = await page(), evaluate = app.repl();
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate(`(()=>{state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'}};threadFilters.set(filterKey(),'one');const derived=composerThreadName();setComposerThread('two');const chosen=composerThreadName();setComposerThread(undefined);return [derived,chosen,composerThreadName()]})()`))), ['one','two',null]);
+  app.windowListeners.get('pagehide')?.();
+  const restored = app.repl();
+  assert.equal(restored(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'}};composerThreadName()`), undefined);
+  assert.equal(restored('threadFilter()'), 'one');
+});
+
+test('a delayed thread click cannot select a filter after a scope switch or a newer filter action', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const app = await page(), evaluate = app.repl();
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]};clickThread({detail:1},node('div'),'one');state={...state,sessionId:'other'};`);
+  t.mock.timers.tick(250);
+  assert.equal(evaluate('threadFilter()'), undefined);
+  evaluate(`clickThread({detail:1},node('div'),'one');setThread('two');`);
+  t.mock.timers.tick(250);
+  assert.equal(evaluate('threadFilter()'), 'two');
+});
+
+test('a pending thread move updates only its original scope and does not replace a newer filter', async () => {
+  const app = await page(), evaluate = app.repl();
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'A'},{name:'B'},{name:'C'}]};setThread('A');fetchJSON=()=>new Promise(resolve=>window.finishMove=resolve);window.moving=moveThread('A','B');state={...state,sessionId:'other'};setThread('C');window.finishMove({});`);
+  await evaluate('window.moving');
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate(`[threadFilter(),composerThreadName(),threadFilters.get('root:s'),composerThreads.get('root:s')]`))), ['C','C','B',{type:'thread',name:'B'}]);
+  evaluate(`setThread('A');window.moving=moveThread('A','B');setThread('C');window.finishMove({});`);
+  await evaluate('window.moving');
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate('[threadFilter(),composerThreadName()]'))), ['C','C']);
 });
 
 test('moving a thread updates its composer chip without replacing an independent composer thread', async () => {
@@ -919,6 +968,30 @@ test('composer naming commits with Enter or Tab, keeps its input on refresh and 
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [['thread name','11ch','var(--thread-1)'],'var(--thread-0)',true,['existing',null,true],['New topic',true],[null,true],null,true]);
 });
 
+test('a late thread label cancels reply naming and removes its naming control', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'}]};
+    put({seq:0,at:1,revision:0,kind:'assistant',final:true,blocks:[{type:'text',text:'Reply'}]});
+    views.get(0).view.querySelector('.thread-new').onclick();
+    put({kind:'threads',target:0,threads:['one'],seq:1,revision:0,at:2,final:true});renderDirty();
+    return [threadNaming,!!views.get(0).view.querySelector('.thread-new'),!!views.get(0).view.querySelector('.thread-input'),views.get(0).view.querySelector('.thread-name')?.title];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [null,false,false,'one']);
+});
+
+test('threaded messages omit the naming control, including mixed reply sections', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'}]};
+    put({seq:0,at:1,revision:0,kind:'user',final:true,text:'Threaded',thread:'one',images:[],attachments:[]});
+    put({seq:1,at:1,revision:0,kind:'user',final:true,text:'Unthreaded',images:[],attachments:[]});
+    put({seq:2,at:1,revision:0,kind:'assistant',final:true,blocks:[{type:'text',text:'First'},{type:'text',text:'Second',thread:'one'}]});
+    return [0,1,2].map(seq=>!!views.get(seq).view.querySelector('.thread-new'));
+  })()`);
+  assert.deepEqual(Array.from(result), [false,true,false]);
+});
+
 test('message naming keeps focus and text through updates and ignores composing Enter and Escape', async () => {
   const app = await page();
   const result = app.run(`(()=>{
@@ -926,11 +999,11 @@ test('message naming keeps focus and text through updates and ignores composing 
     const requests=[];fetchJSON=async(path,body)=>{requests.push(body);return {}};
     const results=[];
     for(const kind of ['user','assistant']){
-      const seq=kind==='user'?0:1,item=kind==='user'?{seq,at:1,revision:0,kind,final:true,text:'Question',thread:'old',images:[],attachments:[]}:{seq,at:1,revision:0,kind,final:false,blocks:[{type:'text',text:'Reply',thread:'old'}]};
+      const seq=kind==='user'?0:1,item=kind==='user'?{seq,at:1,revision:0,kind,final:true,text:'Question',images:[],attachments:[]}:{seq,at:1,revision:0,kind,final:false,blocks:[{type:'text',text:'Reply'}]};
       put(item);views.get(seq).view.querySelector('.thread-new').onclick();const input=views.get(seq).view.querySelector('.thread-input');input.value='New topic';
       const key=(key,isComposing)=>({key,isComposing,preventDefault(){},stopPropagation(){}});
       input.onkeydown(key('Enter',true));input.onkeydown(key('Escape',true));
-      put({...item,revision:1,...(kind==='user'?{text:'Updated'}:{blocks:[{type:'text',text:'Reply grows',thread:'old'}]})});renderDirty();
+      put({...item,revision:1,...(kind==='user'?{text:'Updated'}:{blocks:[{type:'text',text:'Reply grows'}]})});renderDirty();
       results.push([document.activeElement===input,input.value,views.get(seq).view.querySelector('.thread-input')===input,requests.length]);input.onkeydown(key('Enter',false));
     }
     refreshComposer();element('field').querySelector('.thread-new').onclick();const input=element('field').querySelector('.thread-input');input.value='Composer';input.onkeydown({key:'Enter',isComposing:true,stopPropagation(){}});const composing=composerThreadName();input.onkeydown({key:'Enter',isComposing:false,stopPropagation(){},preventDefault(){}});
@@ -941,8 +1014,8 @@ test('message naming keeps focus and text through updates and ignores composing 
 
 test('message naming sends its turn identity and cancels on Escape, outside click or session change', async () => {
   const app = await page(), evaluate = app.repl();
-  evaluate(`state={...state,life:{type:'ready'},sessionId:'origin',view:{id:'root',path:[],type:'root'},threads:[{name:'old'}]};put({seq:0,at:1,revision:0,kind:'user',final:true,text:'Question',thread:'old',images:[],attachments:[]});window.requests=[];fetchJSON=async(path,body)=>{window.requests.push([path,body]);return {}};window.openName=()=>{views.get(0).view.querySelector('.thread-new').onclick();return views.get(0).view.querySelector('.thread-input')};window.key=value=>({key:value,preventDefault(){},stopPropagation(){}});`);
-  assert.equal(evaluate(`(()=>{const input=window.openName();input.value='New topic';input.onkeydown(window.key('Enter'));return views.get(0).view.querySelector('.thread-name').title})()`), 'old');
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'origin',view:{id:'root',path:[],type:'root'},threads:[{name:'old'}]};put({seq:0,at:1,revision:0,kind:'user',final:true,text:'Question',images:[],attachments:[]});window.requests=[];fetchJSON=async(path,body)=>{window.requests.push([path,body]);return {}};window.openName=()=>{views.get(0).view.querySelector('.thread-new').onclick();return views.get(0).view.querySelector('.thread-input')};window.key=value=>({key:value,preventDefault(){},stopPropagation(){}});`);
+  assert.equal(evaluate(`(()=>{const input=window.openName();input.value='New topic';input.onkeydown(window.key('Enter'));return !!views.get(0).view.querySelector('.thread-name')})()`), false);
   assert.deepEqual(JSON.parse(JSON.stringify(evaluate('window.requests'))), [['/messages/thread',{sessionId:'origin',seq:0,thread:'New topic'}]]);
   evaluate(`window.openName().onkeydown(window.key('Escape'));window.openName();views.get(0).view.querySelector('.thread-clear').onclick();window.openName()`);
   app.listeners.get('pointerdown')?.({ target:app.context.document.body });
@@ -3596,7 +3669,7 @@ test('a job restore whose older request fails ends in the fallback after one req
   const f = await jobPage();
   let earlier = 0;
   Object.assign(f.app.context, { fetch: async (path: string) => { if (path === '/job/earlier') { earlier++; return { ok: false, status: 500, json: async () => ({ error: 'broken' }) }; } return { ok: true, json: async () => ({}) }; } });
-  f.evaluate("scrolling.saved.set('j1',{scope:{view:'j1',sessionId:'s'},anchor:{item:{kind:'job',byte:50},offset:0},last:0})");
+  f.evaluate("scrolling.saved.set('j1',{scope:{view:'j1',sessionId:'s'},anchor:{item:{kind:'job',byte:50},offset:0,edge:'row'},last:0})");
   f.open('j1');
   assert.equal(f.evaluate('scrolling.kind'), 'restoring');
   f.reset('j1', 'cut\nlive\n', 100);

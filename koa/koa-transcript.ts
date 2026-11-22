@@ -501,7 +501,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     if (kind !== 'root' || !item || item.kind !== 'user' && item.kind !== 'assistant') return;
     const user = item.kind === 'user' ? item : items.findLast(other => other.kind === 'user' && other.seq < seq);
     const next = items.find(other => other.kind === 'user' && other.seq > seq)?.seq ?? items.length;
-    const targets = item.kind === 'user' ? [item] : [...(user ? [user] : []), ...items.filter(other => other.kind === 'assistant' && other.seq > (user?.seq ?? -1) && other.seq < next)];
+    const targets = [...(user ? [user] : []), ...items.filter(other => other.kind === 'assistant' && other.seq > (user?.seq ?? -1) && other.seq < next)];
     if (targets.some(target => target.kind === 'assistant' && target.lifecycle !== 'ended')) return;
     const entries = branch(), ids = targets.map(target => entryId(target.seq, entries));
     return ids.every((id): id is string => id !== undefined) ? ids : undefined;

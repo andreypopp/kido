@@ -509,7 +509,15 @@ does not hold as a reader) lasts through the initial delivery and
 layout, focused or not, until the view is placed at a non-empty
 bottom or reader input cancels it; only growth after that placement
 makes an unfocused page a reader. So a reload or `/restart` of a
-following view opens at the bottom. `pagehide` saves the memory
+following view opens at the bottom.
+
+A switch of the thread filter drops the previous filter's reader
+anchor. The view opens at the divider above the first unread row
+that the filter shows, or follows the bottom when it shows none.
+Unread state belongs to the row, not to the filter: a row that the
+filter hides keeps it, so the row is still unread in a later view
+that shows it. The count and the divider cover only the shown rows.
+This state is in memory only, not in the page's history state. `pagehide` saves the memory
 before its last scroll update. New-content counts use
 visible assistant prose and runs, not patches, metadata or each step
 that joins a run. `koa/page/extent.ts` and the scroll reducer share
@@ -792,7 +800,12 @@ states of the root view, each kept per session in the page's history
 state, so both survive a reload. A click on a message's chip sets the
 composer's thread; it does not filter. Only the thread widget sets and
 clears the filter, and setting a filter also sets the composer's
-thread. The composer's × drops only the composer's thread. The
+thread. A filter that is active without a composer thread, such as
+one restored from the history state, gives the composer its thread,
+unless the user set or dropped the composer's thread after the filter.
+Clearing the filter also drops the composer's thread when it is the
+filtered thread; a different thread that the user chose after the
+filter stays. The composer's × drops only the composer's thread. The
 composer's thread, not the filter, labels a submitted prompt: the
 prompt gets a marker and the classifier is not asked, except for a
 slash command, because pi needs the slash at the start to expand a
@@ -813,9 +826,11 @@ name in the title. The visual rules of these interactions are in
 
 The user names a thread with the "+ thread" chip. In the composer it
 sets the composer's thread and writes nothing to the session. A new
-thread exists only when a message carries it. On a message header it
-moves the message's turn through the same `koa.message-thread` entry
-as a drag. A name that no thread has yet creates that thread, so the
+thread exists only when a message carries it. On the header of a
+message without a thread it moves the message's turn through the same
+`koa.message-thread` entry as a drag. A message with a thread, or a
+reply with a thread in any section, has no "+ thread": a drag from the
+widget changes its thread. A name that no thread has yet creates that thread, so the
 move route accepts any valid name. There is no slash command for
 threads.
 

@@ -3,7 +3,7 @@ import type { Block, Thread, WireItem } from '../../koa-records.ts';
 import { stateIdle } from '../scenario-parts.ts';
 import { expect, same, sequence, type Scenario, type Scenarios } from '../scenario.ts';
 
-function scene(dir: string, kind: 'two' | 'many' | 'marks' | 'marks-narrow' | 'filter'): Scenario {
+function scene(dir: string, kind: 'two' | 'many' | 'marks' | 'marks-narrow' | 'filter', unthreaded = false): Scenario {
   const names = ['sidebar', 'palette', 'remote-mtls-pairing-ios', 'release-0-32', 'koa-virtual-transcript', 'float-win', 'threads', 'docs-cleanup-after-the-sessions', 'ci-linux-flake'].map(value => {
     const name = parseThreadName(value);
     if (!name) throw Error('invalid fixture thread: ' + value);
@@ -50,6 +50,7 @@ function scene(dir: string, kind: 'two' | 'many' | 'marks' | 'marks-narrow' | 'f
     const pending = user('Also look at the Linux flake in the sweep test when you have a minute.', 14, 46);
     if (kind !== 'filter') { reply([text(ci, 'I reproduced it once under contention; the test waits for the process, not for the row’s exit. A fix is in the test’s wait.')], 14, 46); label(pending, [ci]); }
   }
+  if (unthreaded) { user('Check one more detail.', 14, 46); reply([{ type: 'text', text: 'I will check it next.' }], 14, 46); }
   const state = { ...stateIdle(dir), name: 'ko', threads, working: kind === 'filter', agents: ['sidebar-right', 'palette'].map(name => ({ name, target: { type: 'view' as const, id: name } })) };
   const labels = new Map(items.flatMap(item => item.kind === 'threads' ? [[item.target, item.threads] as const] : []));
   const filtered = items.filter(item => item.kind === 'threads' ? item.threads.includes(sidebar) : labels.get(item.seq)?.includes(sidebar) || 'thread' in item && item.thread === sidebar || item.kind === 'assistant' && item.blocks.some(block => block.thread === sidebar));
@@ -80,7 +81,26 @@ if (!paletteName) throw Error('Invalid palette thread');
 const order: (keyof typeof phases)[] = ['testKoaWebviewThreadsTwo', 'testKoaWebviewThreadsMany', 'testKoaWebviewThreadsMarks', 'testKoaWebviewThreadsMarksNarrow'];
 
 export const scenarios: Scenarios = {
-  ThreadsCreate: dir => sequence(Array.from({ length: 5 }, () => scene(dir, 'marks-narrow'))),
+  ThreadsFilterRestored: dir => scene(dir, 'filter'),
+  ThreadsGeometry: dir => sequence(['placement','hover','block','panel','capsule','drag'].map(phase => {
+    const result = scene(dir, phase === 'placement' ? 'many' : phase === 'hover' || phase === 'drag' ? 'marks-narrow' : 'filter', phase === 'hover' || phase === 'drag');
+    if (phase === 'drag') {
+      const reset = result.open.find(record => record.type === 'reset'), state = result.open.find(record => record.type === 'state');
+      if (!reset || !state) throw Error('Missing drag state');
+      for (const mode of ['line','block']) for (const text of ['Check both:', 'Check one more detail.', 'Done. The unit’s twelve snapshots']) {
+        const item = reset.items.find(item => item.kind === 'user' ? item.text.startsWith(text) : item.kind === 'assistant' && item.blocks.some(block => block.type === 'text' && block.text.startsWith(text)));
+        if (!item) throw Error('Missing drag target in ' + mode);
+        result.steps.push(expect({ on: { method: 'POST', path: '/messages/thread', body: value => same(value, { sessionId: state.sessionId, seq: item.seq, thread: 'remote-mtls-pairing-ios' }) }, reply: { status: 200, json: {} } }));
+      }
+    } else if (phase !== 'placement' && phase !== 'hover') {
+      const state = result.open.find(record => record.type === 'state'), reset = result.open.find(record => record.type === 'reset');
+      if (!state || !reset) throw Error('Missing geometry state');
+      if (phase === 'block') result.steps.push(expect({ on: { method: 'GET', path: '/items', body: value => same(value, { before: String(Number.MAX_SAFE_INTEGER), thread: 'palette', sessionId: state.sessionId }) }, reply: { status: 200, json: { epoch: reset.epoch, more: false, items: [] } } }));
+      result.steps.push(expect({ on: { method: 'GET', path: '/items', body: value => same(value, { before: String(Number.MAX_SAFE_INTEGER), sessionId: state.sessionId }) }, reply: { status: 200, json: { epoch: reset.epoch, more: false, items: reset.items } } }));
+    }
+    return result;
+  })),
+  ThreadsCreate: dir => sequence(Array.from({ length: 5 }, () => scene(dir, 'marks-narrow', true))),
   ThreadsArchive: dir => sequence(Array.from({ length: 5 }, (_, index) => {
     const result = scene(dir, 'many'), state = result.open.find(record => record.type === 'state'), reset = result.open.find(record => record.type === 'reset');
     if (!state || !('threads' in state) || !reset) throw Error('Missing archive fixture state');

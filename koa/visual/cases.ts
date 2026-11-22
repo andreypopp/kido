@@ -24,6 +24,8 @@ export const fixtures: { name: string; captures: Record<string, Policy> }[] = [
   {"name": "Failed", "captures": {"exited": "light", "narrow-exited": "geometry"}},
   {"name": "Rhythm", "captures": {}},
   {"name": "Threads", "captures": {"threads-many": "both", "threads-many-narrow": "both", "threads-marks": "both", "threads-marks-narrow": "geometry", "threads-two": "geometry"}},
+  {"name": "ThreadsFilterRestored", "captures": {"thread-create-filter-restored": "geometry"}},
+  {"name": "ThreadsGeometry", "captures": {"thread-create-placement-geometry": "geometry", "thread-create-hover-geometry": "geometry", "thread-create-filter-block": "geometry", "thread-create-filter-panel": "geometry", "thread-create-filter-capsule": "geometry", "thread-create-drag-geometry": "geometry"}},
   {"name": "ThreadsCreate", "captures": {"thread-create-empty": "light", "thread-create-typed": "light", "thread-create-reply-hover": "light", "thread-create-user-hover": "both", "thread-create-message-name": "light"}},
   {"name": "ThreadsArchive", "captures": {"thread-archive-panel-live": "both", "thread-archive-panel-restore": "both", "thread-archive-block": "light", "thread-archive-filter": "light", "thread-archive-all": "light"}},
   {"name": "ThreadsEdit", "captures": {"threads-drag-row": "light", "threads-drag-reply": "light", "threads-rename": "light", "threads-pending": "light"}},

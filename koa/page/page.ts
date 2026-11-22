@@ -47,18 +47,19 @@ const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, clas
   return result;
 };
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
-type PageMemory = { scroll: Saved[]; drafts: [view: string, text: string][]; filters: [scope: string, thread: ThreadName][]; composerThreads: [scope: string, thread: ThreadName][] };
+type ComposerThread = { type: 'thread'; name: ThreadName } | { type: 'dropped' };
+type PageMemory = { scroll: Saved[]; drafts: [view: string, text: string][]; filters: [scope: string, thread: ThreadName][]; composerThreads: [scope: string, thread: ComposerThread][] };
 const stored: unknown = history.state;
 const pageMemory = (stored: unknown): stored is PageMemory => isRecord(stored) && Array.isArray(stored.scroll) && stored.scroll.every(saved => {
-  if (!isRecord(saved) || !isRecord(saved.scope) || typeof saved.scope.view !== 'string' || saved.scope.sessionId !== undefined && typeof saved.scope.sessionId !== 'string' || !Number.isInteger(saved.last) || !isRecord(saved.anchor) || typeof saved.anchor.offset !== 'number' || !Number.isFinite(saved.anchor.offset) || !isRecord(saved.anchor.item)) return false;
+  if (!isRecord(saved) || !isRecord(saved.scope) || typeof saved.scope.view !== 'string' || saved.scope.sessionId !== undefined && typeof saved.scope.sessionId !== 'string' || !Number.isInteger(saved.last) || !isRecord(saved.anchor) || saved.anchor.edge !== 'row' && saved.anchor.edge !== 'divider' || typeof saved.anchor.offset !== 'number' || !Number.isFinite(saved.anchor.offset) || !isRecord(saved.anchor.item)) return false;
   const item = saved.anchor.item;
   return item.kind === 'message' && Number.isInteger(item.seq) && (item.row === undefined || typeof item.row === 'string') || item.kind === 'job' && Number.isInteger(item.byte);
-}) && Array.isArray(stored.drafts) && stored.drafts.every(entry => Array.isArray(entry) && entry.length === 2 && entry.every(value => typeof value === 'string')) && ['filters', 'composerThreads'].every(key => { const entries = stored[key]; return Array.isArray(entries) && entries.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && parseThreadName(entry[1]) !== undefined); });
+}) && Array.isArray(stored.drafts) && stored.drafts.every(entry => Array.isArray(entry) && entry.length === 2 && entry.every(value => typeof value === 'string')) && ['filters', 'composerThreads'].every(key => { const entries = stored[key]; return Array.isArray(entries) && entries.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && (key === 'composerThreads' ? isRecord(entry[1]) && (entry[1].type === 'dropped' || entry[1].type === 'thread' && parseThreadName(entry[1].name) !== undefined) : parseThreadName(entry[1]) !== undefined)); });
 const memory = pageMemory(stored) ? stored : undefined;
 const threadItems = new Map<number, Extract<WireItem, { kind: 'threads' }>>();
 const projections = new Map<number, WireItem | undefined>();
 const threadFilters = new Map<string, ThreadName>(memory?.filters);
-const composerThreads = new Map<string, ThreadName>(memory?.composerThreads);
+const composerThreads = new Map<string, ComposerThread>(memory?.composerThreads);
 const composerThread = node('div', undefined, 'message-header composer-thread');
 const threadMeasure = node('span', '0', 'thread-measure');
 threadMeasure.setAttribute('aria-hidden', 'true'); document.body.append(threadMeasure);
@@ -154,15 +155,18 @@ function refreshThreadItems() {
   windowDirty = true; schedule();
 }
 function setThread(name: ThreadName | undefined) {
-  const next = threadFilter() === name ? undefined : name;
-  if (next) { composerThreads.set(filterKey(), next); if (threadNaming?.target.kind === 'composer') threadNaming = undefined; }
+  const previous = threadFilter(), next = previous === name ? undefined : name;
+  if (!next && previous && composerThreadName() === previous) composerThreads.set(filterKey(), { type: 'dropped' });
+  if (next) { composerThreads.set(filterKey(), { type: 'thread', name: next }); if (threadNaming?.target.kind === 'composer') threadNaming = undefined; }
   updateThreadFilter(next);
 }
 function updateThreadFilter(name: ThreadName | undefined) {
+  clearTimeout(threadClick); threadClick = undefined;
   if (name) threadFilters.set(filterKey(), name); else threadFilters.delete(filterKey());
   historyRequest = undefined; historyBefore = undefined;
   closeThreads(); refreshThreadItems(); renderThreads(); refreshComposer();
-  enqueue({ type: 'reset' });
+  enqueue({ type: 'filter', active: name !== undefined });
+  for (const seq of items.keys()) changedItem(seq, false);
   if (epoch) void reloadThread();
 }
 function threadColour(name?: ThreadName): string {
@@ -175,10 +179,14 @@ function threadName(name: ThreadName) {
   label.append(node('span', '#', 'thread-hash'), node('span', name));
   return label;
 }
-const composerThreadName = (): ThreadName | undefined => state.view.type === 'root' ? composerThreads.get(filterKey()) : undefined;
+function composerThreadName(): ThreadName | undefined {
+  if (state.view.type !== 'root') return undefined;
+  const choice = composerThreads.get(filterKey());
+  return choice ? choice.type === 'thread' ? choice.name : undefined : threadFilter();
+}
 function setComposerThread(name: ThreadName | undefined) {
   if (threadNaming?.target.kind === 'composer') threadNaming = undefined;
-  if (name) composerThreads.set(filterKey(), name); else composerThreads.delete(filterKey());
+  composerThreads.set(filterKey(), name ? { type: 'thread', name } : { type: 'dropped' });
   refreshComposer();
 }
 type ThreadNamingTarget = { kind: 'composer' } | { kind: 'message'; seq: number; key: string };
@@ -298,10 +306,14 @@ function dragThread(event: PointerEvent, source: HTMLElement, from: ThreadName) 
 }
 async function moveThread(from: ThreadName, to: ThreadName) {
   try {
-    const filtered = threadFilter() === from;
+    const scope = filterKey(), filter = threadFilter();
     await fetchJSON('/threads/move', { sessionId: state.sessionId, from, to });
-    if (composerThreadName() === from) composerThreads.set(filterKey(), to);
-    if (filtered) updateThreadFilter(to); else refreshComposer();
+    const choice = composerThreads.get(scope);
+    if ((choice?.type === 'thread' ? choice.name : choice ? undefined : threadFilters.get(scope)) === from) composerThreads.set(scope, { type: 'thread', name: to });
+    if (filter === from && threadFilters.get(scope) === from) {
+      if (filterKey() === scope) updateThreadFilter(to);
+      else threadFilters.set(scope, to);
+    } else if (filterKey() === scope) refreshComposer();
   } catch (error) { reportError(error); }
 }
 let renaming = false, threadClick: number | undefined;
@@ -309,7 +321,7 @@ function clickThread(event: MouseEvent, entry: HTMLElement, name: ThreadName) {
   if (threadDragged || renaming) return;
   clearTimeout(threadClick);
   if (event.detail === 0) setThread(name);
-  else if (event.detail === 1) threadClick = setTimeout(() => setThread(name), 250);
+  else if (event.detail === 1) { const scope = filterKey(); threadClick = setTimeout(() => { threadClick = undefined; if (filterKey() === scope) setThread(name); }, 250); }
   else renameThread(entry, name);
 }
 function renameThread(entry: HTMLElement, name: ThreadName) {
@@ -693,15 +705,20 @@ function measure(): Measure {
   const offset = scrollDecision.glideOffset;
   const mounted = new Map<number, { row: Row; element: Element }>(), projected = new Map<string, { row: Row; element: Element }>(), units = new Map<number, string[]>();
   const jobView = state.view.type === 'job';
+  const leading = (row: Row): Row => {
+    if (row.item.kind !== 'message' || row.item.seq !== scrollDecision.dividerBefore || !divider?.isConnected || (row.item.row ?? unitKeys(row.item.seq)[0]) !== scrollDecision.dividerRow) return row;
+    const start = top + divider.getBoundingClientRect().top - rect.top - offset - parseFloat(getComputedStyle(divider).marginTop);
+    return { ...row, leading: Math.min(row.top, start) };
+  };
   for (const view of jobView ? Array.from(messageRows()) : resetting ? [] : [...views.values()].map(entry => entry.view)) {
     const item = itemOf(view);
     if (!item || view instanceof HTMLElement && view.hidden) continue;
     const box = view.getBoundingClientRect();
-    const row = {
+    const row = leading({
       item,
       top: top + box.top - rect.top - offset,
       bottom: top + box.bottom - rect.top - offset,
-    };
+    });
     mounted.set(item.kind === 'message' ? item.seq : item.byte, { row, element: view });
     if (item.kind === 'message') {
       const keys = unitKeys(item.seq); units.set(item.seq, keys);
@@ -709,7 +726,7 @@ function measure(): Measure {
         const address: ItemId = { ...item, row: key }, target = key === keys[0] ? view : unitView(key);
         if (!target) continue;
         const bounds = target === view ? box : target.getBoundingClientRect();
-        projected.set(key, { element: target, row: { item: address, top: top + bounds.top - rect.top - offset, bottom: top + bounds.bottom - rect.top - offset } });
+        projected.set(key, { element: target, row: leading({ item: address, top: top + bounds.top - rect.top - offset, bottom: top + bounds.bottom - rect.top - offset }) });
       }
     }
   }
@@ -742,7 +759,7 @@ function measure(): Measure {
     visible: window.koaFocused ?? document.visibilityState === 'visible',
     reducedMotion: reducedMotion(),
     windowMax: jobView ? undefined : Math.max(0, ensureTable().total - viewport),
-    anchor: anchorRow && { item: anchorRow.item, offset: anchorRow.top - top },
+    anchor: anchorRow && { item: anchorRow.item, offset: anchorRow.top - top, edge: 'row' },
     lookup(item): Lookup {
       const key = item.kind === 'message' ? item.seq : item.byte;
       const target = item.kind === 'message' && item.row ? units.get(item.seq)?.[0] === item.row ? views.get(item.seq)?.view : unitView(item.row) : rowOf(item), unit = item.kind === 'message' && item.row ? projected.get(item.row) : undefined;
@@ -817,17 +834,17 @@ function decide(event?: ScrollEvent, measurement = measure()) {
   if (stored !== undefined) scrolling = scrollStored(scrolling, stored);
 }
 function enqueue(event: ScrollEvent) { scrollEvents.push(event); schedule(); }
-function unitKeys(seq: number): string[] {
-  const item = visible(seq), context = runContext(), keys: string[] = [];
+function unitKeys(seq: number, source: 'visible' | 'all' = 'visible'): string[] {
+  const shown = source === 'all' ? (seq: number) => items.get(seq) : visible;
+  const item = shown(seq), context: RunContext = source === 'all' ? { raw: shown, shown, owners: new Map() } : runContext(), keys: string[] = [];
   if (!item) return keys;
   if (item.kind === 'assistant') item.blocks.forEach((block, index) => { if (visibleText(block)) keys.push(seq + ':' + index); });
   for (const part of runParts(items.get(seq), item)) if (part.kind === 'step' && sourceKey(part.source) === sourceKey(runOwner(context, part.source))) keys.push('run:' + sourceKey(part.source));
   return keys.sort((a, b) => Number(a.replace('run:', '').split(':')[1]) - Number(b.replace('run:', '').split(':')[1]));
 }
-const shown = (seq: number) => unitKeys(seq).length > 0;
 function changedItem(seq: number, appended: boolean) {
-  const item = items.get(seq);
-  if (item) enqueue({ type: 'item', seq, kind: item.kind === 'user' ? 'user' : item.kind === 'assistant' || item.kind === 'agent' || item.kind === 'job' ? 'assistant' : 'other', visible: shown(seq), rows: unitKeys(seq), appended });
+  const item = items.get(seq), shown = new Set(unitKeys(seq));
+  if (item) enqueue({ type: 'item', seq, kind: item.kind === 'user' ? 'user' : item.kind === 'assistant' || item.kind === 'agent' || item.kind === 'job' ? 'assistant' : 'other', visible: shown.size > 0, rows: unitKeys(seq, 'all').map(key => ({ key, visible: shown.has(key) })), appended });
 }
 let loadingAnchor: number | undefined;
 async function loadAnchor(item: ItemId, generation: number) {
@@ -905,7 +922,7 @@ function toggleAt(line: HTMLElement, change: () => void) {
   if (found.kind !== 'mounted') return;
   const delta = row.contains(line) ? line.getBoundingClientRect().top - before : row.getBoundingClientRect().top - rowBefore;
   const top = measurement.top + delta - scrollDecision.glideOffset;
-  decide({ type: 'layout', cause: 'toggle', anchor: { item, offset: found.row.top - top } }, measurement);
+  decide({ type: 'layout', cause: 'toggle', anchor: { item, offset: found.row.top - top, edge: 'row' } }, measurement);
 }
 function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLElement, show?: () => void, className = 'open', changed?: () => void) {
   view.classList.toggle(className, folds.get(key) === true);
@@ -1292,6 +1309,7 @@ function renderItem(item: WireItem) {
     children.push(section); parts = [];
   };
   if (item.kind === 'assistant') {
+    if ((item.blocks.some(block => block.thread) || threadItems.get(item.seq)?.threads.length) && threadNaming?.target.kind === 'message' && threadNaming.target.seq === item.seq) finishThreadNaming(false);
     view.className = 'assistant';
     item.blocks.forEach((block, index) => {
       if (block.type === 'text' && !visibleText(block)) return;
@@ -1304,7 +1322,7 @@ function renderItem(item: WireItem) {
         const message = prose(key, block.text, item.final || index < item.blocks.length - 1, annotationItems.get(item.seq)?.get(index), 'assistant');
         const header = message.querySelector('.message-header');
         if (!header?.contains(threadNaming?.chip ?? null)) header?.remove();
-        if (!parts.some(part => part.classList.contains('msg'))) { if (!message.querySelector('.message-header')) message.prepend(messageHeader(block.thread, hasHeader ? undefined : item.at, { kind: 'message', seq: item.seq, key })); hasHeader = true; }
+        if (!parts.some(part => part.classList.contains('msg'))) { if (!message.querySelector('.message-header')) message.prepend(messageHeader(block.thread, hasHeader ? undefined : item.at, item.blocks.some(block => block.thread) || threadItems.get(item.seq)?.threads.length ? undefined : { kind: 'message', seq: item.seq, key })); hasHeader = true; }
         parts.push(message);
       }
       else steps.push({ kind: 'block', block, item, key, index, slots });
@@ -1321,7 +1339,7 @@ function renderItem(item: WireItem) {
     view.className = 'msg ' + item.kind;
     if (item.kind === 'user') {
       const names = threadItems.get(item.seq)?.threads ?? [];
-      const header = messageHeader(item.thread ?? (names.length === 1 ? names[0] : undefined), item.at, { kind: 'message', seq: item.seq, key: item.seq + ':user' });
+      const header = messageHeader(item.thread ?? (names.length === 1 ? names[0] : undefined), item.at, item.thread || names.length ? undefined : { kind: 'message', seq: item.seq, key: item.seq + ':user' });
       const text = node('div', undefined, 't'); text.append(prose(item.seq + ':user', item.text, true, undefined, 'user'));
       if (item.images.length) { const images = thumbnails(item.images, () => slots); images.load(); text.append(images.view); }
       const paths = item.attachments.filter(file => file.kind === 'file').map(file => file.path);
@@ -1902,7 +1920,7 @@ function apply(record: PageRecord) {
     const workingChanged = state.working !== record.working;
     state = record;
     reportComposer();
-    if (scopeChanged) { historyRequest = undefined; historyBefore = undefined; }
+    if (scopeChanged) { clearTimeout(threadClick); threadClick = undefined; historyRequest = undefined; historyBefore = undefined; }
     if ('threads' in record && !record.threads.some(thread => thread.name === threadFilter())) threadFilters.delete(filterKey());
     renderThreads();
     if (previousFilter !== threadFilter() || scopeChanged && threadFilter() !== undefined) { historyRequest = undefined; historyBefore = undefined; refreshThreadItems(); if (epoch && record.view.type === 'root') void reloadThread(); }
@@ -2122,7 +2140,7 @@ async function reveal(mine: Find, match: Match, needle: string, backwards: boole
   const alive = () => find === mine && state.view.id === view && epoch === generation && segmentsOf(seq)[match.segment]?.text === segment.text && segmentsOf(seq)[match.segment]?.folds.join() === segment.folds.join();
   for (const key of segment.folds) folds.set(key, true);
   for (const key of segment.fences) openFences.add(key);
-  enqueue({ type: 'navigate', anchor: { item: { kind: 'message', seq }, offset: geometry().viewport / 3 } });
+  enqueue({ type: 'navigate', anchor: { item: { kind: 'message', seq }, offset: geometry().viewport / 3, edge: 'row' } });
   windowDirty = true;
   for (let turn = 0; turn < 8; turn++) { await rendered(); if (!alive()) return false; if (views.has(seq) && !windowDirty) break; }
   for (const key of segment.folds) openers.get(key)?.open();

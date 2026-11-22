@@ -61,6 +61,7 @@ test('corrections reset reconnect cursors and replay merges and whole reply turn
   const later = { ...assistant('[thread: one]\nFinal'), timestamp: 124 };
   const add = (id: string, message: Extract<AgentMessage, { role: 'user' | 'assistant' }>) => { branch.push({ type: 'message', id, parentId: branch.at(-1)?.id ?? null, timestamp: new Date(message.timestamp).toISOString(), message }); view.message(message, 'end'); };
   add('user', user); add('reply', reply); add('later', later);
+  assert.deepEqual(view.moveTargets(0), ['user', 'reply', 'later']);
   assert.deepEqual(view.moveTargets(1), ['user', 'reply', 'later']);
   const unpersisted = { ...assistant('Not saved'), timestamp: 125 }; view.message(unpersisted, 'end');
   assert.equal(view.moveTargets(3), undefined);

@@ -1,7 +1,7 @@
 import type { PromptResult } from '../koa-records.ts';
 
 export type ItemId = { kind: 'message'; seq: number; row?: string } | { kind: 'job'; byte: number };
-export type Anchor = { item: ItemId; offset: number };
+export type Anchor = { item: ItemId; offset: number; edge: 'row' | 'divider' };
 type Scope = { view: string; sessionId: string | undefined };
 export type Saved = { scope: Scope; anchor: Anchor; last: number };
 type Glide = { from: number; start: number; offset: number };
@@ -17,6 +17,7 @@ type Common = {
   saved: Map<string, Saved>;
   candidates: Map<number, Map<string, Candidate>>;
   threshold: boolean;
+  filtered: boolean;
   generation: number;
   lastSeq: number;
   settling: 'none' | 'render' | 'delivery';
@@ -34,13 +35,14 @@ export type ScrollEvent =
   | { type: 'layout'; cause: 'toggle'; anchor: Anchor }
   | { type: 'submit' }
   | { type: 'send-result'; result: PromptResult['disposition'] | 'failed' }
-  | { type: 'item'; seq: number; kind: 'user' | 'assistant' | 'other'; visible: boolean; appended: boolean; rows?: string[] }
+  | { type: 'item'; seq: number; kind: 'user' | 'assistant' | 'other'; visible: boolean; appended: boolean; rows?: { key: string; visible: boolean }[] }
   | { type: 'focus' | 'visibility' | 'frame' | 'resize' | 'latest' | 'history' }
   | { type: 'switch'; scope: Scope }
   | { type: 'reset' }
+  | { type: 'filter'; active: boolean }
   | { type: 'restore-result'; generation: number; found: boolean }
   | { type: 'navigate'; anchor: Anchor };
-export type Row = { item: ItemId; top: number; bottom: number; windowTop?: number };
+export type Row = { item: ItemId; top: number; bottom: number; windowTop?: number; leading?: number };
 export type Lookup =
   | { kind: 'mounted'; row: Row }
   | { kind: 'unmounted'; row: Row }
@@ -81,6 +83,7 @@ export function scrollInitial(scope: Scope, memory: Saved[] = []): State {
     saved: new Map(memory.map(saved => [saved.scope.view, saved])),
     candidates: new Map(),
     threshold: false,
+    filtered: false,
     generation: 0,
     lastSeq: -1,
     settling: 'none',
@@ -93,11 +96,11 @@ function common(state: State): Common {
     case 'restoring': { const { kind, target, waiting, ...data } = state; return data; }
   }
 }
-export function scrollWindow(state: State, position: (item: ItemId) => number | undefined, top: number, bottom: number): number {
+export function scrollWindow(state: State, position: (item: ItemId, edge: 'row' | 'divider') => number | undefined, top: number, bottom: number): number {
   if (state.kind === 'following') return bottom;
   if (state.kind === 'reader' && state.travel) return top;
   const anchor = state.kind === 'reader' ? state.anchor : state.target.anchor;
-  const y = anchor && position(anchor.item);
+  const y = anchor && position(anchor.item, anchor.edge);
   return y !== undefined && anchor ? y - anchor.offset : state.kind === 'restoring' ? bottom : top;
 }
 function offset(glide: Glide | undefined, now: number) {
@@ -121,6 +124,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
   const wasSettling = previous.settling;
   let instant = state.settling !== 'none';
   let newInstant = false;
+  let filtering = false, sawScroll = false;
   let force = state.forceItem !== undefined;
   let sentHeight: number | undefined;
   let scrollTop: number | undefined;
@@ -135,7 +139,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
   };
   const clear = () => {
     for (const [seq, rows] of state.candidates) for (const [key, candidate] of rows) {
-      if (candidate.unread) candidates(seq).set(key, { ...candidate, unread: false });
+      if (candidate.unread && candidate.visible) candidates(seq).set(key, { ...candidate, unread: false });
     }
     state.threshold = false;
   };
@@ -168,6 +172,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         const written = state.written;
         if (written) state.written = { ...written, echo: false };
         if (written?.echo && m.top === written.top || !state.last || clamp) break;
+        sawScroll = true;
         const last = state.last;
         if (state.kind === 'following') { if (!force && m.top < Math.min(written?.top ?? last.max, last.max)) reader(); }
         else if (state.kind !== 'reader') break;
@@ -194,20 +199,31 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
           follow();
         }
         if (event.kind !== 'assistant') break;
-        const rows = event.rows?.length ? event.rows : [undefined];
+        const rows = event.rows?.length ? event.rows : [{ key: '', visible: event.visible }];
         const known = state.candidates.get(event.seq);
-        if (!event.appended && !known && state.kind !== 'restoring') break;
-        const keys = new Set(rows.map(row => row ?? ''));
-        for (const [key, candidate] of known ?? []) if (!keys.has(key) && (candidate.visible || candidate.unread)) candidates(event.seq).set(key, { ...candidate, visible: false, unread: false });
-        rows.forEach((row, index) => {
-          const key = row ?? '', before = known?.get(key);
-          const unread = event.visible && (before?.unread || !before?.visible && !(state.kind === 'following' && focused) && (state.kind !== 'restoring' || event.seq > state.target.last));
-          if (before?.visible !== event.visible || before?.unread !== unread || before?.index !== index) candidates(event.seq).set(key, { row, index, visible: event.visible, unread });
-          if (unread && state.kind === 'following' && !state.positioning) reader();
+        const baseline = !event.appended && !known && state.kind !== 'restoring';
+        const keys = new Set(rows.map(row => row.key));
+        for (const [key, candidate] of known ?? []) if (!keys.has(key) && (candidate.visible || candidate.unread)) candidates(event.seq).set(key, { ...candidate, visible: false, unread: state.filtered && candidate.unread });
+        rows.forEach(({ key, visible }, index) => {
+          const row = key || undefined, before = known?.get(key);
+          const arrived = event.rows?.length ? !before : !before?.visible;
+          const unread = !!before?.unread && (state.filtered || visible) || (!!event.rows?.length || event.visible) && arrived && !baseline && !filtering && !(state.kind === 'following' && focused && visible) && (state.kind !== 'restoring' || event.seq > state.target.last);
+          if (before?.visible !== visible || before?.unread !== unread || before?.index !== index) candidates(event.seq).set(key, { row, index, visible, unread });
+          if (unread && visible && state.kind === 'following' && !state.positioning) reader();
         });
         break;
       }
+      case 'filter':
+        state.filtered = event.active;
+        for (const [seq, rows] of state.candidates) for (const [key, candidate] of rows) if (candidate.visible) candidates(seq).set(key, { ...candidate, visible: false });
+        state = { ...common(state), kind: 'reader' };
+        state.pendingSend = undefined; state.forceItem = undefined; state.last = undefined; state.written = undefined;
+        state.generation++;
+        state.settling = 'render';
+        filtering = true; instant = true; newInstant = true; force = false;
+        break;
       case 'switch': {
+        state.filtered = false;
         if (state.kind === 'reader' && state.travel) reader();
         state.saved = new Map(scrollMemory(state).map(saved => [saved.scope.view, saved]));
         const target = state.saved.get(event.scope.view);
@@ -277,6 +293,12 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
       case 'focus': case 'frame': break;
     }
   }
+  if (filtering) {
+    let first: { seq: number; candidate: Candidate } | undefined;
+    for (const [seq, rows] of state.candidates) for (const candidate of rows.values()) if (candidate.visible && candidate.unread && (!first || seq < first.seq || seq === first.seq && candidate.index < first.candidate.index)) first = { seq, candidate };
+    if (first) reader({ item: { kind: 'message', seq: first.seq, row: first.candidate.row }, offset: 0, edge: 'divider' });
+    else follow();
+  }
   if (state.kind === 'restoring' && !state.waiting) {
     const target = state.target;
     const found = m.lookup(target.anchor.item);
@@ -325,11 +347,11 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
       const anchor = state.anchor;
       const found = m.lookup(anchor.item);
       if (found.kind === 'mounted' || found.kind === 'unmounted') {
-        const target = Math.max(0, Math.min(m.max, found.row.top - anchor.offset));
+        const target = Math.max(0, Math.min(m.max, (anchor.edge === 'divider' ? found.row.leading ?? found.row.top : found.row.top) - anchor.offset));
         if (target !== m.top && (events.some(event => event.type === 'layout' && event.cause === 'toggle') || Math.abs(target - m.top) >= 1)) scrollTop = target;
         if (found.kind === 'unmounted') request = { type: 'mount', item: anchor.item };
       } else if (found.kind === 'unloaded') request = { type: 'load', item: anchor.item, generation: state.generation };
-      else if (found.next) state = { ...state, anchor: { item: found.next.item, offset: found.next.top - m.top } };
+      else if (found.next) state = { ...state, anchor: { item: found.next.item, offset: found.next.top - m.top, edge: 'row' } };
       else scrollTop = m.max;
     }
   }
@@ -340,6 +362,13 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
   if (state.kind !== 'reader') state.threshold = false;
   else if (distance > m.viewport / 3) state.threshold = true;
   else if (distance < m.viewport / 4) state.threshold = false;
+  if (sawScroll && focused && state.filtered && !filtering) {
+    for (const [seq, rows] of state.candidates) for (const [key, candidate] of rows) {
+      if (!candidate.visible || !candidate.unread) continue;
+      const found = m.lookup({ kind: 'message', seq, row: candidate.row });
+      if (found.kind === 'mounted' && found.row.top >= top && found.row.bottom <= top + m.dock) candidates(seq).set(key, { ...candidate, unread: false });
+    }
+  }
   let count = 0;
   let dividerBefore: number | undefined, dividerRow: string | undefined, dividerIndex = Infinity;
   for (const [seq, rows] of state.candidates) for (const candidate of rows.values()) {
@@ -356,9 +385,9 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     else if (wasSettling === 'render') state.settling = 'delivery';
   }
   if (!overscrolled) state.last = { top, max: m.max, viewport: m.viewport, width: m.width, origin: m.origin };
-  const windowTop = scrollWindow(state, item => {
+  const windowTop = scrollWindow(state, (item, edge) => {
     const found = m.lookup(item);
-    return found.kind === 'mounted' || found.kind === 'unmounted' ? (found.row.windowTop ?? found.row.top) - m.origin : undefined;
+    return found.kind === 'mounted' || found.kind === 'unmounted' ? (edge === 'divider' ? found.row.leading ?? found.row.windowTop ?? found.row.top : found.row.windowTop ?? found.row.top) - m.origin : undefined;
   }, top - m.origin, m.windowMax ?? Math.max(0, m.max - m.origin));
   let frame: Decision['frame'] = 'none';
   if (state.kind === 'following' && (resized || events.some(event => event.type === 'layout'))) frame = 'measure';
