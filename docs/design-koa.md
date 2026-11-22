@@ -1090,6 +1090,16 @@ tree nesting, but only the harness interprets their agent/job
 meaning. Root status is OSC and is not part of the derivation; it
 continues to name the root while the user views a child or log.
 
+The root record's message is the first line of the latest user or
+assistant message with visible text, by the order of their ends; a
+slash command is not such a message. Only the end of such a message
+changes it. The state (working, idle, done, error) changes on its
+own and keeps the message: an error turn sets the state, not the
+message. A session switch, new session, resume or reload takes the
+latest such message of the loaded branch, or the agent's name when
+there is none. An open dialog's title replaces the message while the
+dialog is open.
+
 One publisher sends each revision as one `replace_subtrees` of
 `agents` and `jobs` (protocol.md, section 6), so ko never holds a
 child without its parent and a restarted koa replaces its

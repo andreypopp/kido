@@ -326,8 +326,10 @@ no runtime name: the row's `runtime` is the one source of it.
 
 - Detected: root app `koa` and `koa.session`.
 - Row title: `koa.name` when set, else the pane title.
-- Status: as `SomeAgent`, from the koa root. A message that repeats the
-  title is dropped; without a message, `koa.activity` supplies it.
+- Status: as `SomeAgent`, from the koa root, whose message is the
+  latest user or agent message's first line
+  ([design-koa.md](design-koa.md#status-records-and-signals)). A
+  message that repeats the title is dropped; without a message, `koa.activity` supplies it.
 - Supports: see [design-koa.md](design-koa.md#agent-extension-subagents-and-jobs) for the harness's messaging and controls.
 
 ### `Ssh`

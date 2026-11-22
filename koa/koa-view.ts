@@ -7,6 +7,7 @@ import { prompts } from "./koa-queue.ts";
 import { later } from "./koa-timer.ts";
 import { errorText, contentText, threadSections } from "./text.ts";
 import { markdownLine } from "./markdown-line.ts";
+import { decodePrompt } from './prompt.ts';
 import type { Dialogs } from "./koa-agents.ts";
 import type { Life, State, StateData, Dialog, Bash, CommandResult, Attachment, Thread } from "./koa-records.ts";
 import type { ThreadName } from "./records.ts";
@@ -41,12 +42,20 @@ type ViewOptions = {
 
 export type AgentView = ReturnType<typeof createView>;
 
+function messageLine(message: Extract<AgentSessionEvent, { type: 'message_end' }>['message'], attachments: readonly Attachment[], kind: ViewOptions['kind']): string {
+  if (message.role !== 'user' && message.role !== 'assistant') return '';
+  const source = contentText(message.content);
+  const text = message.role === 'user' ? decodePrompt(source, attachments, kind).text : source;
+  if (message.role === 'user' && text.startsWith('/')) return '';
+  return markdownLine((threadSections(text, true).find(section => section.text.trim())?.text ?? '').replace(/^(?:[^\S\n]*\n)+/, ''));
+}
+
 export function createView(options: ViewOptions) {
   let publishedThreads: Thread[] | undefined;
   const feed = transcript({ dir: options.dir, flushMs: FLUSH_MS, metrics: options.metrics, kind: options.kind, changed: () => publishThreads(), branch: options.branch, sessionEntryToContextMessages: options.sessionEntryToContextMessages });
   const { attached } = options;
   const pendingPrompts = prompts(options.kind);
-  let compaction: { root: Root; working: boolean; since?: number } | undefined;
+  let compaction: { value: Root['value']; working: boolean; since?: number } | undefined;
   let compactRequest: { ended: boolean } | undefined;
   let life: Life = { type: "starting" };
   let closed = false;
@@ -76,7 +85,7 @@ export function createView(options: ViewOptions) {
     })) return;
     publish(false, next);
   };
-  const status = (value: Root["value"] | "clear", message = state.name) => {
+  const status = (value: Root["value"] | "clear", message: string) => {
     if (value !== "clear") root = { value, message };
     options.status(value, message, state.dialogs[0]?.title);
     options.changed();
@@ -99,8 +108,7 @@ export function createView(options: ViewOptions) {
     if (result.type !== 'done') feed.command({ type: "compaction", state: result });
     if (compaction && !willRetry) {
       state.working = compaction.working; state.since = compaction.since;
-      if (result.type === "failed") status("error", result.message.split("\n")[0] ?? "");
-      else status(compaction.root.value, compaction.root.message);
+      status(result.type === "failed" ? "error" : compaction.value, lastText || state.name);
     }
     compaction = undefined;
     publish();
@@ -110,7 +118,7 @@ export function createView(options: ViewOptions) {
     life = { type: "failed", at: Date.now(), message: errorText(error) };
     state.working = false; delete state.since; state.statuses = {}; dropBash();
     process.stderr.write(`koa: ${life.message}\n`);
-    status("clear"); publish(true);
+    status("clear", lastText || state.name); publish(true);
   };
   const stats = (notify = true) => {
     const result = options.agent().session.getSessionStats();
@@ -129,11 +137,19 @@ export function createView(options: ViewOptions) {
     try { feed.rebuild(session.sessionManager.getEntries(), state.sessionId, session.sessionManager.getLeafId()); }
     catch (error) { state.bash = previous; publish(); throw error; }
   };
+  const restoreMessage = () => {
+    lastText = '';
+    for (const entry of options.agent().session.sessionManager.getBranch()) {
+      if (entry.type === 'message') lastText = messageLine(entry.message, [], options.kind) || lastText;
+    }
+    status(root.value, lastText || state.name);
+  };
   const refresh = () => {
     if (life.type === "failed" || stopping()) return;
     if (life.type !== "switching" && life.type !== "reloading") life = { type: "starting" };
     const { session, runtime } = options.agent();
     state.sessionId = session.sessionId; state.name = options.name ?? session.sessionName ?? "pi";
+    restoreMessage();
     state.model = session.model; state.thinking = session.thinkingLevel; state.sessionFile = session.sessionFile;
     rebuild(); levels(false);
     const count = stats(false);
@@ -151,8 +167,7 @@ export function createView(options: ViewOptions) {
   };
   let userAttachments: Attachment[] = [];
   let userWarning: string | undefined;
-  let outcome: { type: "done" } | { type: "error"; message: string } = { type: "done" };
-  const firstLine = (text: string) => text.split("\n").find(line => line.trim())?.trim() ?? "";
+  let outcome: "done" | "error" = "done";
   let settleWaiter: (() => void) | undefined;
   const event = (event: AgentSessionEvent): void => {
     if (life.type === "failed" || stopping()) return;
@@ -178,7 +193,8 @@ export function createView(options: ViewOptions) {
         if (delta.type === "thinking_start" || delta.type === "thinking_end") feed.thinking(delta.contentIndex, delta.type === "thinking_start" ? "started" : "ended", Date.now());
         break;
       }
-      case "message_end":
+      case "message_end": {
+        const line = messageLine(event.message, userAttachments, options.kind);
         if (event.message.role === "custom" && event.message.display) options.agentsChanged();
         feed.message(event.message, "end", event.message.role === "assistant" ? Date.now() : undefined, event.message.role === "user" ? userAttachments : []);
         if (event.message.role === "user") {
@@ -187,18 +203,19 @@ export function createView(options: ViewOptions) {
           userWarning = undefined;
         }
         if (event.message.role === "assistant") {
-          outcome = event.message.stopReason === "error" ? { type: "error", message: firstLine(event.message.errorMessage ?? "") } : { type: "done" };
-          lastText = markdownLine((threadSections(contentText(event.message.content), true).find(section => section.text.trim())?.text ?? "").replace(/^(?:[^\S\n]*\n)+/, ""));
+          outcome = event.message.stopReason === "error" ? "error" : "done";
         }
+        if (line) { lastText = line; status(root.value, line); }
         break;
+      }
       case "tool_execution_start": feed.toolRunning(event.toolCallId, Date.now()); break;
       case "tool_execution_update": feed.toolPartial(event.toolCallId, event.partialResult.content); break;
       case "tool_execution_end": if (["spawn_agent", "message_agent", "list_agents", "stop_agent"].includes(event.toolName)) options.agentsChanged(); feed.toolDone(event.toolCallId, event.result.content, event.isError, Date.now(), event.durationMs, event.result.structuredContent, event.result.details); break;
-      case "agent_start": state.working = true; state.since = Date.now(); state.aborted = false; outcome = { type: "done" }; lastText = ""; status("working"); publish(); break;
-      case "compaction_start": compaction ??= { root, working: state.working, since: state.since }; feed.command({ type: "compaction", state: { type: "running" } }); state.working = true; state.since ??= Date.now(); status("working"); publish(); break;
+      case "agent_start": state.working = true; state.since = Date.now(); state.aborted = false; outcome = "done"; status("working", lastText || state.name); publish(); break;
+      case "compaction_start": compaction ??= { value: root.value, working: state.working, since: state.since }; feed.command({ type: "compaction", state: { type: "running" } }); state.working = true; state.since ??= Date.now(); status("working", lastText || state.name); publish(); break;
       case "agent_settled":
         settleWaiter?.(); settleWaiter = undefined; state.working = false; delete state.since; state.aborted = event.aborted;
-        status(event.aborted ? "idle" : outcome.type, outcome.type === "error" ? outcome.message : lastText || state.name); publish(); stats(); settleBash();
+        status(event.aborted ? "idle" : outcome, lastText || state.name); publish(); stats(); settleBash();
         break;
       case "queue_update": pendingPrompts.update({ steering: event.steering, followUp: event.followUp }); publish(); break;
       case "thinking_level_changed": state.thinking = event.level; publish(); break;
@@ -218,8 +235,8 @@ export function createView(options: ViewOptions) {
   const resetSession = () => {
     state.working = false; state.aborted = false; delete state.since; delete state.editor; delete state.context;
     options.cancelEditor(); dropBash(); pendingPrompts.reset(); userAttachments = []; userWarning = undefined; attached.reset();
-    compaction = undefined; outcome = { type: "done" }; lastText = ""; state.statuses = {};
-    status("idle");
+    compaction = undefined; outcome = "done"; lastText = ""; state.statuses = {};
+    status("idle", state.name);
   };
   let switchingUI: (() => void)[] | undefined;
   const ui = (run: () => void) => { if (switchingUI) switchingUI.push(run); else run(); };
@@ -282,7 +299,7 @@ export function createView(options: ViewOptions) {
     replacing: () => { cancelDialogs(); newSessionScope(); switchingUI = []; life = { type: "switching" }; publish(); },
     replaced,
     replaceFailed: (error: unknown, torn: boolean) => { replaySwitching(); if (torn) fail(error); else { life = { type: "ready" }; publish(); } },
-    treeNavigated: (editorText: string | undefined) => { rebuild(); if (editorText) state.editor = { id: randomUUID(), text: editorText }; publish(); },
+    treeNavigated: (editorText: string | undefined) => { restoreMessage(); rebuild(); if (editorText) state.editor = { id: randomUUID(), text: editorText }; publish(); },
     notify: (message: string, level: "info" | "warning" | "error") => feed.notify(message, level),
     shutdown: () => options.shutdown(),
   };
