@@ -36,6 +36,22 @@ function record(line: string | undefined) {
   return JSON.parse(line.slice(6, -2));
 }
 
+test('large resets keep a stalled stream open until live output exceeds the cap', t => {
+  const parent = transcript({ dir: directory(t), flushMs: 1, branch: () => [], sessionEntryToContextMessages });
+  const child = transcript({ dir: directory(t), flushMs: 1, branch: () => [], sessionEntryToContextMessages });
+  t.after(() => { parent.close(); child.close(); });
+  for (let i = 0; i < 80; i++) child.message({ role: 'user', content: 'x'.repeat(16384), timestamp: i }, 'end');
+  const incoming = new IncomingMessage(new Socket());
+  incoming.method = 'GET'; incoming.url = '/events';
+  const response = new ServerResponse(incoming);
+  assert.equal(parent.handle(incoming, response), true);
+  child.show(parent);
+  assert.ok(response.writableLength > 1 << 20);
+  assert.equal(response.writableEnded, false);
+  for (let i = 0; i < 80; i++) child.message({ role: 'user', content: 'y'.repeat(16384), timestamp: 100 + i }, 'end');
+  assert.equal(response.writableEnded, true);
+});
+
 test('message moves use persisted entry identity with equal timestamps', t => {
   const branch: SessionEntry[] = [
     { type: 'message', id: 'one', parentId: null, timestamp: new Date(123).toISOString(), message: { role: 'user', content: '[topic: one]\nFirst', timestamp: 123 } },

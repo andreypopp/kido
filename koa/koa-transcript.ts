@@ -350,10 +350,10 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
   };
 
   const frame = (json: string): string => "data: " + json + "\n\n";
-  const body = (req: ServerResponse, text: string, more = false): void => send(req, text, more, counters);
+  const body = (req: ServerResponse, text: string, mode: "live" | "reset" | "end" = "end"): void => send(req, text, mode, counters);
   const broadcast = (record: PageRecord): void => {
     const line = frame(JSON.stringify(record));
-    for (const req of subscribers) body(req, line, true);
+    for (const req of subscribers) body(req, line, "live");
   };
   const flushRecord = (bytes: number, id: number): Extract<PageRecord, { type: "flush" }> => ({ type: "flush", id, t: Date.now(), bytes });
   const window = (before: number, topic?: TopicName): string => {
@@ -734,7 +734,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     updateIndex(items.map(item => item.seq));
     sent.clear();
     const record = reset();
-    for (const req of [...subscribers]) body(req, record, true);
+    for (const req of [...subscribers]) body(req, record, "reset");
   };
 
   const release = (): Set<ServerResponse> => take(subscribers);
@@ -743,7 +743,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     flush();
     if (!subscribers.size) { sent.clear(); epoch = mintId(); }
     const record = reset(), state = currentState && frame(JSON.stringify(currentState));
-    for (const req of responses) { follow(subscribers, req, { type: "selected" }); if (state) body(req, state, true); body(req, record, true); }
+    for (const req of responses) { follow(subscribers, req, { type: "selected" }); if (state) body(req, state, "live"); body(req, record, "reset"); }
   };
   const message: (message: AgentMessage, phase: "start" | "update" | "end", ended?: number, attachments?: Attachment[]) => void = applyMessage;
   const thinking = (index: number, edge: "started" | "ended", at: number): void => {
@@ -805,24 +805,24 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
       req.once("close", () => forget(req));
       flush();
       req.writeHead(200, { "Content-Type": "text/event-stream" });
-      if (currentState) body(req, frame(JSON.stringify(currentState)), true);
+      if (currentState) body(req, frame(JSON.stringify(currentState)), "live");
       if (url.searchParams.get("epoch") === epoch) {
         if (counters) counters.cursors++;
         const after = Number(url.searchParams.get("after") ?? -1);
         if (!Number.isSafeInteger(after) || after < -1) { body(req, ""); return true; }
         for (const seq of corrected) {
           if (seq > after) continue;
-          body(req, frame(JSON.stringify({ type: 'item', item: output(items[seq]) })), true);
+          body(req, frame(JSON.stringify({ type: 'item', item: output(items[seq]) })), "live");
           if (req.writableEnded || req.destroyed) break;
         }
         for (const item of items.slice(after + 1)) {
-          body(req, frame(JSON.stringify({ type: "item", item: output(item) })), true);
+          body(req, frame(JSON.stringify({ type: "item", item: output(item) })), "live");
           if (req.writableEnded || req.destroyed) break;
         }
-      } else { if (counters) counters.resets++; body(req, reset(), true); }
+      } else { if (counters) counters.resets++; body(req, reset(), "reset"); }
       if (req.writableEnded || req.destroyed) return true;
       follow(subscribers, req, address, undefined, url.searchParams.has("koa"));
-      if (counters) body(req, frame(JSON.stringify(flushRecord(counters.bytes, counters.flushes))), true);
+      if (counters) body(req, frame(JSON.stringify(flushRecord(counters.bytes, counters.flushes))), "live");
     } else return false;
     return true;
   };

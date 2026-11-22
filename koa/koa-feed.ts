@@ -2,6 +2,7 @@ import type { ServerResponse } from "node:http";
 import type { PageRecord } from "./koa-records.ts";
 
 const MAX_OUTPUT_BYTES = 1 << 20;
+const resetBytes = new WeakMap<ServerResponse, number>();
 
 export type ViewAddress = { type: "selected" } | { type: "named"; id: string };
 
@@ -24,7 +25,7 @@ export const forget = (response: ServerResponse): void => {
 };
 
 export function reloadPages(): void {
-  for (const [response, owner] of owners) if (owner.document) send(response, frame({ type: "reload" } satisfies PageRecord), false);
+  for (const [response, owner] of owners) if (owner.document) send(response, frame({ type: "reload" } satisfies PageRecord), "end");
 }
 
 export function take(set: Set<ServerResponse>): Set<ServerResponse> {
@@ -36,18 +37,23 @@ export function take(set: Set<ServerResponse>): Set<ServerResponse> {
 export function expire(set: Set<ServerResponse>, parent: string): void {
   for (const response of [...set]) {
     const address = owners.get(response)?.address;
-    if (address?.type === "named") send(response, frame({ type: "view_gone", view: address.id, parent } satisfies PageRecord), false);
+    if (address?.type === "named") send(response, frame({ type: "view_gone", view: address.id, parent } satisfies PageRecord), "end");
   }
 }
 
-export function send(response: ServerResponse, text: string, more: boolean, counters?: FeedCounters): void {
+export function send(response: ServerResponse, text: string, mode: "live" | "reset" | "end", counters?: FeedCounters): void {
   if (response.destroyed || response.writableEnded) return;
   if (text) {
     response.write(text);
     if (counters) { counters.bytes += Buffer.byteLength(text); counters.highWater = Math.max(counters.highWater, response.writableLength); }
   }
-  if (!more || response.writableLength > MAX_OUTPUT_BYTES) {
-    if (counters && response.writableLength > MAX_OUTPUT_BYTES) counters.caps++;
+  if (mode === "reset") {
+    if (!resetBytes.has(response)) response.once("drain", () => resetBytes.delete(response));
+    resetBytes.set(response, (resetBytes.get(response) ?? 0) + Buffer.byteLength(text));
+  }
+  const capped = response.writableLength > (resetBytes.get(response) ?? 0) + MAX_OUTPUT_BYTES;
+  if (mode === "end" || capped) {
+    if (counters && capped) counters.caps++;
     response.end();
     forget(response);
   }

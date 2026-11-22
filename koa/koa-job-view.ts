@@ -41,12 +41,12 @@ export function jobView(source: Source, empty: () => void = () => {}) {
   let currentState: PageRecord | undefined;
   const tailStart = (): number => source.logged() - source.tail().length;
   const flushed = source.flushed;
-  const sendState = (response: ServerResponse): void => { if (currentState) send(response, frame(currentState), true); };
+  const sendState = (response: ServerResponse): void => { if (currentState) send(response, frame(currentState), "live"); };
   const open = (response: ServerResponse): void => {
     const end = source.logged();
-    send(response, frame({ type: "job-reset", view: source.id, epoch, start: tailStart(), end, data: source.tail().toString("base64") }), true);
+    send(response, frame({ type: "job-reset", view: source.id, epoch, start: tailStart(), end, data: source.tail().toString("base64") }), "reset");
     cursors.set(response, { sent: end, busy: false, stateDue: false });
-    if (source.missing()) send(response, frame({ type: "job-gone", view: source.id }), true);
+    if (source.missing()) send(response, frame({ type: "job-gone", view: source.id }), "live");
   };
   const pump = async (response: ServerResponse): Promise<void> => {
     const cursor = cursors.get(response);
@@ -64,10 +64,10 @@ export function jobView(source: Source, empty: () => void = () => {}) {
           end = chunk.end; data = chunk.data;
         }
         if (!owned()) return;
-        send(response, frame({ type: "job-append", view: source.id, epoch, start, data }), true);
+        send(response, frame({ type: "job-append", view: source.id, epoch, start, data }), "live");
         cursor.sent = end;
       }
-    } catch { if (owned()) send(response, "", false); }
+    } catch { if (owned()) send(response, "", "end"); }
     finally {
       cursor.busy = false;
       if (owned() && cursor.stateDue) { cursor.stateDue = false; sendState(response); }

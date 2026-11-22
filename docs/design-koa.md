@@ -431,7 +431,10 @@ moves the scroll), each older page and a topic reload, it asks for the
 next older page while its top is still in view, so a window that the
 rows do not fill fills itself; a failed page stops this until the next
 scroll. A slow page whose output queue exceeds the feed cap is
-disconnected and can catch up; it does not block other pages.
+disconnected and can catch up; it does not block other pages. A
+reset (a first connection, a view switch, a resync or a job's reset)
+is always written whole, because its window has no byte limit; the
+cap counts only the live records queued after the undrained reset.
 
 An exception while applying a record is different from a transport
 failure. The page closes the feed and asks for a reload. Automatic
