@@ -182,7 +182,10 @@ test('selecting a topic loads its items before compaction and outside the live w
   const live = JSON.parse(request(view, '/items?before=' + Number.MAX_SAFE_INTEGER).join(''));
   assert.equal(live.more, true);
   assert.equal(live.items.some((item: WireItem) => item.kind === 'assistant' && item.blocks.some(block => block.topic === 'old')), false);
-  assert.deepEqual(selected(), historical);
+  const olderTopic = selected();
+  assert.deepEqual(olderTopic.items.slice(0, historical.items.length), historical.items);
+  assert.equal(olderTopic.items.filter((item: WireItem) => item.kind === 'assistant' && item.blocks.some(block => block.topic === 'recent')).length, 120);
+  assert.equal(olderTopic.more, false);
 });
 
 test('live compaction replaces its command without changing earlier items or epoch', t => {
@@ -244,6 +247,11 @@ test('topic attribution labels final prefixes with metadata without changing the
   const filtered = JSON.parse(request(view, '/items?before=100&topic=two').join(''));
   assert.ok(filtered.items.some((item: { kind: string }) => item.kind === 'user'));
   assert.equal(filtered.more, false);
+  const prefixPage = JSON.parse(request(view, '/items?before=1&topic=two').join(''));
+  assert.deepEqual(prefixPage.items.map((item: WireItem) => item.kind), ['user', 'topics']);
+  assert.deepEqual(prefixPage.items[1].topics, ['one', 'two']);
+  assert.equal(prefixPage.items[1].target, 0);
+  assert.equal(prefixPage.more, false);
 });
 
 test('streaming markers do not leak and explicit users stay in one topic', t => {
@@ -255,7 +263,7 @@ test('streaming markers do not leak and explicit users stay in one topic', t => 
   assert.deepEqual(items[1].blocks.map((block: { text: string }) => block.text), ['Body\n']);
   view.message(assistant('[topic: one]\nBody\n[topic: two]\nOther'), 'end');
   items = JSON.parse(request(view, '/items?before=100&topic=two').join('')).items;
-  assert.equal(items.some((item: { kind: string }) => item.kind === 'user'), false);
+  assert.equal(items.find((item: WireItem) => item.kind === 'user').topic, 'selected');
 });
 
 test('topic intervals follow inputs, tools inherit the turn topic and unmarked replies stay unlabelled', t => {
@@ -528,6 +536,38 @@ test('tool-heavy reset and older pages count messages, including with a topic fi
     const older = JSON.parse(request(view, '/items?before=' + newest.items[0].seq + suffix).join(''));
     check(older, 'Question 20');
   }
+});
+
+test('sparse topic pages retain intervening records, boundary notices and progressing cursors', t => {
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const messages: AgentMessage[] = [];
+  for (let turn = 0; turn < 105; turn++) {
+    messages.push({ role: 'user', content: '[topic: one]\nQuestion ' + turn, timestamp: turn });
+    for (const topic of ['one', 'two']) {
+      const id = turn + topic;
+      messages.push({ ...assistant(''), content: [{ type: 'toolCall', id, name: 'read', arguments: { path: topic } }] });
+      messages.push({ role: 'toolResult', toolCallId: id, toolName: 'read', content: [{ type: 'text', text: topic }], details: { topic }, isError: false, timestamp: turn });
+    }
+    messages.push(assistant('[topic: two]\nOther ' + turn));
+  }
+  view.rebuild(...linked(messages));
+  view.notify('Trailing boundary notice', 'info');
+  const get = (before: number, topic = 'one'): { items: WireItem[]; more: boolean } => JSON.parse(request(view, '/items?before=' + before + '&topic=' + topic).join(''));
+  const newest = get(Number.MAX_SAFE_INTEGER);
+  assert.equal(newest.items.filter(item => item.kind === 'user').length, 100);
+  assert.equal(newest.items[0].kind === 'user' && newest.items[0].text, 'Question 5');
+  assert.equal(newest.items.filter(item => item.kind === 'assistant' && item.blocks.some(block => block.type === 'tool')).length, 200);
+  assert.equal(newest.items.at(-1)?.kind, 'notify');
+  assert.equal(newest.more, true);
+  assert.equal(new Set(newest.items.map(item => item.seq)).size, newest.items.length);
+  const cursor = Math.min(...newest.items.filter(item => item.kind !== 'topics' && item.kind !== 'annotations').map(item => item.seq));
+  const older = get(cursor);
+  assert.equal(older.items.filter(item => item.kind === 'user').length, 5);
+  assert.equal(older.more, false);
+  assert.ok(older.items.every(item => item.kind === 'topics' || item.kind === 'annotations' || item.seq < cursor));
+  const unmatched = get(cursor, 'missing');
+  assert.equal(unmatched.more, false);
+  assert.ok(Math.min(...unmatched.items.map(item => item.seq)) < cursor);
 });
 
 test("patches append only unchanged text prefixes and replace changed blocks", t => {

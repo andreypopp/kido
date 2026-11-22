@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { IncomingMessage, ServerResponse } from 'node:http';
+import { Socket } from 'node:net';
+import { sessionEntryToContextMessages } from '@earendil-works/pi-coding-agent';
+import { transcript } from './koa-transcript.ts';
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
@@ -13,6 +19,8 @@ import { pathToken } from './path-token.ts';
 import { promptHistory } from './page/history.ts';
 import { ATTACHMENT_LIMITS, pathArg } from "./koa-records.ts";
 import { topicTurn } from './topic-turn.ts';
+import { realFixture } from './koa-program-fixture.ts';
+import { ofType } from './koa-agent-fixture.ts';
 import { jobEndText, parseTopicName } from "./records.ts";
 import type { PromptMode } from "./koa-records.ts";
 import { scrollInitial, scrollMemory, scrollStored, scrollUpdate, scrollWindow } from "./page/scroll.ts";
@@ -261,8 +269,10 @@ async function page() {
   Object.assign(context, runInNewContext(jobSource + '\n({createJobPage})', { ...context, atob, TextDecoder, Uint8Array }));
   const revealSource = stripTypeScriptTypes(readFileSync(new URL('page/reveal.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(revealSource + '\n({revealHeight,unitsOf})', context));
+  const runSource = stripTypeScriptTypes(readFileSync(new URL('topic-run.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  Object.assign(context, runInNewContext(runSource + '\n({runParts,runOwner,runOf,invalidateRuns,sourceKey,visibleText,projectTopic})', context));
   const extentSource = stripTypeScriptTypes(readFileSync(new URL('page/extent.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
-  Object.assign(context, runInNewContext(extentSource + '\n({estimateExtent,windowOf,groupAt,runParts,runOwner,runOf,invalidateRuns,sourceKey,visibleText,rowKey,sameRow})', context));
+  Object.assign(context, runInNewContext(extentSource + '\n({estimateExtent,windowOf,groupAt,rowKey,sameRow})', context));
   const stepsSource = stripTypeScriptTypes(readFileSync(new URL('page/steps.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(stepsSource + '\n({stepInfo,stepParts,toolArgs,agentBody,noticeOf,noticeText,sessionFields})', context));
   const findSource = stripTypeScriptTypes(readFileSync(new URL('page/find.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
@@ -273,6 +283,81 @@ async function page() {
   const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\nfunction put(item) { accept(item); renderDirty(); return views.get(item.seq)?.view; }\nlet agentTestSeq=10000;function agentStep(card,at,key,slots=new Map()){let seq=slots.get(key);if(seq===undefined){seq=agentTestSeq++;slots.set(key,seq)}const base={seq,revision:0,at,final:true};put(card.direction==='in'?{...base,kind:'agent',...card}:{...base,kind:'assistant',stop:'stop',error:'',blocks:[{type:'tool',id:key,name:'spawn_agent',args:{text:'{}'},state:{type:'done',error:false,result:{text:'',images:[]}},agent:card}]});const owner=runOwner(runContext(),card.direction==='in'?{kind:'item',seq}:{kind:'block',seq,index:0});return openers.get(sourceKey(card.direction==='in'?{kind:'item',seq}:{kind:'block',seq,index:0})).view;}";
   return { observers, repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
 }
+
+test('filtered history renders the same mixed-topic run and notices as the live feed', async t => {
+  const fixture = await realFixture(t, {
+    replies: [{ tools: [{ name: 'probe', args: { topic: 'one' } }] }, { tools: [{ name: 'probe', args: { topic: 'two' } }] }, { text: '[topic: two]\nOther-topic prose' }],
+    extensions: { 'probe.ts': `export default function(pi) { pi.registerTool({ name: 'probe', label: 'probe', description: 'probe', parameters: { type: 'object', properties: { topic: { type: 'string' } }, required: ['topic'] }, async execute(_id, args, _signal, _update, ctx) { if (args.topic === 'two') ctx.ui.notify('Joined notice', 'info'); return { content: [{ type: 'text', text: args.topic }], details: { topic: args.topic } }; } }); }` },
+  });
+  const from = fixture.count();
+  assert.equal((await fixture.post('prompt', { text: '[topic: one]\nWork', mode: 'prompt', attachments: [] })).status, 200);
+  await fixture.until(ofType('state', record => record.working === true), from);
+  await fixture.until(ofType('state', record => record.working === false), from);
+  const records = fixture.records();
+  assert.doesNotMatch(JSON.stringify(records), /Tool probe not found/, fixture.stderr());
+  const response = await fetch(fixture.url('items?before=100000&topic=one'));
+  assert.equal(response.status, 200);
+  const history = await response.json();
+  const live = (await page()).repl(), loaded = (await page()).repl();
+  for (const evaluate of [live, loaded]) evaluate("state={...state,view:{id:'root',type:'root',path:[]}};topicFilters.set(filterKey(),'one');");
+  for (const record of records) if (['reset', 'item', 'patch', 'flush'].includes(record.type)) live(`apply(${JSON.stringify(record)});`);
+  loaded(`apply(${JSON.stringify({ type: 'reset', ...history })});`);
+  const snapshot = `refreshTopicItems();renderDirty();JSON.stringify(order.map(seq=>({seq,rows:unitRows(seq,'visible'),item:visible(seq)})))`;
+  const expected = String(live(snapshot));
+  assert.match(expected, /Joined notice/);
+  assert.equal((expected.match(/"name":"probe"/g) ?? []).length, 2);
+  assert.doesNotMatch(expected, /Other-topic prose/);
+  assert.equal(String(loaded(snapshot)), expected);
+  const runs = `[...openers.entries()].filter(([key])=>key.startsWith('run:')).forEach(([,opener])=>opener.open());JSON.stringify([...views.values()].flatMap(entry=>[...entry.slots.values()].filter(slot=>slot.type==='run'&&slot.view.firstElementChild).map(slot=>{const marks=runMarks.get(slot.view.firstElementChild);return marks.steps.map(step=>[step.current.kind,step.current.kind==='block'?step.current.block.topic:undefined,step.label.textContent]);})))`;
+  const steps = JSON.parse(String(live(runs)));
+  assert.equal(steps.length, 1);
+  assert.deepEqual(steps[0].map((step: unknown[]) => step.slice(0, 2)), [['block', 'one'], ['block', 'two'], ['notice', null]]);
+  assert.match(steps[0][2][2], /Joined notice/);
+  assert.equal(String(loaded(runs)), JSON.stringify(steps));
+});
+
+test('quota history keeps the leading run and older history joins loaded runs like the live feed', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'koa-run-window-'));
+  const view = transcript({ dir, flushMs: 1, kind: 'root', branch: () => [], sessionEntryToContextMessages });
+  t.after(() => { view.close(); rmSync(dir, { recursive: true, force: true }); });
+  const request = (path: string) => {
+    const req = new IncomingMessage(new Socket()); req.method = 'GET'; req.url = path;
+    const response = new ServerResponse(req), chunks: string[] = [];
+    response.write = (chunk: string) => { chunks.push(chunk); return true; };
+    response.end = (chunk?: unknown) => { if (typeof chunk === 'string') chunks.push(chunk); return response; };
+    assert.equal(view.handle(req, response, { type: 'selected' }), true);
+    return chunks;
+  };
+  const feed = request('/events');
+  const tool = (id: string) => ({ type: 'toolCall' as const, id, name: 'read', arguments: { path: id } });
+  const reply = { role: 'assistant' as const, api: 'openai-completions' as const, provider: 'fake', model: 'fake-model', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+  view.message({ role: 'user', content: '[topic: two]\nStart', timestamp: 1 }, 'end');
+  view.message({ ...reply, content: [tool('earlier')], stopReason: 'toolUse', timestamp: 2 }, 'end');
+  view.notify('Joined earlier notice', 'info');
+  view.message({ ...reply, stopReason: 'stop', content: [tool('cutoff'), { type: 'text', text: '[topic: one]\nCutoff prose' }], timestamp: 3 }, 'end');
+  view.toolDone('cutoff', [{ type: 'text', text: 'done' }], false, 3, undefined, undefined, { topic: 'one' });
+  for (let index = 0; index < 99; index++) view.message({ role: 'user', content: '[topic: one]\nLater ' + index, timestamp: 4 + index }, 'end');
+  request('/events');
+  const live = (await page()).repl(), historyPage = await page(), loaded = historyPage.repl();
+  for (const evaluate of [live, loaded]) evaluate("state={...state,view:{id:'root',type:'root',path:[]}};topicFilters.set(filterKey(),'one');");
+  for (const line of feed) live(`apply(${line.slice(6, -2)});`);
+  const newest = JSON.parse(request('/items?before=100000&topic=one').join(''));
+  loaded(`apply(${JSON.stringify({ type: 'reset', ...newest })});renderDirty();`);
+  const snapshot = "renderDirty();JSON.stringify(order.filter(seq=>visible(seq)?.kind!=='topics').map(seq=>({seq,item:visible(seq),rows:unitRows(seq)})))";
+  assert.equal(String(loaded(snapshot)), String(live(snapshot)), 'quota page must keep the earlier run owner');
+  const mergedPage = await page(), merged = mergedPage.repl();
+  merged("state={...state,view:{id:'root',type:'root',path:[]}};topicFilters.set(filterKey(),'one');");
+  const raw = JSON.parse(request('/items?before=100000').join(''));
+  assert.equal(raw.items[0].seq, 0);
+  merged(`epoch=${JSON.stringify(raw.epoch)};more=true;for(const item of ${JSON.stringify(raw.items.filter((item: { seq: number }) => item.seq >= 3))})accept(item);renderDirty();`);
+  mergedPage.context.fetch = async () => ({ ok: true, json: async () => JSON.parse(request('/items?before=3&topic=one').join('')) });
+  const pending = merged('older()');
+  await settle();
+  merged('tick()');
+  await pending;
+  assert.equal(merged('items.has(1)'), true, String(merged("element('error').textContent")));
+  assert.equal(String(merged(snapshot)), String(live(snapshot)), 'older history must invalidate the provisional run topic');
+});
 
 test('row identities keep block order and distinguish item sources', async () => {
   const app = await page(), evaluate = app.repl();

@@ -5,7 +5,8 @@ import { pathToken } from '../path-token.ts';
 import { markdown, type Tail } from './markdown.ts';
 import { markdownLine } from '../markdown-line.ts';
 import { revealHeight, unitsOf, type Unit } from './reveal.ts';
-import { visibleText, estimateExtent, groupAt, runParts, runOwner, runOf, invalidateRuns, sourceKey, windowOf, rowKey, sameRow, type RowId, type SeqRange, type RunContext } from './extent.ts';
+import { estimateExtent, groupAt, windowOf, rowKey, sameRow, type RowId, type SeqRange } from './extent.ts';
+import { visibleText, runParts, runOwner, runOf, invalidateRuns, sourceKey, projectTopic, type RunContext, type TopicContext } from '../topic-run.ts';
 import { composer } from './composer.ts';
 import { stepInfo, stepParts, toolArgs, noticeOf, noticeText, sessionFields, type NoticeData, type StepInput } from './steps.ts';
 import { exportText, findSegments, lowered, matchesIn, type Segment } from './find.ts';
@@ -16,7 +17,7 @@ import { createJobPage } from './job.ts';
 import { dots } from './working.ts';
 import { install } from './metrics.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
-import type { State, WireJob, WireItem, QueuedPrompt, Block, Patch, PageRecord, MetricsSample, Stages, PromptMode, ImageRef, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
+import type { State, WireJob, WireItem, QueuedPrompt, Patch, PageRecord, MetricsSample, Stages, PromptMode, ImageRef, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
 import type { TopicName, AgentRef, Relation } from '../records.ts';
 import { parseTopicName } from '../records.ts';
 import { topicTurn } from '../topic-turn.ts';
@@ -114,42 +115,16 @@ function waitingForTopic(item: WireItem): boolean {
 }
 const runKeys = new Map<number, string>();
 const allRuns: RunContext = { raw: seq => items.get(seq), shown: seq => items.get(seq), owners: new Map() };
-let runTopics: Map<string, TopicName> | undefined;
-function runTopic(source: Parameters<typeof runOwner>[1]): TopicName | undefined {
-  if (!runTopics) {
-    const context = allRuns, names = new Map<string, TopicName>();
-    for (const seq of [...items.keys()].sort((a, b) => a - b)) for (const part of runParts(items.get(seq), items.get(seq))) {
-      if (part.kind !== 'step') continue;
-      const key = sourceKey(runOwner(context, part.source));
-      const topic = part.step.kind === 'block' ? part.step.block.topic ?? topicItems.get(seq)?.topics[0] : part.step.kind === 'agent' || part.step.kind === 'job' ? part.step.item.topic : undefined;
-      if (topic && !names.has(key)) names.set(key, topic);
-    }
-    runTopics = names;
-  }
-  return runTopics.get(sourceKey(runOwner(allRuns, source)));
-}
+const topicContext: TopicContext = { items, labels: seq => topicItems.get(seq)?.topics ?? [], runs: allRuns };
 function visible(seq: number): WireItem | undefined {
-  const item = items.get(seq), filter = topicFilter();
-  if (!item || item.kind === 'annotations' || item.kind === 'topics') return item;
+  const item = items.get(seq);
   if (projections.has(seq)) return projections.get(seq);
-  const names = topicItems.get(seq)?.topics ?? [];
-  let projected: WireItem | undefined;
-  if (!filter) {
-    if ((item.kind === 'agent' || item.kind === 'job') && !item.topic && names[0]) { const projected = { ...item, topic: names[0] }; projections.set(seq, projected); return projected; }
-    if (item.kind !== 'assistant' || !names[0] || item.blocks.every(block => block.topic)) return item;
-    projected = { ...item, blocks: item.blocks.map(block => block.topic ? block : { ...block, topic: names[0] }) };
-  } else if (item.kind === 'assistant') {
-    const matches = (block: Block, index: number) => (block.type === 'text' ? block.topic ?? names[0] : runTopic({ kind: 'block', seq, index })) === filter;
-    const error = item.error && runTopic({ kind: 'item', seq }) === filter ? item.error : '';
-    if (item.blocks.some(matches) || error) projected = { ...item, error, blocks: item.blocks.map((block, index) => matches(block, index) ? block.topic ? block : { ...block, topic: names[0] } : { type: 'text', text: '' }) };
-  } else if (item.kind === 'agent' || item.kind === 'job' || noticeOf(item)) {
-    if (runTopic({ kind: 'item', seq }) === filter) projected = item;
-  } else if (item.kind === 'user' && (item.topic ? item.topic === filter : names.includes(filter)) || waitingForTopic(item)) projected = item;
+  const projected = projectTopic(topicContext, seq, topicFilter()) ?? (item && waitingForTopic(item) ? item : undefined);
   projections.set(seq, projected);
   return projected;
 }
 function refreshTopicItems() {
-  runTopics = undefined;
+  topicContext.topics = undefined;
   projections.clear(); segmentCache.clear(); owners.clear(); find = undefined; selected = undefined;
   order.length = 0; extents.clear(); table = undefined;
   for (const seq of items.keys()) { if (visible(seq)) order.splice(orderIndex(seq), 0, seq); dirty.add(seq); }
@@ -1140,7 +1115,15 @@ function reconcileRuns() {
     const entry = views.get(seq); if (!entry) continue;
     for (const part of runParts(items.get(seq), visible(seq))) if (part.kind !== 'boundary' && runOf(context, part.source)) {
       const key = sourceKey(part.source), owner = sourceKey(runOwner(context, part.source)), steps = groups.get(owner) ?? [];
-      steps.push({ ...part.step, key, slots: entry.slots }); groups.set(owner, steps);
+      const item = visible(seq); if (!item) continue;
+      let step: StepInput | undefined;
+      if (part.kind === 'notice') { const row = noticeOf(item); if (row) step = { kind: 'notice', item, row }; }
+      else if (part.source.kind === 'block' && item.kind === 'assistant') {
+        const index = part.source.index, block = item.blocks[index];
+        if (block.type !== 'text') step = { kind: 'block', item, block, index };
+      } else if (item.kind === 'agent') step = { kind: 'agent', item };
+      else if (item.kind === 'job') step = { kind: 'job', item };
+      if (step) { steps.push({ ...step, key, slots: entry.slots }); groups.set(owner, steps); }
     }
   }
   for (const [key, steps] of groups) {
@@ -1217,11 +1200,11 @@ function commandNotice(item: Pick<Extract<WireItem, { kind: 'command' }>, 'seq' 
 function accept(item: WireItem) {
   const old = items.get(item.seq), previous = visible(item.seq);
   const priorInput = !old && topicFilter() && (item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') ? latestTopicInput() : undefined;
-  const rawKey = runParts(item, item).map(part => part.kind === 'boundary' ? 'boundary' : part.kind + ':' + sourceKey(part.source) + ':' + (part.step.kind === 'block' ? part.step.block.topic ?? topicItems.get(item.seq)?.topics[0] ?? '' : part.step.kind === 'agent' || part.step.kind === 'job' ? part.step.item.topic ?? '' : '')).join('|') + ':' + (item.kind === 'assistant' ? item.blocks.filter(visibleText).map(block => block.topic ?? topicItems.get(item.seq)?.topics[0] ?? '').join('|') : item.kind === 'user' ? item.topic ?? topicItems.get(item.seq)?.topics.join('|') ?? '' : '');
+  const rawKey = runParts(item, item).map(part => part.kind === 'boundary' ? 'boundary' : part.kind + ':' + sourceKey(part.source) + ':' + (part.source.kind === 'block' && item.kind === 'assistant' ? item.blocks[part.source.index].topic ?? topicItems.get(item.seq)?.topics[0] ?? '' : item.kind === 'agent' || item.kind === 'job' ? item.topic ?? '' : '')).join('|') + ':' + (item.kind === 'assistant' ? item.blocks.filter(visibleText).map(block => block.topic ?? topicItems.get(item.seq)?.topics[0] ?? '').join('|') : item.kind === 'user' ? item.topic ?? topicItems.get(item.seq)?.topics.join('|') ?? '' : '');
   const changedRun = runKeys.get(item.seq) !== rawKey;
   runKeys.set(item.seq, rawKey);
   items.set(item.seq, item);
-  if (changedRun) { runTopics = undefined; invalidateRuns(allRuns, item.seq); }
+  if (changedRun) { topicContext.topics = undefined; invalidateRuns(allRuns, item.seq); }
   if (old !== item || changedRun) projections.delete(item.seq);
   const shown = visible(item.seq);
   if (shown && !previous) order.splice(orderIndex(item.seq), 0, item.seq);
@@ -1902,7 +1885,7 @@ function apply(record: PageRecord) {
     finishTopicNaming(false); cancelTopicRename?.(); cancelTopicDrag?.();
     pathWarnings.clear(); pathWarningEpoch++;
     editor.resetCompletion();
-    find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); allRuns.owners.clear(); runKeys.clear(); runTopics = undefined; order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); topicItems.clear(); projections.clear(); folds.clear(); historyRequest = undefined; more = record.more;
+    find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); allRuns.owners.clear(); runKeys.clear(); topicContext.topics = undefined; order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); topicItems.clear(); projections.clear(); folds.clear(); historyRequest = undefined; more = record.more;
     resets++;
     enqueue({ type: 'reset' });
     lastMeasurement = undefined;

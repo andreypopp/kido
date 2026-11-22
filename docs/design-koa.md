@@ -408,7 +408,8 @@ Last-Event-ID. Patches change unfinished items, so an event id would
 be the wrong cursor. A current cursor gets the missing items; another
 epoch gets a reset window. A window, and each older page, holds the
 newest records back to and including the hundredth counted message,
-with every record between them. A user message and an assistant
+with every record between them, and back to the start of the run that
+holds the first of them, so a page does not cut a run. A user message and an assistant
 message with visible text count; tool steps, agent and job items,
 notices and metadata records do not, so a tool-heavy turn does not
 fill a page by itself. A page has no byte limit: the per-field cuts
@@ -435,8 +436,8 @@ A run is page presentation, not a feed record. It groups consecutive
 thinking, tool, agent and job steps between visible prose or user
 messages. A notice joins an existing run but does not open one.
 Whitespace-only text and hidden metadata do not split a run. A gap of
-unloaded history does. `koa/page/extent.ts` assigns each run one owner
-for rendering, positioning, unread counts and find.
+unloaded history does. `koa/topic-run.ts` assigns each run one owner
+for rendering, positioning, unread counts, find and topic filtering.
 
 The grouping is independent of turn boundaries. A report received
 while idle can join the last run. Topic filtering does not regroup
@@ -807,9 +808,16 @@ A label learned after an item became final is a separate metadata
 item, for the same cursor reason as annotations.
 
 The page derives topic colors from order and keeps filtering local.
-The live feed is not filtered. Older-history reads filter before
-they count messages, and count only text in the topic, so sparse topics can load useful history. Runs remain
-whole under filtering.
+The live feed is not filtered. A run's filter membership follows the
+topic of its first step that has a known topic; its notices and its
+steps of other topics follow the run. A filtered older-history read
+counts only text in the topic, so sparse topics can load useful
+history, but it returns every record of its range, with the topic and
+annotation records that they depend on. So the page filters history
+with the same rule as the live feed, and a run that the range holds
+is whole. The server and the page share that rule,
+`koa/topic-run.ts`: run ownership, topic membership and the counted
+message.
 
 The page shows topics only in its own rendering: a header row on each
 user and agent message holds the message's time and its topic's

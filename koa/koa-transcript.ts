@@ -1,4 +1,5 @@
 import { topicTurn } from './topic-turn.ts';
+import { countedMessage, runParts } from './topic-run.ts';
 import { topicContext, topicQuotes, quotedTopic } from './koa-classify.ts';
 import type { QueuedPrompt } from './koa-records.ts';
 import { cleanLine } from './text.ts';
@@ -247,45 +248,32 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
   const flushRecord = (bytes: number, id: number): Extract<PageRecord, { type: "flush" }> => ({ type: "flush", id, t: Date.now(), bytes });
   const window = (before: number, topic?: TopicName): string => {
     const { owner, project, output, id } = projection();
-    const counted = (item: WireItem, inferred?: TopicName): boolean => item.kind === 'user' || item.kind === 'assistant' && item.blocks.some(block => block.type === 'text' && block.text.trim() !== '' && (!topic || (block.topic ?? inferred) === topic));
-    if (topic) {
-      const matches = (raw: Item): boolean => {
-        const item = project(raw), inferred = owner.overridden(id(item.seq)) ? [] : labels.get(item.seq)?.map(owner.resolve);
-        return item.kind === 'assistant' ? item.blocks.some(block => (block.topic ?? inferred?.[0]) === topic) : item.kind === 'user' || item.kind === 'agent' || item.kind === 'job' ? item.topic === topic || inferred?.includes(topic) === true : false;
-      };
-      const dependencies = new Map<number, Map<string, Item>>();
-      for (const extra of items) {
-        if (extra.kind !== 'topics' && extra.kind !== 'annotations') continue;
-        const target = extra.kind === 'topics' ? extra.target : extra.reply.seq;
-        let entries = dependencies.get(target);
-        if (!entries) { entries = new Map(); dependencies.set(target, entries); }
-        entries.set(extra.kind === 'topics' ? 'topics' : 'annotation:' + extra.reply.block, extra);
-      }
-      const selected: { seq: number; json: string }[] = [];
-      let messages = 0, more = false;
-      for (let index = Math.min(before, items.length) - 1; index >= 0; index--) {
-        const item = items[index];
-        if (!matches(item)) continue;
-        if (messages >= MAX_WEBVIEW_WINDOW_MESSAGES) { more = true; break; }
-        const projected = output(item);
-        const bundle = [{ seq: item.seq, json: JSON.stringify(projected) }, ...[...(dependencies.get(item.seq)?.values() ?? [])].map(entry => ({ seq: entry.seq, json: JSON.stringify(output(entry)) }))];
-        selected.push(...bundle);
-        if (counted(projected, owner.overridden(id(item.seq)) ? undefined : labels.get(item.seq)?.map(owner.resolve)[0])) messages++;
-      }
-      return '"items":[' + selected.sort((a, b) => a.seq - b.seq).map(entry => entry.json).join(',') + '],"more":' + more;
-    }
-    let start = Math.min(before, items.length);
-    const strings: string[] = [];
-    let messages = 0;
-    const seen = new Map<string, boolean>();
+    let start = Math.min(before, items.length), messages = 0;
+    const end = start;
     while (start > 0 && messages < MAX_WEBVIEW_WINDOW_MESSAGES) {
-      const item: WireItem = output(items[start - 1], seen);
-      const json = JSON.stringify(item);
-      strings.push(json);
-      if (counted(item)) messages++;
+      start--;
+      const raw = items[start];
+      if (!countedMessage(raw)) continue;
+      const item = project(raw);
+      if (countedMessage(item, owner.overridden(id(raw.seq)) ? [] : labels.get(raw.seq)?.map(owner.resolve) ?? [], topic)) messages++;
+    }
+    while (start > 0) {
+      const shown = project(items[start]);
+      if (runParts(shown, shown)[0]?.kind === 'boundary') break;
       start--;
     }
-    return '"items":[' + strings.reverse().join(",") + '],"more":' + (start > 0);
+    const selected = new Map<number, Item>(items.slice(start, end).map(item => [item.seq, item]));
+    const dependencies = new Map<string, Item>();
+    if (topic) for (const item of items) {
+      if (item.kind !== 'topics' && item.kind !== 'annotations') continue;
+      const target = item.kind === 'topics' ? item.target : item.reply.seq;
+      if (target < start || target >= end) continue;
+      dependencies.set(item.kind === 'topics' ? 'topics:' + target : 'annotation:' + target + ':' + item.reply.block, item);
+    }
+    for (const item of dependencies.values()) selected.set(item.seq, item);
+    const seen = new Map<string, boolean>();
+    const strings = [...selected.values()].sort((a, b) => b.seq - a.seq).map(item => JSON.stringify(output(item, seen))).reverse();
+    return '"items":[' + strings.join(',') + '],"more":' + (start > 0);
   };
   const reset = (): string => frame('{"type":"reset","epoch":' + JSON.stringify(epoch) + ',' + window(items.length) + '}');
   const schedule = (): void => {

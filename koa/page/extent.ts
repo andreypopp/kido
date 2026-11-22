@@ -1,72 +1,9 @@
-import type { Block, WireItem } from '../koa-records.ts';
-import { noticeOf, type StepInput } from './steps.ts';
+import type { WireItem } from '../koa-records.ts';
+import { runParts, runOwner, runOf, sourceKey, visibleText, type Source, type RunContext } from '../topic-run.ts';
 
-type Source = { kind: 'item'; seq: number } | { kind: 'block'; seq: number; index: number };
 export type RowId = { kind: 'text'; source: Extract<Source, { kind: 'block' }> } | { kind: 'run'; source: Source };
 export const rowKey = (row: RowId) => (row.kind === 'run' ? 'run:' : '') + sourceKey(row.source);
 export const sameRow = (a: RowId | undefined, b: RowId | undefined) => a === b || !!a && !!b && a.kind === b.kind && a.source.seq === b.source.seq && (a.source.kind === 'item' ? b.source.kind === 'item' : b.source.kind === 'block' && a.source.index === b.source.index);
-type RunPart = { kind: 'step' | 'notice'; source: Source; step: StepInput } | { kind: 'boundary' };
-type RunTail = { owner: Source };
-type OwnerItem = { sources: Map<string, Source>; tail?: RunTail };
-export type RunContext = { raw: (seq: number) => WireItem | undefined; shown: (seq: number) => WireItem | undefined; owners: Map<number, OwnerItem> };
-export const visibleText = (block: Block) => block.type === 'text' && block.text.trim() !== '';
-export const sourceKey = (source: Source) => source.seq + ':' + (source.kind === 'block' ? source.index : 'item');
-export function runParts(raw: WireItem | undefined, shown: WireItem | undefined): RunPart[] {
-  if (raw?.kind === 'annotations' || raw?.kind === 'topics') return [];
-  if (!shown) return raw ? raw.kind === 'user' || raw.kind === 'bash' || raw.kind === 'assistant' && raw.blocks.some(visibleText) ? [{ kind: 'boundary' }] : [] : [{ kind: 'boundary' }];
-  const row = noticeOf(shown), notice = row ? [{ kind: 'notice' as const, source: { kind: 'item' as const, seq: shown.seq }, step: { kind: 'notice' as const, item: shown, row } }] : [];
-  switch (shown.kind) {
-    case 'assistant': return [...shown.blocks.flatMap((block, index): RunPart[] => block.type === 'text' ? visibleText(block) || raw?.kind === 'assistant' && visibleText(raw.blocks[index]) ? [{ kind: 'boundary' }] : [] : [{ kind: 'step', source: { kind: 'block', seq: shown.seq, index }, step: { kind: 'block', item: shown, block, index } }]), ...notice];
-    case 'agent': return [{ kind: 'step', source: { kind: 'item', seq: shown.seq }, step: { kind: 'agent', item: shown } }];
-    case 'job': return [{ kind: 'step', source: { kind: 'item', seq: shown.seq }, step: { kind: 'job', item: shown } }];
-    default: return notice.length ? notice : [{ kind: 'boundary' }];
-  }
-}
-function ownersAt(context: RunContext, seq: number): OwnerItem {
-  const known = context.owners.get(seq);
-  if (known) return known;
-  const pending: { seq: number; parts: RunPart[] }[] = [];
-  let tail: RunTail | undefined;
-  for (let at = seq; at >= 0; at--) {
-    const cached = context.owners.get(at);
-    if (cached) { tail = cached.tail; break; }
-    const parts = runParts(context.raw(at), context.shown(at));
-    pending.push({ seq: at, parts });
-    if (parts[0]?.kind === 'boundary') break;
-  }
-  let result: OwnerItem = { sources: new Map() };
-  for (const item of pending.reverse()) {
-    const sources = new Map<string, Source>();
-    for (const part of item.parts) {
-      if (part.kind === 'boundary') { tail = undefined; continue; }
-      if (part.kind === 'notice' && !tail) continue;
-      const owner = tail?.owner ?? part.source;
-      sources.set(sourceKey(part.source), owner); tail = { owner };
-    }
-    result = { sources, tail }; context.owners.set(item.seq, result);
-  }
-  return result;
-}
-export function runOf(context: RunContext, source: Source): Source | undefined {
-  return ownersAt(context, source.seq).sources.get(sourceKey(source));
-}
-export function runOwner(context: RunContext, source: Source): Source {
-  return runOf(context, source) ?? source;
-}
-export function invalidateRuns(context: RunContext, seq: number): number {
-  let last = seq;
-  for (let at = seq; ; at++) {
-    const raw = context.raw(at);
-    if (!raw) break;
-    const previous = context.owners.get(at);
-    context.owners.delete(at);
-    const current = ownersAt(context, at);
-    last = at;
-    if (previous && (!previous.tail && !current.tail || previous.tail && current.tail && sourceKey(previous.tail.owner) === sourceKey(current.tail.owner))) break;
-    if (at > seq && runParts(raw, context.shown(at)).some(part => part.kind === 'boundary')) break;
-  }
-  return last;
-}
 
 export type SeqRange = { from: number; to: number };
 

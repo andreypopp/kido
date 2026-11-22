@@ -431,6 +431,11 @@ test('root prompt topics reach pi, state and sparse history without marker text'
   assert.ok(state.topics.every(topic => typeof topic.last?.at === 'number'));
   const page = await (await fetch(app.url('items?before=' + Number.MAX_SAFE_INTEGER + '&topic=other'))).json();
   assert.equal(page.more, false);
-  assert.equal(page.items.some((item: { kind: string }) => item.kind === 'user'), false);
+  assert.ok(page.items.some((item: { kind: string; text?: string }) => item.kind === 'user' && item.text === 'hello'));
+  const reply = page.items.find((item: { kind: string }) => item.kind === 'assistant');
+  assert.ok(reply);
+  const text = reply.blocks.filter((block: { type: string }) => block.type === 'text').map((block: { text: string }) => block.text).join('');
+  assert.match(text, /Other summary/);
+  assert.doesNotMatch(text, /\[topic:/);
   assert.equal((await app.post('prompt', { text: 'bad', mode: 'prompt', attachments: [], topic: 'a]b' })).status, 400);
 });

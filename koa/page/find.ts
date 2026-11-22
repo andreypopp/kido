@@ -1,4 +1,4 @@
-import { runOwner, runOf, sourceKey, visibleText, type RunContext } from './extent.ts';
+import { runOwner, runOf, sourceKey, visibleText, type RunContext } from '../topic-run.ts';
 import { markdownLine } from '../markdown-line.ts';
 import { markdownPlain } from './markdown.ts';
 import { agentBody, noticeOf, noticeText, sessionFields, stepInfo, stepParts, toolArgs } from './steps.ts';
