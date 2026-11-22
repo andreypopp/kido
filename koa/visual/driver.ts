@@ -5,7 +5,7 @@ import { Context, require, equal, koaIdle, koaWorking, paneFocus, hideLatest } f
 import { js, ready, type Insets } from "./capture.ts";
 import { image } from "./images.ts";
 import { fixtures } from "./cases.ts";
-type Scenario = "transcript" | "dialogs" | "controls" | "exit" | "failed" | "completion" | "markdown" | "media" | "attachments" | "userMarkdown" | "thinkingMarkdown" | "reveal" | "lightbox" | "agents" | "composer" | "questions" | "bang" | "commands" | "notices" | "latest" | "sessions" | "views" | "jobs" | "paths" | "threads";
+type Scenario = "transcript" | "dialogs" | "controls" | "exit" | "failed" | "completion" | "markdown" | "media" | "attachments" | "userMarkdown" | "thinkingMarkdown" | "reveal" | "lightbox" | "agents" | "composer" | "questions" | "bang" | "commands" | "notices" | "latest" | "sessions" | "views" | "jobs" | "paths" | "topics";
 function writeAsset(path: string, bytes: string | Buffer): void { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); }
 function requireValue<T>(value: T | null | undefined): T { require(value !== undefined && value !== null); return value; }
 function near(actual: number, expected: number, accuracy: number, message = ""): void { require(Math.abs(actual - expected) <= accuracy, `${message}: ${actual} != ${expected} ±${accuracy}`); }
@@ -115,35 +115,35 @@ function captureTarget(name: string, scenario: Scenario): { selector: string; pa
       return { selector: ".newmsgs", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
     case "latest/latest-new":
       return { selector: "#latest", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
-    case "threads/thread-create-empty":
-    case "threads/thread-create-typed":
+    case "topics/topic-create-empty":
+    case "topics/topic-create-typed":
       return { selector: '#field', padding: { top: 8, left: 8, bottom: 8, right: 8 } };
-    case "threads/thread-create-reply-hover":
-    case "threads/thread-create-message-name":
+    case "topics/topic-create-reply-hover":
+    case "topics/topic-create-message-name":
       return { selector: '#items > [data-seq="11"] .msg.prose', padding: { top: 8, left: 8, bottom: 8, right: 8 } };
-    case "threads/thread-create-user-hover":
+    case "topics/topic-create-user-hover":
       return { selector: '#items > [data-seq="10"]', padding: { top: 8, left: 8, bottom: 8, right: 8 } };
-    case "threads/thread-archive-panel-live":
-    case "threads/thread-archive-panel-restore":
-    case "threads/thread-archive-block":
-      return { selector: '.thread-panel:not([hidden])', padding: { top: 8, left: 8, bottom: 8, right: 8 } };
-    case "threads/thread-archive-filter":
-    case "threads/thread-archive-all":
-      return { selector: '.thread-capsule', padding: { top: 4, left: 4, bottom: 4, right: 4 } };
-    case "threads/threads-drag-row":
-    case "threads/threads-rename":
-    case "threads/threads-filter-panel":
-      return { selector: ".thread-panel:not([hidden])", padding: { top: 8, left: 8, bottom: 8, right: 8 } };
-    case "threads/threads-drag-reply":
+    case "topics/topic-archive-panel-live":
+    case "topics/topic-archive-panel-restore":
+    case "topics/topic-archive-block":
+      return { selector: '.topic-panel:not([hidden])', padding: { top: 8, left: 8, bottom: 8, right: 8 } };
+    case "topics/topic-archive-filter":
+    case "topics/topic-archive-all":
+      return { selector: '.topic-capsule', padding: { top: 4, left: 4, bottom: 4, right: 4 } };
+    case "topics/topics-drag-row":
+    case "topics/topics-rename":
+    case "topics/topics-filter-panel":
+      return { selector: ".topic-panel:not([hidden])", padding: { top: 8, left: 8, bottom: 8, right: 8 } };
+    case "topics/topics-drag-reply":
       return { selector: "#items>.drop-target", padding: { top: 8, left: 8, bottom: 8, right: 8 } };
-    case "threads/threads-pending":
+    case "topics/topics-pending":
       return { selector: "#queue", padding: { top: 8, left: 8, bottom: 8, right: 8 } };
-    case "threads/threads-many":
-    case "threads/threads-many-narrow":
-      return { selector: ".thread-capsule", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
-    case "threads/threads-marks":
+    case "topics/topics-many":
+    case "topics/topics-many-narrow":
+      return { selector: ".topic-capsule", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
+    case "topics/topics-marks":
       return { selector: "#items > [data-seq=\"10\"] .msg.prose", padding: { top: 8, left: 8, bottom: 8, right: 8 } };
-    case "threads/threads-filter":
+    case "topics/topics-filter":
       return { selector: "#items > [data-seq=\"7\"] .msg.prose", padding: { top: 8, left: 8, bottom: 8, right: 8 } };
     case "agents/agents-jobs":
       return { selector: "#items > [data-seq=\"2\"] .job-step", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
@@ -227,11 +227,11 @@ const followHelpers = `        const s=document.querySelector('#scroll'),dock=do
 async function assertCaptureWidth(web: Page, name: string, scenario: Scenario) {
         const key = name.startsWith("narrow-") ? name.slice(7) : name
         switch (scenario) {
-        case "threads":
-            if (key == "threads-many" || key == "threads-many-narrow") {
-                const count = key == "threads-many-narrow" ? 4 : 9
-                const more = count == 4 ? "capsule.querySelector('.thread-more')?.textContent==='+5'" : "capsule.querySelector('.thread-more')===null"
-                await webviewUntil(web, `(()=>{const capsule=document.querySelector('.thread-capsule');return capsule.querySelectorAll('.thread-open>.thread-name').length===${count}&&${more}})()`)
+        case "topics":
+            if (key == "topics-many" || key == "topics-many-narrow") {
+                const count = key == "topics-many-narrow" ? 4 : 9
+                const more = count == 4 ? "capsule.querySelector('.topic-more')?.textContent==='+5'" : "capsule.querySelector('.topic-more')===null"
+                await webviewUntil(web, `(()=>{const capsule=document.querySelector('.topic-capsule');return capsule.querySelectorAll('.topic-open>.topic-name').length===${count}&&${more}})()`)
             }
         break;
         case "views":
@@ -309,24 +309,24 @@ async function settleKoa(web: Page, measured: boolean) {
     }
 async function prepareCapture(name: string, scenario: Scenario, measured: boolean, latestText: string) {
         const web = requireValue(context.browser)
-        if (scenario == "threads") {
+        if (scenario == "topics") {
             let ready: string;
             switch (name) {
-            case "threads-filter": case "threads-filter-narrow": case "threads-filter-panel":
-                ready = `document.querySelector('.thread-entry.current')?.dataset.thread==='sidebar'&&document.querySelector('#items').textContent.includes('Verification passed; I merge the unit next.')&&${koaIdle}`
+            case "topics-filter": case "topics-filter-narrow": case "topics-filter-panel":
+                ready = `document.querySelector('.topic-entry.current')?.dataset.topic==='sidebar'&&document.querySelector('#items').textContent.includes('Verification passed; I merge the unit next.')&&${koaIdle}`
             break;
-            case "threads-marks": case "threads-marks-narrow": case "threads-drag-row": case "threads-drag-reply": case "threads-rename": case "threads-pending":
+            case "topics-marks": case "topics-marks-narrow": case "topics-drag-row": case "topics-drag-reply": case "topics-rename": case "topics-pending":
                 ready = "document.querySelector('#items').textContent.includes('A fix is in the test’s wait.')"
             break;
-            case "threads-two": case "threads-many": case "threads-many-narrow":
+            case "topics-two": case "topics-many": case "topics-many-narrow":
                 ready = "document.querySelector('#items').textContent.includes('Then the save step stays as mocked: four rows, the session row last.')"
             break;
             default:
-                if (name === 'thread-create-placement-geometry') { ready = "document.querySelector('#items').textContent.includes('Then the save step stays as mocked: four rows, the session row last.')"; break; }
-                if (name.startsWith('thread-create-filter-')) { ready = "document.querySelector('#items').textContent.includes('Verification passed; I merge the unit next.')"; break; }
-                if (name.startsWith('thread-create-')) { ready = "document.querySelector('#items').textContent.includes('A fix is in the test’s wait.')"; break; }
-                if (name.startsWith('thread-archive-')) { ready = "document.querySelector('#items').textContent.includes('Then the save step stays as mocked: four rows, the session row last.')"; break; }
-                require(false, `No thread capture phase for ${name}`)
+                if (name === 'topic-create-placement-geometry') { ready = "document.querySelector('#items').textContent.includes('Then the save step stays as mocked: four rows, the session row last.')"; break; }
+                if (name.startsWith('topic-create-filter-')) { ready = "document.querySelector('#items').textContent.includes('Verification passed; I merge the unit next.')"; break; }
+                if (name.startsWith('topic-create-')) { ready = "document.querySelector('#items').textContent.includes('A fix is in the test’s wait.')"; break; }
+                if (name.startsWith('topic-archive-')) { ready = "document.querySelector('#items').textContent.includes('Then the save step stays as mocked: four rows, the session row last.')"; break; }
+                require(false, `No topic capture phase for ${name}`)
                 throw Error("CapturePhase")
             }
             await webviewUntil(web, ready)
@@ -335,14 +335,14 @@ async function prepareCapture(name: string, scenario: Scenario, measured: boolea
         if (scenario == "dialogs") { await webviewUntil(web, "document.querySelector('#tokens').textContent==='88k / 200k'&&document.querySelector('#percent').textContent==='44%'") }
         const ordered = name == "questions-ordered" || name == "narrow-questions-ordered"
         const aboveBottom = scenario == "jobs" && name.includes("service")
-        const top = scenario == "questions" || scenario == "media" || scenario == "lightbox" || scenario == "agents" || scenario == "composer" || scenario == "views" || scenario == "threads" && (name == "threads-two" || name.includes("many"))
+        const top = scenario == "questions" || scenario == "media" || scenario == "lightbox" || scenario == "agents" || scenario == "composer" || scenario == "views" || scenario == "topics" && (name == "topics-two" || name.includes("many"))
         const viewportHeight = await webviewJS(web, "innerHeight")
         equal(viewportHeight, viewport().height, `The page fills the native webview at capture ${name}`)
         const viewportWidth = await webviewJS(web, "innerWidth")
         equal(viewportWidth, viewport().width, `The page fills the native webview width at capture ${name}`)
         const initialScroll = top || aboveBottom ? "0" : scenario == "latest" ? "scroll.scrollTop" : "scroll.scrollHeight"
         const stopFollowing = top || aboveBottom
-        await webviewJS(web, `(()=>{if(!document.querySelector('.thread-input')&&!document.querySelector('.thread-rename')&&!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');if(${stopFollowing})scroll.dispatchEvent(new WheelEvent('wheel',{deltaY:-1,bubbles:true}));scroll.scrollTop=${initialScroll};if(${ordered})document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()`)
+        await webviewJS(web, `(()=>{if(!document.querySelector('.topic-input')&&!document.querySelector('.topic-rename')&&!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');if(${stopFollowing})scroll.dispatchEvent(new WheelEvent('wheel',{deltaY:-1,bubbles:true}));scroll.scrollTop=${initialScroll};if(${ordered})document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()`)
         await webviewUntil(web, "(()=>{const dock=document.querySelector('#dock');return Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===dock.getBoundingClientRect().height})()")
         const latestAtTop = top || scenario == "latest" && name.endsWith("new")
         const scrollPosition = latestAtTop ? "0" : scenario == "latest" ? "document.querySelector('.newmsgs').offsetTop-300" : aboveBottom ? "0" : "scroll.scrollHeight"
@@ -365,81 +365,81 @@ async function prepareCapture(name: string, scenario: Scenario, measured: boolea
             const aligned = await webviewJS(web, "(()=>{const times=['.assistant .message-header time','.user time','.run>.line .time'].map(selector=>document.querySelector(selector));if(times.some(time=>!time))throw Error('Missing transcript time');const edges=times.map(time=>time.getBoundingClientRect().right);return Math.max(...edges)-Math.min(...edges)<1})()")
             equal(aligned, true, "Reply, user and run times share the text edge")
             await assertMessageHeader(web)
-        } else if (name == "lines" || name.startsWith("threads-filter")) {
+        } else if (name == "lines" || name.startsWith("topics-filter")) {
             await assertMessageHeader(web)
         }
     }
-async function driveThreads(web: Page, phases: string[], capture: (name: string) => Promise<void>, advance: () => Promise<void>) {
+async function driveTopics(web: Page, phases: string[], capture: (name: string) => Promise<void>, advance: () => Promise<void>) {
         for (const [index, name] of phases.entries()) {
             if (index > 0) {
-                await webviewJS(web, "(()=>{document.querySelector('.thread-clear')?.click();if(document.querySelector('.thread-input,.thread-rename'))document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));const threads=document.querySelector('#threads');if(threads.dataset.mode==='line'&&threads.querySelector('.thread-panel')?.hidden===false)(threads.querySelector('.thread-overflow')??threads.querySelector('.thread-open'))?.click();window.composer.setText('');return true})()")
+                await webviewJS(web, "(()=>{document.querySelector('.topic-clear')?.click();if(document.querySelector('.topic-input,.topic-rename'))document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));const topics=document.querySelector('#topics');if(topics.dataset.mode==='line'&&topics.querySelector('.topic-panel')?.hidden===false)(topics.querySelector('.topic-overflow')??topics.querySelector('.topic-open'))?.click();window.composer.setText('');return true})()")
                 await advance()
             }
-            await web.setViewportSize({ width: name === 'thread-archive-block' ? 1280 : name == "threads-marks-narrow" ? 448 : name.startsWith("threads-drag") || name == "threads-rename" || name == "threads-pending" ? 980 : 960, height: 557 })
-        await webviewUntil(web, name === 'thread-archive-block' ? "document.querySelector('#threads').dataset.mode==='block'" : "!document.querySelector('#threads').hidden&&document.querySelector('.thread-capsule')!==null")
-        if (name == "threads-many" || name == "threads-many-narrow") {
-            const expected = name == "threads-many" ? 9 : 4
-            await webviewUntil(web, `(()=>{const capsule=document.querySelector('.thread-capsule');return capsule.querySelectorAll('.thread-open>.thread-name').length===${expected}&&${expected == 9 ? "capsule.querySelector('.thread-more')===null" : "capsule.querySelector('.thread-more')?.textContent==='+5'"}})()`)
+            await web.setViewportSize({ width: name === 'topic-archive-block' ? 1280 : name == "topics-marks-narrow" ? 448 : name.startsWith("topics-drag") || name == "topics-rename" || name == "topics-pending" ? 980 : 960, height: 557 })
+        await webviewUntil(web, name === 'topic-archive-block' ? "document.querySelector('#topics').dataset.mode==='block'" : "!document.querySelector('#topics').hidden&&document.querySelector('.topic-capsule')!==null")
+        if (name == "topics-many" || name == "topics-many-narrow") {
+            const expected = name == "topics-many" ? 9 : 4
+            await webviewUntil(web, `(()=>{const capsule=document.querySelector('.topic-capsule');return capsule.querySelectorAll('.topic-open>.topic-name').length===${expected}&&${expected == 9 ? "capsule.querySelector('.topic-more')===null" : "capsule.querySelector('.topic-more')?.textContent==='+5'"}})()`)
         }
         if (name.includes("marks")) {
-            await webviewUntil(web, "document.querySelector('.thread-chip .thread-name')!==null")
-            const hitBox = await webviewJS(web, "(()=>{const chip=document.querySelector('.assistant .thread-chip'),header=chip?.parentElement,time=header?.querySelector('time');if(!chip||!time)throw Error('Missing message header');return !chip.contains(time)&&getComputedStyle(chip).cursor==='pointer'&&getComputedStyle(header).display==='flex'})()")
-            equal(hitBox, true, "Only the thread chip is the composer-thread control")
+            await webviewUntil(web, "document.querySelector('.topic-chip .topic-name')!==null")
+            const hitBox = await webviewJS(web, "(()=>{const chip=document.querySelector('.assistant .topic-chip'),header=chip?.parentElement,time=header?.querySelector('time');if(!chip||!time)throw Error('Missing message header');return !chip.contains(time)&&getComputedStyle(chip).cursor==='pointer'&&getComputedStyle(header).display==='flex'})()")
+            equal(hitBox, true, "Only the topic chip is the composer-topic control")
         }
-        if (name == "threads-marks-narrow") {
-            const wrapping = await webviewJS(web, "(()=>{const host=document.querySelector('.assistant>.reply-section>.msg');if(!host)throw Error('Missing threaded prose');const token='identifier'.repeat(100),p=document.createElement('p'),pre=document.createElement('pre'),table=document.createElement('table');p.textContent=pre.textContent=token;table.innerHTML='<tr><td>'+token+'</td></tr>';host.append(p,pre,table);try{return [p.scrollWidth<=p.clientWidth,getComputedStyle(pre).overflowWrap,getComputedStyle(table).overflowWrap,pre.scrollWidth>pre.clientWidth]}finally{p.remove();pre.remove();table.remove()}})()")
-            equal(wrapping, [true,"normal","normal",true], "Threaded prose wraps an unbroken token; code and tables keep horizontal scrolling")
+        if (name == "topics-marks-narrow") {
+            const wrapping = await webviewJS(web, "(()=>{const host=document.querySelector('.assistant>.reply-section>.msg');if(!host)throw Error('Missing prose with a topic');const token='identifier'.repeat(100),p=document.createElement('p'),pre=document.createElement('pre'),table=document.createElement('table');p.textContent=pre.textContent=token;table.innerHTML='<tr><td>'+token+'</td></tr>';host.append(p,pre,table);try{return [p.scrollWidth<=p.clientWidth,getComputedStyle(pre).overflowWrap,getComputedStyle(table).overflowWrap,pre.scrollWidth>pre.clientWidth]}finally{p.remove();pre.remove();table.remove()}})()")
+            equal(wrapping, [true,"normal","normal",true], "With a topic prose wraps an unbroken token; code and tables keep horizontal scrolling")
         }
-        if (name.startsWith("threads-filter")) {
-            await webviewJS(web, "(()=>{document.querySelector('.thread-overflow').click();document.querySelector('.thread-entry[data-thread=sidebar]').click();return true})()")
-            await webviewUntil(web, `document.querySelector('.composer-thread .thread-clear')!==null&&document.querySelector('.user')!==null&&document.querySelector('#items .thread-chip:not(.thread-new)')===null&&${koaIdle}`)
-            const filtered = await webviewJS(web, "document.querySelector('#items .thread-chip:not(.thread-new)')===null&&document.querySelector('#thread-cell')===null&&document.querySelector('.composer-thread .thread-name').textContent==='#sidebar'&&document.querySelector('.thread-capsule .thread-clear')!==null")
+        if (name.startsWith("topics-filter")) {
+            await webviewJS(web, "(()=>{document.querySelector('.topic-overflow').click();document.querySelector('.topic-entry[data-topic=sidebar]').click();return true})()")
+            await webviewUntil(web, `document.querySelector('.composer-topic .topic-clear')!==null&&document.querySelector('.user')!==null&&document.querySelector('#items .topic-chip:not(.topic-new)')===null&&${koaIdle}`)
+            const filtered = await webviewJS(web, "document.querySelector('#items .topic-chip:not(.topic-new)')===null&&document.querySelector('#topic-cell')===null&&document.querySelector('.composer-topic .topic-name').textContent==='#sidebar'&&document.querySelector('.topic-capsule .topic-clear')!==null")
             equal(filtered, true, "Filtered messages have time-only headers and the composer owns the chip")
         }
-        if (name.includes("many") || name === 'threads-filter-panel') {
-            await webviewJS(web, "(()=>{document.querySelector(document.querySelector('.thread-clear')?'.thread-open':'.thread-overflow').click();return true})()")
-            await webviewUntil(web, "!document.querySelector('.thread-panel').hidden")
+        if (name.includes("many") || name === 'topics-filter-panel') {
+            await webviewJS(web, "(()=>{document.querySelector(document.querySelector('.topic-clear')?'.topic-open':'.topic-overflow').click();return true})()")
+            await webviewUntil(web, "!document.querySelector('.topic-panel').hidden")
         }
-        if (name == "threads-two") {
-            await webviewJS(web, "(()=>{if(!document.querySelector('.thread-panel').hidden)document.querySelector('.thread-overflow').click();return true})()")
-            await webviewUntil(web, "document.querySelector('.thread-panel').hidden&&document.querySelector('.thread-capsule')!==null")
+        if (name == "topics-two") {
+            await webviewJS(web, "(()=>{if(!document.querySelector('.topic-panel').hidden)document.querySelector('.topic-overflow').click();return true})()")
+            await webviewUntil(web, "document.querySelector('.topic-panel').hidden&&document.querySelector('.topic-capsule')!==null")
         }
-        if (name.startsWith("threads-drag") || name == "threads-rename") {
-            await web.locator('.thread-overflow').click()
-            await webviewUntil(web, "!document.querySelector('.thread-panel').hidden")
-            const source = web.locator('.thread-entry[data-thread=palette]')
-            if (name == "threads-rename") await source.dblclick()
+        if (name.startsWith("topics-drag") || name == "topics-rename") {
+            await web.locator('.topic-overflow').click()
+            await webviewUntil(web, "!document.querySelector('.topic-panel').hidden")
+            const source = web.locator('.topic-entry[data-topic=palette]')
+            if (name == "topics-rename") await source.dblclick()
             else {
                 const start = requireValue(await source.boundingBox())
-                const target = requireValue(await (name == "threads-drag-row" ? web.locator('.thread-entry[data-thread=sidebar]') : web.locator('#items>.assistant').last()).boundingBox())
+                const target = requireValue(await (name == "topics-drag-row" ? web.locator('.topic-entry[data-topic=sidebar]') : web.locator('#items>.assistant').last()).boundingBox())
                 await web.mouse.move(start.x + start.width / 2, start.y + start.height / 2)
                 await web.mouse.down()
                 await web.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 6 })
                 await webviewUntil(web, "document.querySelector('.drop-target')!==null")
             }
         }
-        if (name.startsWith('thread-create-filter-')) {
+        if (name.startsWith('topic-create-filter-')) {
             await webviewUntil(web, "document.querySelector('#items').textContent.includes('Verification passed; I merge the unit next.')")
-            await koaMeasured(web, '#threads')
+            await koaMeasured(web, '#topics')
             if (name.endsWith('-block')) {
                 await web.setViewportSize({ width: 1280, height: 557 })
-                await webviewUntil(web, "document.querySelector('#threads').dataset.mode==='block'")
-                await web.locator('.thread-entry[data-thread=sidebar]').click()
+                await webviewUntil(web, "document.querySelector('#topics').dataset.mode==='block'")
+                await web.locator('.topic-entry[data-topic=sidebar]').click()
             } else if (name.endsWith('-panel')) {
                 await web.setViewportSize({ width: 800, height: 557 })
-                await webviewUntil(web, "document.querySelector('#threads').dataset.mode==='line'")
-                await web.locator('.thread-overflow').click()
-                await webviewUntil(web, "!document.querySelector('.thread-panel').hidden")
-                await web.locator('.thread-entry[data-thread=sidebar]').click()
-            } else if (name.endsWith('-capsule')) await web.locator('.thread-open>.thread-name[data-thread=sidebar]').click()
-            await webviewUntil(web, "document.querySelector('.thread-entry.current')?.dataset.thread==='sidebar'")
-            equal(await web.locator('.composer-thread .thread-name').allTextContents(), ['#sidebar'], 'An active filter supplies the composer thread')
-            await web.locator('.composer-thread .thread-clear').click()
+                await webviewUntil(web, "document.querySelector('#topics').dataset.mode==='line'")
+                await web.locator('.topic-overflow').click()
+                await webviewUntil(web, "!document.querySelector('.topic-panel').hidden")
+                await web.locator('.topic-entry[data-topic=sidebar]').click()
+            } else if (name.endsWith('-capsule')) await web.locator('.topic-open>.topic-name[data-topic=sidebar]').click()
+            await webviewUntil(web, "document.querySelector('.topic-entry.current')?.dataset.topic==='sidebar'")
+            equal(await web.locator('.composer-topic .topic-name').allTextContents(), ['#sidebar'], 'An active filter supplies the composer topic')
+            await web.locator('.composer-topic .topic-clear').click()
             await web.setViewportSize({ width: 1280, height: 600 })
-            equal(await web.locator('.composer-thread .thread-new').isVisible(), true, 'An explicit drop remains dropped under the active filter')
+            equal(await web.locator('.composer-topic .topic-new').isVisible(), true, 'An explicit drop remains dropped under the active filter')
             if (name.endsWith('-block')) {
-                await webviewJS(web, "(()=>{for(let seq=100;seq<112;seq++)window.threadSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'item',item:{kind:'assistant',seq,revision:0,at:Date.now(),final:true,stop:'stop',error:'',blocks:[{type:'text',thread:'palette',text:seq===100?'Unread palette start.':'More unread palette content. '.repeat(50)}]}})}));return true})()")
-                await web.locator('.thread-entry[data-thread=palette]').click()
+                await webviewJS(web, "(()=>{for(let seq=100;seq<112;seq++)window.topicSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'item',item:{kind:'assistant',seq,revision:0,at:Date.now(),final:true,stop:'stop',error:'',blocks:[{type:'text',topic:'palette',text:seq===100?'Unread palette start.':'More unread palette content. '.repeat(50)}]}})}));return true})()")
+                await web.locator('.topic-entry[data-topic=palette]').click()
                 await webviewUntil(web, "document.querySelector('.newmsgs')!==null")
                 await koaMeasured(web, '#items')
                 const divider = await web.locator('.newmsgs').boundingBox(), viewport = await web.locator('#scroll').boundingBox()
@@ -447,83 +447,83 @@ async function driveThreads(web: Page, phases: string[], capture: (name: string)
             }
             if (!name.endsWith('-restored')) {
                 const step = await webviewJS<number>(web, "fetch('/replay/status').then(r=>r.json()).then(s=>s.step)")
-                await web.locator('.thread-all').click()
+                await web.locator('.topic-all').click()
                 await webviewUntil(web, `fetch('/replay/status').then(r=>r.json()).then(s=>s.step>${step})`)
             }
-        } else if (name === 'thread-create-placement-geometry') {
-            equal(await web.locator('.thread-capsule').evaluate(node => node.getBoundingClientRect().top), 8, 'Line capsule stays at 8px')
+        } else if (name === 'topic-create-placement-geometry') {
+            equal(await web.locator('.topic-capsule').evaluate(node => node.getBoundingClientRect().top), 8, 'Line capsule stays at 8px')
             const transcriptTop = await web.locator('#transcript').evaluate(node => node.getBoundingClientRect().top)
             await web.setViewportSize({ width: 1280, height: 557 })
-            await webviewUntil(web, "document.querySelector('#threads').dataset.mode==='block'")
-            equal(await web.locator('#threads').evaluate(node => node.getBoundingClientRect().top), 48, 'Block widget clears the hover toolbar')
+            await webviewUntil(web, "document.querySelector('#topics').dataset.mode==='block'")
+            equal(await web.locator('#topics').evaluate(node => node.getBoundingClientRect().top), 48, 'Block widget clears the hover toolbar')
             equal(await web.locator('#transcript').evaluate(node => node.getBoundingClientRect().top), transcriptTop, 'Block mode preserves transcript top')
-            equal(await web.locator('.thread-panel').evaluate(node => getComputedStyle(node).maxHeight), '501px', 'Block panel keeps its bottom gap')
+            equal(await web.locator('.topic-panel').evaluate(node => getComputedStyle(node).maxHeight), '501px', 'Block panel keeps its bottom gap')
             await web.setViewportSize({ width: 1280, height: 180 })
-            equal(await web.locator('.thread-panel').evaluate(node => node.getBoundingClientRect().bottom <= innerHeight - 8), true, 'Many-thread block list fits a short viewport')
+            equal(await web.locator('.topic-panel').evaluate(node => node.getBoundingClientRect().bottom <= innerHeight - 8), true, 'Many-topic block list fits a short viewport')
             await web.setViewportSize({ width: 960, height: 557 })
-        } else if (name === 'thread-create-hover-geometry') {
-            for (const kind of ['user', 'assistant']) for (const threaded of [true, false]) {
+        } else if (name === 'topic-create-hover-geometry') {
+            for (const kind of ['user', 'assistant']) for (const hasTopic of [true, false]) {
                 await web.mouse.move(0, 556)
-                const row = web.locator(`#items .${kind} .message-header`).filter({ has: web.locator(threaded ? '.thread-chip:not(.thread-new)' : '.thread-new:first-child') }).last()
+                const row = web.locator(`#items .${kind} .message-header`).filter({ has: web.locator(hasTopic ? '.topic-chip:not(.topic-new)' : '.topic-new:first-child') }).last()
                 await row.scrollIntoViewIfNeeded()
-                const measure = () => row.evaluate(header => [header, header.querySelector('.thread-chip:not(.thread-new)'), header.nextElementSibling, header.querySelector('time')].map(node => node?.getBoundingClientRect().toJSON() ?? null))
+                const measure = () => row.evaluate(header => [header, header.querySelector('.topic-chip:not(.topic-new)'), header.nextElementSibling, header.querySelector('time')].map(node => node?.getBoundingClientRect().toJSON() ?? null))
                 const before = await measure()
-                await (threaded ? row.locator('.thread-chip:not(.thread-new)') : row).hover()
-                equal(await measure(), before, `Hover preserves ${kind} ${threaded ? 'threaded' : 'unthreaded'} header, chip, body and time geometry`)
+                await (hasTopic ? row.locator('.topic-chip:not(.topic-new)') : row).hover()
+                equal(await measure(), before, `Hover preserves ${kind} ${hasTopic ? 'with a topic' : 'without a topic'} header, chip, body and time geometry`)
             }
             await web.mouse.move(0, 556)
-        } else if (name === 'thread-create-drag-geometry') {
+        } else if (name === 'topic-create-drag-geometry') {
             for (const mode of ['line','block']) for (const targetText of ['Check both:', 'Check one more detail.', 'Done. The unit’s twelve snapshots']) {
                 await web.setViewportSize({ width: mode === 'block' ? 1280 : 800, height: 557 })
-                await webviewUntil(web, `document.querySelector('#threads').dataset.mode==='${mode}'`)
+                await webviewUntil(web, `document.querySelector('#topics').dataset.mode==='${mode}'`)
                 const target = web.locator('#items > [data-seq]').filter({ hasText: targetText })
                 await target.evaluate(node => node.scrollIntoView({ block: 'center' }))
-                if (mode === 'line' && await web.locator('.thread-panel').isHidden()) await web.locator('.thread-overflow').click()
-                const source = web.locator('.thread-entry[data-thread="remote-mtls-pairing-ios"]')
+                if (mode === 'line' && await web.locator('.topic-panel').isHidden()) await web.locator('.topic-overflow').click()
+                const source = web.locator('.topic-entry[data-topic="remote-mtls-pairing-ios"]')
                 const start = requireValue(await source.boundingBox()), end = requireValue(await target.boundingBox())
                 const step = await webviewJS<number>(web, "fetch('/replay/status').then(r=>r.json()).then(s=>s.step)")
                 await web.mouse.move(start.x + 30, start.y + start.height / 2)
                 await web.mouse.down()
                 await web.mouse.move(end.x + end.width - 24, end.y + end.height / 2, { steps: 6 })
-                equal(await target.evaluate(node => node.classList.contains('drop-target')), true, `${mode} thread row highlights ${targetText}`)
+                equal(await target.evaluate(node => node.classList.contains('drop-target')), true, `${mode} topic row highlights ${targetText}`)
                 await web.mouse.up()
                 await webviewUntil(web, `fetch('/replay/status').then(r=>r.json()).then(s=>s.step>${step})`)
             }
             const status = await webviewJS<{ mismatches: number; last?: string }>(web, "fetch('/replay/status').then(r=>r.json())")
             equal(status.mismatches, 0, `Drag requests match the script: ${status.last}`)
-        } else if (name.startsWith('thread-create-')) {
-            if (name === 'thread-create-empty' || name === 'thread-create-typed') {
-                await web.locator('.composer-thread .thread-new').click()
-                if (name === 'thread-create-typed') await web.locator('.composer-thread .thread-input').fill('release-notes')
+        } else if (name.startsWith('topic-create-')) {
+            if (name === 'topic-create-empty' || name === 'topic-create-typed') {
+                await web.locator('.composer-topic .topic-new').click()
+                if (name === 'topic-create-typed') await web.locator('.composer-topic .topic-input').fill('release-notes')
             } else {
-                const user = name === 'thread-create-user-hover'
+                const user = name === 'topic-create-user-hover'
                 const message = web.locator(user ? '#items > .user' : '#items > .assistant').filter({ hasText: user ? 'Check one more detail.' : 'I will check it next.' })
                 await message.waitFor({ state: 'visible' })
                 const row = message.locator('.message-header')
                 await row.hover()
-                equal(await row.locator('.thread-new').isVisible(), true, 'Message hover exposes the naming chip')
-                if (name === 'thread-create-message-name') { await row.locator('.thread-new').click(); await row.locator('.thread-input').fill('sweep-test') }
+                equal(await row.locator('.topic-new').isVisible(), true, 'Message hover exposes the naming chip')
+                if (name === 'topic-create-message-name') { await row.locator('.topic-new').click(); await row.locator('.topic-input').fill('sweep-test') }
             }
         }
-        if (name.startsWith('thread-archive-')) {
-            if (name === 'thread-archive-filter') {
-                await web.locator('.thread-overflow').click()
-                await web.locator('.thread-entry[data-thread=palette]').click()
-                await webviewUntil(web, "document.querySelector('.thread-capsule .thread-name.archived')!==null")
-            } else if (name !== 'thread-archive-all') {
-                if (name !== 'thread-archive-block') await web.locator('.thread-overflow').click()
-                await web.locator(name === 'thread-archive-panel-restore' ? '.thread-entry[data-thread=palette]' : '.thread-entry[data-thread=release-0-32]').hover()
-                equal(await webviewJS(web, "(()=>{const rows=[...document.querySelectorAll('.thread-entry')],first=rows.findIndex(row=>row.classList.contains('archived'));return first>0&&rows.slice(first).every(row=>row.classList.contains('archived'))})()"), true, 'Archived rows follow every live row')
-            } else equal(await webviewJS(web, "document.querySelector('.thread-capsule').textContent"), '…', 'An all-archived capsule has only its panel opener')
+        if (name.startsWith('topic-archive-')) {
+            if (name === 'topic-archive-filter') {
+                await web.locator('.topic-overflow').click()
+                await web.locator('.topic-entry[data-topic=palette]').click()
+                await webviewUntil(web, "document.querySelector('.topic-capsule .topic-name.archived')!==null")
+            } else if (name !== 'topic-archive-all') {
+                if (name !== 'topic-archive-block') await web.locator('.topic-overflow').click()
+                await web.locator(name === 'topic-archive-panel-restore' ? '.topic-entry[data-topic=palette]' : '.topic-entry[data-topic=release-0-32]').hover()
+                equal(await webviewJS(web, "(()=>{const rows=[...document.querySelectorAll('.topic-entry')],first=rows.findIndex(row=>row.classList.contains('archived'));return first>0&&rows.slice(first).every(row=>row.classList.contains('archived'))})()"), true, 'Archived rows follow every live row')
+            } else equal(await webviewJS(web, "document.querySelector('.topic-capsule').textContent"), '…', 'An all-archived capsule has only its panel opener')
         }
         await capture(name)
-        if (name.startsWith("threads-drag") || name == "threads-rename") {
+        if (name.startsWith("topics-drag") || name == "topics-rename") {
             await web.keyboard.press('Escape')
             await web.mouse.up()
         }
-        if (name == "threads-many" || name == "threads-filter") {
+        if (name == "topics-many" || name == "topics-filter") {
             await web.setViewportSize({ width: 448, height: 557 })
-            await koaMeasured(web, "#threads")
+            await koaMeasured(web, "#topics")
             await capture(name + "-narrow")
         }
         }
@@ -869,8 +869,8 @@ async function testKoaWebviewRhythm() {
         for (const [name, gap] of Object.entries(initial)) { near(gap, 14, 0.5, name) }
         const notices = await webviewJS(web, "(()=>{const a=document.querySelector('#items>[data-seq=\"12\"] .nrow').getBoundingClientRect(),b=document.querySelector('#items>[data-seq=\"13\"] .nrow').getBoundingClientRect();return b.top-a.bottom})()")
         near(requireValue(Number(notices)), 2, 0.5, "Consecutive notice lines")
-        await webviewJS(web, "(()=>{document.querySelector('.thread-overflow').click();document.querySelector('.thread-entry[data-thread=one]').click();return true})()")
-        await webviewUntil(web, `document.querySelector('.composer-thread .thread-clear')!==null&&document.querySelector('#items>[data-seq="5"]')===null&&document.querySelector('#items>[data-seq="4"] .run')?.dataset.rhythm==='compact'&&${koaIdle}`)
+        await webviewJS(web, "(()=>{document.querySelector('.topic-overflow').click();document.querySelector('.topic-entry[data-topic=one]').click();return true})()")
+        await webviewUntil(web, `document.querySelector('.composer-topic .topic-clear')!==null&&document.querySelector('#items>[data-seq="5"]')===null&&document.querySelector('#items>[data-seq="4"] .run')?.dataset.rhythm==='compact'&&${koaIdle}`)
         const filtered = await webviewJS(web, "(()=>{const a=document.querySelector('#items>[data-seq=\"4\"] .run').getBoundingClientRect(),b=document.querySelector('#items>[data-seq=\"6\"] .run').getBoundingClientRect();return b.top-a.bottom})()")
         near(requireValue(Number(filtered)), 2, 0.5, "Consecutive runs across a hidden prose boundary")
         await webviewJS(web, "(()=>{document.querySelector('#items>[data-seq=\"4\"] .run>.line').click();return true})()")
@@ -933,14 +933,14 @@ async function koaWebview(key: string, width: number, height: number, scenario: 
         const completionCaptures = phases[0] == "bang-tab"
         let mediaClock: boolean;
         switch (scenario) {
-        case "commands": case "sessions": case "media": case "attachments": case "lightbox": case "agents": case "composer": case "views": case "threads": mediaClock = true
+        case "commands": case "sessions": case "media": case "attachments": case "lightbox": case "agents": case "composer": case "views": case "topics": mediaClock = true
         break;
         default: mediaClock = completionCaptures
         }
-        const stamp = Date.parse(mediaClock ? (scenario == "threads" ? "2026-11-10T14:46:00-08:00" : "2026-11-10T09:12:00-08:00") : "2026-11-08T14:32:00-08:00")
+        const stamp = Date.parse(mediaClock ? (scenario == "topics" ? "2026-11-10T14:46:00-08:00" : "2026-11-10T09:12:00-08:00") : "2026-11-08T14:32:00-08:00")
         let measured: boolean;
         switch (scenario) {
-        case "commands": case "sessions": case "questions": case "completion": case "attachments": case "userMarkdown": case "thinkingMarkdown": case "exit": case "lightbox": case "paths": case "threads": measured = true
+        case "commands": case "sessions": case "questions": case "completion": case "attachments": case "userMarkdown": case "thinkingMarkdown": case "exit": case "lightbox": case "paths": case "topics": measured = true
         break;
         default: measured = completionCaptures
         }
@@ -956,8 +956,8 @@ async function koaWebview(key: string, width: number, height: number, scenario: 
         if (phases.includes("foot-responsive") || phases.includes("foot-editing") || phases.includes("narrow-foot-editing")) {
             initialScript = initialScript + "const FootSource=EventSource;window.EventSource=class extends FootSource{constructor(...args){super(...args);window.footSource=this;this.addEventListener('message',event=>{const record=JSON.parse(event.data);if(record.type==='state')window.footState=record})}};"
         }
-        if (key === 'ThreadsGeometry') initialScript += "const ThreadSource=EventSource;window.EventSource=class extends ThreadSource{constructor(...args){super(...args);window.threadSource=this}};"
-        if (key === 'ThreadsFilterRestored') initialScript += "history.replaceState({scroll:[],drafts:[],filters:[['00000000-0000-7000-8000-000000000001:00000000-0000-7000-8000-000000000001','sidebar']],composerThreads:[]},'');"
+        if (key === 'TopicsGeometry') initialScript += "const TopicSource=EventSource;window.EventSource=class extends TopicSource{constructor(...args){super(...args);window.topicSource=this}};"
+        if (key === 'TopicsFilterRestored') initialScript += "history.replaceState({scroll:[],drafts:[],filters:[['00000000-0000-7000-8000-000000000001:00000000-0000-7000-8000-000000000001','sidebar']],composerTopics:[]},'');"
         let initial = initialScript
         initial = "Element.prototype.animate=function(){return {}};" + paneFocus + (scenario == "latest" || scenario == "jobs" ? "" : hideLatest) + initial
 
@@ -1033,8 +1033,8 @@ echo release
             await webviewUntil(web, `${koaIdle}&&document.querySelector('#model-name').textContent==='claude-opus-5-5'`)
         }
         await webviewJS(web, `(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[${stamp + 12000}]))}static now(){return ${stamp + 12000}}};const style=document.createElement('style');style.textContent='.caret,.dot.on,.cm-cursorLayer${scenario == "reveal" ? "" : ",.grow"}{animation:none!important}${scenario == "reveal" ? ".grow{animation-play-state:paused!important;animation-delay:-110ms!important}" : ""}.info .chev,#latest{transition:none!important}#transcript{transform:none!important}';document.head.append(style);return true})()`)
-        if (scenario == "threads") {
-            await driveThreads(web, phases, capture, advance)
+        if (scenario == "topics") {
+            await driveTopics(web, phases, capture, advance)
             return
         }
         if (scenario == "reveal") {
@@ -1834,15 +1834,15 @@ const entries: Record<string, () => Promise<void>> = {
   "Exit": () => koaWebview("testKoaWebviewExit", 960, 557, "exit", false, ["times"]),
   "Failed": () => koaWebview("Failed", 960, 557, "failed", true, ["exited"]),
   "Rhythm": testKoaWebviewRhythm,
-  "Threads": () => koaWebview("Threads", 960, 557, "threads", false, ["threads-two", "threads-many", "threads-marks", "threads-marks-narrow"]),
-  "ThreadsGeometry": () => koaWebview("ThreadsGeometry", 960, 557, "threads", false, ["thread-create-placement-geometry", "thread-create-hover-geometry", "thread-create-filter-block", "thread-create-filter-panel", "thread-create-filter-capsule", "thread-create-drag-geometry"]),
-  "ThreadsFilterRestored": () => koaWebview("ThreadsFilterRestored", 960, 557, "threads", false, ["thread-create-filter-restored"]),
+  "Topics": () => koaWebview("Topics", 960, 557, "topics", false, ["topics-two", "topics-many", "topics-marks", "topics-marks-narrow"]),
+  "TopicsGeometry": () => koaWebview("TopicsGeometry", 960, 557, "topics", false, ["topic-create-placement-geometry", "topic-create-hover-geometry", "topic-create-filter-block", "topic-create-filter-panel", "topic-create-filter-capsule", "topic-create-drag-geometry"]),
+  "TopicsFilterRestored": () => koaWebview("TopicsFilterRestored", 960, 557, "topics", false, ["topic-create-filter-restored"]),
 
-  "ThreadsCreate": () => koaWebview("ThreadsCreate", 960, 557, "threads", false, ["thread-create-empty", "thread-create-typed", "thread-create-reply-hover", "thread-create-user-hover", "thread-create-message-name"]),
-  "ThreadsArchive": () => koaWebview("ThreadsArchive", 960, 557, "threads", false, ["thread-archive-panel-live", "thread-archive-panel-restore", "thread-archive-block", "thread-archive-filter", "thread-archive-all"]),
-  "ThreadsEdit": () => koaWebview("ThreadsEdit", 980, 557, "threads", false, ["threads-drag-row", "threads-drag-reply", "threads-rename", "threads-pending"]),
-  "ThreadsFilter": () => koaWebview("ThreadsFilter", 960, 557, "threads", false, ["threads-filter"]),
-  "ThreadsFilterPanel": () => koaWebview("ThreadsFilterPanel", 960, 557, "threads", false, ["threads-filter-panel"]),
+  "TopicsCreate": () => koaWebview("TopicsCreate", 960, 557, "topics", false, ["topic-create-empty", "topic-create-typed", "topic-create-reply-hover", "topic-create-user-hover", "topic-create-message-name"]),
+  "TopicsArchive": () => koaWebview("TopicsArchive", 960, 557, "topics", false, ["topic-archive-panel-live", "topic-archive-panel-restore", "topic-archive-block", "topic-archive-filter", "topic-archive-all"]),
+  "TopicsEdit": () => koaWebview("TopicsEdit", 980, 557, "topics", false, ["topics-drag-row", "topics-drag-reply", "topics-rename", "topics-pending"]),
+  "TopicsFilter": () => koaWebview("TopicsFilter", 960, 557, "topics", false, ["topics-filter"]),
+  "TopicsFilterPanel": () => koaWebview("TopicsFilterPanel", 960, 557, "topics", false, ["topics-filter-panel"]),
   "Agents": () => koaWebview("Agents", 960, 557, "agents", true, []),
   "SubagentView": () => koaWebview("SubagentView", 960, 557, "views", true, []),
   "ViewBar": () => koaWebview("ViewBar", 960, 557, "views", true, []),

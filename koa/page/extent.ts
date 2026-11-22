@@ -9,7 +9,7 @@ export type RunContext = { raw: (seq: number) => WireItem | undefined; shown: (s
 export const visibleText = (block: Block) => block.type === 'text' && block.text.trim() !== '';
 export const sourceKey = (source: Source) => source.seq + ':' + (source.kind === 'block' ? source.index : 'item');
 export function runParts(raw: WireItem | undefined, shown: WireItem | undefined): RunPart[] {
-  if (raw?.kind === 'annotations' || raw?.kind === 'threads') return [];
+  if (raw?.kind === 'annotations' || raw?.kind === 'topics') return [];
   if (!shown) return raw ? raw.kind === 'user' || raw.kind === 'bash' || raw.kind === 'assistant' && raw.blocks.some(visibleText) ? [{ kind: 'boundary' }] : [] : [{ kind: 'boundary' }];
   const row = noticeOf(shown), notice = row ? [{ kind: 'notice' as const, source: { kind: 'item' as const, seq: shown.seq }, step: { kind: 'notice' as const, item: shown, row } }] : [];
   switch (shown.kind) {
@@ -73,7 +73,7 @@ export function estimateExtent(item: WireItem, lh: number, context: RunContext):
   const runs = runParts(context.raw(item.seq), item).filter(part => part.kind === 'step' && sourceKey(part.source) === sourceKey(runOwner(context, part.source))).length;
   switch (item.kind) {
     case 'user': return lineCount(item.text) * lh + 30;
-    case 'annotations': case 'threads': return 0;
+    case 'annotations': case 'topics': return 0;
     case 'assistant': return (runs + (item.error && !runOf(context, { kind: 'item', seq: item.seq }) ? 1 : 0)) * (lh + 16) + item.blocks.reduce((total, block) => total + (block.type === 'text' && visibleText(block) ? lineCount(block.text) * lh : 0), 0);
     case 'agent': case 'job': return runs * (lh + 16);
     case 'notify': case 'command': case 'notice': case 'bash': case 'summary': return runOf(context, { kind: 'item', seq: item.seq }) ? 0 : lh + 16;

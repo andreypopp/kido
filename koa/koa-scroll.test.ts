@@ -59,7 +59,7 @@ test('scrolling a normal view keeps its existing unread divider and offscreen co
   assert.deepEqual([result.decision.dividerBefore,result.decision.latest], [10,{show:true,count:0}]);
 });
 
-test('hidden arrivals and reply sections stay unread when switching to their thread or all threads', () => {
+test('hidden arrivals and reply sections stay unread when switching to their topic or all topics', () => {
   for (const active of [true,false]) for (const section of [false,true]) {
     const f = fixture();
     f.step([{type:'filter',active:true}]);

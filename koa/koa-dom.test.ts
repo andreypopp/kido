@@ -12,7 +12,7 @@ import { feedbackFixture, settle, shellReply } from "./testdata/completion-fixtu
 import { pathToken } from './path-token.ts';
 import { promptHistory } from './page/history.ts';
 import { ATTACHMENT_LIMITS, pathArg } from "./koa-records.ts";
-import { jobEndText, parseThreadName } from "./records.ts";
+import { jobEndText, parseTopicName } from "./records.ts";
 import type { PromptMode } from "./koa-records.ts";
 import { scrollInitial, scrollMemory, scrollStored, scrollUpdate, scrollWindow } from "./page/scroll.ts";
 
@@ -184,7 +184,7 @@ async function page() {
     onclick?: () => void;
     onkeydown?: (event: unknown) => void;
     attributes = new Map<string, string>();
-    setAttribute(name: string, value: string) { this.attributes.set(name, value); } getAttribute(name: string) { return this.attributes.get(name) ?? null; } removeAttribute(name: string) { this.attributes.delete(name); } focus() { for (let node: Node | undefined = this; node; node = node.parent) if (node.inert) return; document.activeElement = this; } setSelectionRange() {} handlers = new Map<string, (event?: unknown) => void>(); addEventListener(type: string, handler: (event?: unknown) => void) { this.handlers.set(type, handler); } scrollIntoView() {} getBoundingClientRect(): { left?: number; top: number; bottom?: number; height?: number; width?: number } { return { left: 0, top: 0, width: this.classes.has('thread-capsule') || this.classes.has('thread-open') ? this.clientWidth : undefined }; } getClientRects() { return this.rects; }
+    setAttribute(name: string, value: string) { this.attributes.set(name, value); } getAttribute(name: string) { return this.attributes.get(name) ?? null; } removeAttribute(name: string) { this.attributes.delete(name); } focus() { for (let node: Node | undefined = this; node; node = node.parent) if (node.inert) return; document.activeElement = this; } setSelectionRange() {} handlers = new Map<string, (event?: unknown) => void>(); addEventListener(type: string, handler: (event?: unknown) => void) { this.handlers.set(type, handler); } scrollIntoView() {} getBoundingClientRect(): { left?: number; top: number; bottom?: number; height?: number; width?: number } { return { left: 0, top: 0, width: this.classes.has('topic-capsule') || this.classes.has('topic-open') ? this.clientWidth : undefined }; } getClientRects() { return this.rects; }
     closest(selector: string): Node | null { if (selector === 'a') return this.tagName === 'A' ? this : this.parent?.closest(selector) ?? null; return ['INPUT', 'TEXTAREA', 'SELECT', ...(selector.includes('button') ? ['BUTTON'] : [])].includes(this.tagName) || (this.attributes.has('role') && selector.includes(`[role=${this.attributes.get('role')}]`)) ? this : null; }
     setRangeText(text: string) { this.value = this.value.slice(0, this.selectionStart) + text + this.value.slice(this.selectionEnd); }
     dispatchEvent() { this.oninput?.(); }
@@ -244,7 +244,7 @@ async function page() {
     };
   };
   const history: { state: unknown; replaceState(state: unknown): void } = { state: null, replaceState(state) { this.state = state; } };
-  const context = { history, parseThreadName, ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, pathToken, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { history, parseTopicName, ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, pathToken, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update,head,quote})', context));
@@ -665,21 +665,21 @@ test('busy confirmation submits once and cancelling a held abort prevents the se
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(calls, ['/abort']); assert.equal(saved.closed(), true);
 });
-test('thread rename selects the name and commits Enter and blur but cancels Escape', async t => {
+test('topic rename selects the name and commits Enter and blur but cancels Escape', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const app = await page(), calls: { path: string; body: { from: string; to: string } }[] = [];
   app.context.fetch = async (path?: string, options?: { body: string }) => { calls.push({ path: path ?? '', body: JSON.parse(options?.body ?? '{}') }); return { ok: true, json: async () => ({}) }; };
   const controls = app.run(`(()=>{
-    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one',last:{summary:'Summary',at:1}},{name:'two',last:{summary:'Older',at:0}}]};renderThreads();
-    const row=()=>element('threads').querySelector('.thread-entry');
-    const open=()=>{row().onclick({detail:1});row().onclick({detail:2});return element('threads').querySelector('.thread-rename')};
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one',last:{summary:'Summary',at:1}},{name:'two',last:{summary:'Older',at:0}}]};renderTopics();
+    const row=()=>element('topics').querySelector('.topic-entry');
+    const open=()=>{row().onclick({detail:1});row().onclick({detail:2});return element('topics').querySelector('.topic-rename')};
     const input=open();
-    return {selection:[input.selectionStart,input.selectionEnd],filter:()=>threadFilter(),key:(value,key)=>{const field=element('threads').querySelector('.thread-rename')??open();field.value=value;field.onkeydown({key,preventDefault(){},stopPropagation(){}})},blur:value=>{const field=open();field.value=value;field.onblur()},open};
+    return {selection:[input.selectionStart,input.selectionEnd],filter:()=>topicFilter(),key:(value,key)=>{const field=element('topics').querySelector('.topic-rename')??open();field.value=value;field.onkeydown({key,preventDefault(){},stopPropagation(){}})},blur:value=>{const field=open();field.value=value;field.onblur()},open};
   })()`);
   assert.deepEqual([...controls.selection], [0, 3]); t.mock.timers.tick(250); assert.equal(controls.filter(), undefined);
   controls.key('cancelled', 'Escape'); assert.equal(calls.length, 0);
   controls.key('two', 'Enter'); await new Promise<void>(resolve => setImmediate(resolve));
-  assert.deepEqual(calls.map(call => [call.path, call.body.from, call.body.to]), [['/threads/move', 'one', 'two']]);
+  assert.deepEqual(calls.map(call => [call.path, call.body.from, call.body.to]), [['/topics/move', 'one', 'two']]);
   controls.blur('x'.repeat(201)); await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(calls.at(-1)?.body.to.length, 200);
   const before = calls.length; controls.blur('one'); controls.blur(' '); assert.equal(calls.length, before);
@@ -691,23 +691,23 @@ test('pending prompts show mode and working dots without a remove control', asyn
   assert.deepEqual([...result], ['follow-up', 0, true]);
 });
 
-test('thread filters project blocks without changing their addresses and apply newest late labels', async () => {
+test('topic filters project blocks without changing their addresses and apply newest late labels', async () => {
   const app = await page();
   const result = app.run(`
-    state = {...state, view:{id:'root',path:[],type:'root'},sessionId:'session',threads:[{name:'one',last:{summary:'**First**',at:1}},{name:'two'}]};
-    renderThreads();
+    state = {...state, view:{id:'root',path:[],type:'root'},sessionId:'session',topics:[{name:'one',last:{summary:'**First**',at:1}},{name:'two'}]};
+    renderTopics();
     const user={kind:'user',seq:0,revision:1,at:1,final:true,text:'request',images:[],attachments:[]};
     accept(user);
-    accept({kind:'assistant',seq:1,revision:1,at:2,final:true,blocks:[{type:'text',text:'visible one',thread:'one'},{type:'text',text:'hidden two',thread:'two'}],stop:'stop',error:''});
-    setThread('one');
+    accept({kind:'assistant',seq:1,revision:1,at:2,final:true,blocks:[{type:'text',text:'visible one',topic:'one'},{type:'text',text:'hidden two',topic:'two'}],stop:'stop',error:''});
+    setTopic('one');
     const hiddenUser=!visible(0), indexes=visible(1).blocks.map(block=>block.text), copied=transcriptText();
-    accept({kind:'threads',target:0,threads:['one'],seq:2,revision:1,at:3,final:true});
+    accept({kind:'topics',target:0,topics:['one'],seq:2,revision:1,at:3,final:true});
     const labelled=!!visible(0);
-    accept({kind:'threads',target:0,threads:['two'],seq:3,revision:1,at:4,final:true});
+    accept({kind:'topics',target:0,topics:['two'],seq:3,revision:1,at:4,final:true});
     const newest=!visible(0), original=items.get(1).blocks[1].text;
-    const buttons=element('threads').children.length;
-    apply({...state,type:'state',threads:[{name:'two'}]});
-    const cleared=threadFilter()===undefined&&order.includes(0)&&visible(1).blocks[1].text==='hidden two';
+    const buttons=element('topics').children.length;
+    apply({...state,type:'state',topics:[{name:'two'}]});
+    const cleared=topicFilter()===undefined&&order.includes(0)&&visible(1).blocks[1].text==='hidden two';
     [hiddenUser,indexes,copied,labelled,newest,original,buttons,cleared];
   `);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [true, ['visible one', ''], 'visible one', true, true, 'hidden two', 2, true]);
@@ -716,23 +716,23 @@ test('thread filters project blocks without changing their addresses and apply n
 test('filtered run boundaries keep both tools reachable across hidden prose', async () => {
   const app = await page();
   const result = app.run(`
-    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]};
-    const tool=(id)=>({type:'tool',id,name:'bash',thread:'one',args:{text:'{"command":"'+id+'"}',cut:0},state:{type:'done',error:false,result:{text:id,cut:0,images:[]}}});
-    accept({kind:'assistant',seq:0,revision:1,at:1,final:true,stop:'stop',error:'',blocks:[tool('first'),{type:'text',thread:'two',text:'hidden'},tool('second')]});
-    setThread('one');renderItem(visible(0));reconcileRuns();
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};
+    const tool=(id)=>({type:'tool',id,name:'bash',topic:'one',args:{text:'{"command":"'+id+'"}',cut:0},state:{type:'done',error:false,result:{text:id,cut:0,images:[]}}});
+    accept({kind:'assistant',seq:0,revision:1,at:1,final:true,stop:'stop',error:'',blocks:[tool('first'),{type:'text',topic:'two',text:'hidden'},tool('second')]});
+    setTopic('one');renderItem(visible(0));reconcileRuns();
     [...views.get(0).slots.values()].filter(slot=>slot.type==='run').flatMap(slot=>runMarks.get(slot.view.firstElementChild)?.steps.map(step=>step.key)??[]);
   `);
   assert.deepEqual(Array.from(result), ['0:0','0:2']);
 });
 
-test('find keeps mixed-thread steps and late labels in one run', async () => {
+test('find keeps mixed-topic steps and late labels in one run', async () => {
   const app = await page();
   const result = app.run(`
-    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]};
-    const tool=(id,thread)=>({type:'tool',id,name:'bash',...(thread?{thread}:{}),args:{text:'{}',cut:0},state:{type:'done',error:false,result:{text:id,cut:0,images:[]}}});
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};
+    const tool=(id,topic)=>({type:'tool',id,name:'bash',...(topic?{topic}:{}),args:{text:'{}',cut:0},state:{type:'done',error:false,result:{text:id,cut:0,images:[]}}});
     const reply=(seq,blocks)=>({kind:'assistant',seq,revision:1,at:1,final:true,stop:'stop',error:'',blocks});
     accept(reply(0,[tool('first','one'),tool('second','two')]));
-    accept(reply(1,[tool('late')]));accept({kind:'threads',seq:2,revision:1,at:1,final:true,target:1,threads:['one']});
+    accept(reply(1,[tool('late')]));accept({kind:'topics',seq:2,revision:1,at:1,final:true,target:1,topics:['one']});
     accept(reply(3,[tool('last','two')]));
     const context={items:visible,fold:5,cwd:'',owners:new Map()};
     const keys=[findSegments(visible(0),context).find(segment=>segment.text==='second').folds[0],findSegments(visible(1),context).find(segment=>segment.text==='late').folds[0],findSegments(visible(3),context).find(segment=>segment.text==='last').folds[0]];
@@ -743,13 +743,13 @@ test('find keeps mixed-thread steps and late labels in one run', async () => {
   assert.deepEqual(Array.from(result), ['run:0:0','run:0:0','run:0:0',false,true]);
 });
 
-test('an open thread panel keeps its scroll through state updates and closes by Escape or outside click', async () => {
+test('an open topic panel keeps its scroll through state updates and closes by Escape or outside click', async () => {
   const app = await page();
   const ui = app.run(`
-    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:Array.from({length:20},(_,index)=>({name:'thread-'+index,last:{summary:'Before',at:1}}))};
-    renderThreads();toggleThreads();element('threads').querySelector('.thread-panel').scrollTop=80;
-    apply({...state,type:'state',threads:state.threads.map((thread,index)=>index===0?{...thread,last:{summary:'After',at:2}}:thread)});
-    ({values:[!element('threads').querySelector('.thread-panel').hidden,element('threads').querySelector('.thread-panel').scrollTop,element('threads').querySelector('.thread-summary').textContent],panel:()=>element('threads').querySelector('.thread-panel'),toggle:toggleThreads});
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:Array.from({length:20},(_,index)=>({name:'topic-'+index,last:{summary:'Before',at:1}}))};
+    renderTopics();toggleTopics();element('topics').querySelector('.topic-panel').scrollTop=80;
+    apply({...state,type:'state',topics:state.topics.map((topic,index)=>index===0?{...topic,last:{summary:'After',at:2}}:topic)});
+    ({values:[!element('topics').querySelector('.topic-panel').hidden,element('topics').querySelector('.topic-panel').scrollTop,element('topics').querySelector('.topic-summary').textContent],panel:()=>element('topics').querySelector('.topic-panel'),toggle:toggleTopics});
   `);
   assert.deepEqual(Array.from(ui.values), [true,80,'After']);
   app.listeners.get('keydown')?.({ key:'Escape',target:app.context.document.body,preventDefault(){} });
@@ -759,24 +759,24 @@ test('an open thread panel keeps its scroll through state updates and closes by 
   assert.equal(ui.panel().hidden, true);
 });
 
-test('reply sections carry interactive thread chips or a plain time with no marks or edges', async () => {
+test('reply sections carry interactive topic chips or a plain time with no marks or edges', async () => {
   const app = await page();
   const result = app.run(`(()=>{
     const at=Date.now(),reply=(seq,blocks)=>({seq,at,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks});
-    state={...state,working:true,view:{id:'root',path:[],type:'root'},sessionId:'headers',threads:[{name:'one'},{name:'two'}]};
-    put(reply(0,[{type:'text',text:'First',thread:'one'},{type:'text',text:'Second',thread:'two'}]));
+    state={...state,working:true,view:{id:'root',path:[],type:'root'},sessionId:'headers',topics:[{name:'one'},{name:'two'}]};
+    put(reply(0,[{type:'text',text:'First',topic:'one'},{type:'text',text:'Second',topic:'two'}]));
     put(reply(1,[{type:'text',text:'Plain'}]));
     const all=node=>[node,...node.children.filter(child=>child instanceof HTMLElement).flatMap(all)];
     const headers=all(views.get(0).view).filter(node=>node.classList.contains('message-header')),plain=all(views.get(1).view).find(node=>node.classList.contains('message-header'));
-    const labels=headers.map(header=>[header.querySelector('.thread-name')?.children[1].textContent,header.children.find(node=>node.tagName==='TIME')?.textContent,header.querySelector('.thread-chip')?.getAttribute('role')??null,typeof header.querySelector('.thread-chip')?.onclick==='function']);
+    const labels=headers.map(header=>[header.querySelector('.topic-name')?.children[1].textContent,header.children.find(node=>node.tagName==='TIME')?.textContent,header.querySelector('.topic-chip')?.getAttribute('role')??null,typeof header.querySelector('.topic-chip')?.onclick==='function']);
     const plainInfo=[plain?.children.find(node=>node.tagName==='TIME')?.textContent,plain?.getAttribute('role'),typeof plain?.onclick==='function'];
-    const noMarks=all(views.get(0).view).every(node=>!node.classList.contains('thread-mark')&&!node.classList.contains('thread-edge'));
-    headers[0]?.querySelector('.thread-chip')?.onclick?.();
-    const selected=[composerThreadName(),threadFilter()];setThread('one');renderDirty();
+    const noMarks=all(views.get(0).view).every(node=>!node.classList.contains('topic-mark')&&!node.classList.contains('topic-edge'));
+    headers[0]?.querySelector('.topic-chip')?.onclick?.();
+    const selected=[composerTopicName(),topicFilter()];setTopic('one');renderDirty();
     put({seq:2,at,kind:'user',revision:0,final:true,text:'pending',images:[],attachments:[]});
-    const pending=all(views.get(2).view).some(node=>node.classList.contains('thread-waiting')||node.classList.contains('thread-pending'));
-    const filtered=all(views.get(0).view).filter(node=>node.classList.contains('message-header')).map(header=>[header.children.find(node=>node.tagName==='TIME')?.textContent,!!header.querySelector('.thread-name'),header.querySelector('.thread-name')?.parentNode?.getAttribute('role')??null,typeof header.querySelector('.thread-name')?.parentNode?.onclick==='function']);
-    return [labels,plainInfo,noMarks,threadFilter(),pending,timestamp(at),filtered,selected];
+    const pending=all(views.get(2).view).some(node=>node.classList.contains('topic-waiting')||node.classList.contains('topic-pending'));
+    const filtered=all(views.get(0).view).filter(node=>node.classList.contains('message-header')).map(header=>[header.children.find(node=>node.tagName==='TIME')?.textContent,!!header.querySelector('.topic-name'),header.querySelector('.topic-name')?.parentNode?.getAttribute('role')??null,typeof header.querySelector('.topic-name')?.parentNode?.onclick==='function']);
+    return [labels,plainInfo,noMarks,topicFilter(),pending,timestamp(at),filtered,selected];
   })()`);
   const value=JSON.parse(JSON.stringify(result));
   assert.deepEqual(value.slice(0,5), [[['one',value[5],'button',true],['two',null,'button',true]],[value[5],null,false],true,'one',false]);
@@ -787,29 +787,29 @@ test('reply sections carry interactive thread chips or a plain time with no mark
 test('message headers exclude runs and notices and the composer clear preserves the filter', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    state={...state,life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'headers',threads:[{name:'one'}]};
+    state={...state,life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'headers',topics:[{name:'one'}]};
     const base={at:1,revision:0,final:true};
-    const count=(root,name)=>root.children.reduce((sum,child)=>sum+(child instanceof HTMLElement?Number(child.classList.contains(name)&&!(name==='thread-chip'&&child.classList.contains('thread-new')))+count(child,name):0),0);
-    put({...base,seq:0,kind:'user',text:'Question',thread:'one',images:[],attachments:[]});
-    put({...base,seq:1,kind:'assistant',blocks:[{type:'text',text:'Answer',thread:'one'}],stop:'stop',error:''});
+    const count=(root,name)=>root.children.reduce((sum,child)=>sum+(child instanceof HTMLElement?Number(child.classList.contains(name)&&!(name==='topic-chip'&&child.classList.contains('topic-new')))+count(child,name):0),0);
+    put({...base,seq:0,kind:'user',text:'Question',topic:'one',images:[],attachments:[]});
+    put({...base,seq:1,kind:'assistant',blocks:[{type:'text',text:'Answer',topic:'one'}],stop:'stop',error:''});
     put({...base,seq:2,kind:'assistant',blocks:[{type:'tool',id:'t',name:'bash',args:{text:'{}'},state:{type:'done',error:false,result:{text:'ok',images:[]}}}],stop:'stop',error:''});
     put({...base,seq:3,kind:'notice',customType:'note',from:'worker',text:'Note'});
     put({...base,seq:4,kind:'agent',direction:'in',from:{name:'worker'},text:{text:'Report',cut:0},inbound:{form:'report'}});
     put({...base,seq:5,kind:'job',job:{id:'j',name:'build',log:'/tmp/build.log'},event:{type:'stream',batch:{text:'output',cut:0},omitted:0,cut:false}});
-    state={...state,queue:{steering:[{text:'Steer',attachments:[],thread:'one'}],followUp:[{text:'Later',attachments:[],thread:'one'}],classifying:[{text:'Pending',attachments:[],mode:'followUp'}]}};queue();
-    const queueCounts=[count(element('queue'),'message-header'),count(element('queue'),'thread-chip')];
+    state={...state,queue:{steering:[{text:'Steer',attachments:[],topic:'one'}],followUp:[{text:'Later',attachments:[],topic:'one'}],classifying:[{text:'Pending',attachments:[],mode:'followUp'}]}};queue();
+    const queueCounts=[count(element('queue'),'message-header'),count(element('queue'),'topic-chip')];
     for (const seq of [6,8,10]) put({...base,seq,kind:'user',text:'Implicit',images:[],attachments:[]});
-    put({...base,seq:7,kind:'threads',target:6,threads:['one']});
-    put({...base,seq:9,kind:'threads',target:8,threads:['one','two']});
-    const implicit=[6,8,10].map(seq=>[count(views.get(seq).view,'message-header'),count(views.get(seq).view,'thread-chip')]);
-    const counts=[0,1,2,3,4,5].map(seq=>[count(views.get(seq).view,'message-header'),count(views.get(seq).view,'thread-chip')]);
-    views.get(0).view.querySelector('.thread-chip').onclick();
-    setThread('one');renderDirty();
-    const filtered=[threadFilter(),!!element('field').querySelector('.composer-thread')?.querySelector('.thread-chip'),!!element('threads').querySelector('.thread-clear'),count(views.get(0).view,'thread-chip'),count(views.get(1).view,'thread-chip')];
-    element('field').querySelector('.thread-clear').onclick();
-    const dropped=[composerThreadName(),threadFilter(),!!element('field').querySelector('.thread-new')];
-    element('threads').querySelector('.thread-clear').onclick();
-    return [counts,filtered,threadFilter(),!!element('field').querySelector('.composer-thread'),queueCounts,implicit,dropped];
+    put({...base,seq:7,kind:'topics',target:6,topics:['one']});
+    put({...base,seq:9,kind:'topics',target:8,topics:['one','two']});
+    const implicit=[6,8,10].map(seq=>[count(views.get(seq).view,'message-header'),count(views.get(seq).view,'topic-chip')]);
+    const counts=[0,1,2,3,4,5].map(seq=>[count(views.get(seq).view,'message-header'),count(views.get(seq).view,'topic-chip')]);
+    views.get(0).view.querySelector('.topic-chip').onclick();
+    setTopic('one');renderDirty();
+    const filtered=[topicFilter(),!!element('field').querySelector('.composer-topic')?.querySelector('.topic-chip'),!!element('topics').querySelector('.topic-clear'),count(views.get(0).view,'topic-chip'),count(views.get(1).view,'topic-chip')];
+    element('field').querySelector('.topic-clear').onclick();
+    const dropped=[composerTopicName(),topicFilter(),!!element('field').querySelector('.topic-new')];
+    element('topics').querySelector('.topic-clear').onclick();
+    return [counts,filtered,topicFilter(),!!element('field').querySelector('.composer-topic'),queueCounts,implicit,dropped];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [[[1,1],[1,1],[0,0],[0,0],[0,0],[0,0]],['one',true,true,0,0],null,true,[0,0],[[1,1],[1,0],[1,0]],[null,'one',true]]);
 });
@@ -823,7 +823,7 @@ test('find ignores message header names and times and export contains only prose
       const found=locate(row,[{text,lowered:text,folds:[],fences:[]}],{seq:0,segment:0,start:0},text.length);
       results.push(found?.start.node===leaf&&found?.end.node===leaf);
     }
-    put({kind:'assistant',seq:0,at,revision:0,final:true,blocks:[{type:'text',thread:'one',text:'Only the reply'}],stop:'stop',error:''});
+    put({kind:'assistant',seq:0,at,revision:0,final:true,blocks:[{type:'text',topic:'one',text:'Only the reply'}],stop:'stop',error:''});
     return [results,transcriptText()];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [[true,true],'Only the reply']);
@@ -843,112 +843,112 @@ test('whole transcript selection starts at prose rather than an unselectable mes
 test('a message chip labels submissions and stays after send without filtering', async () => {
   const app = await page();
   const result = await app.run(`(async()=>{
-    state={...state,life:{type:'ready'},working:true,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'}]};
+    state={...state,life:{type:'ready'},working:true,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};
     accept({kind:'user',seq:0,revision:1,at:1,final:true,text:'pending',images:[],attachments:[]});
-    const mark=threadChip('one'),clickable=typeof mark.onclick==='function';mark.onclick?.();renderItem(visible(0));
-    const waiting=views.get(0).view.querySelector('.thread-waiting');
+    const mark=topicChip('one'),clickable=typeof mark.onclick==='function';mark.onclick?.();renderItem(visible(0));
+    const waiting=views.get(0).view.querySelector('.topic-waiting');
     const text=node=>node.textContent+node.children.map(text).join('');
-    renderThreads();const capsule=text(element('threads').querySelector('.thread-capsule'));
+    renderTopics();const capsule=text(element('topics').querySelector('.topic-capsule'));
     let sent;rendered=async()=>{};fetchJSON=async(path,body)=>{sent=body;return {disposition:'queued'}};
     editor.setText('continue');await send();
-    return [mark.tagName,mark.getAttribute('role'),clickable,threadFilter(),capsule,sent.thread,waiting?.tagName,typeof waiting?.onclick==='function',composerThreadName()];
+    return [mark.tagName,mark.getAttribute('role'),clickable,topicFilter(),capsule,sent.topic,waiting?.tagName,typeof waiting?.onclick==='function',composerTopicName()];
   })()`);
   assert.deepEqual(Array.from(result),['SPAN','button',true,undefined,'#one…','one',undefined,false,'one']);
 });
 
-test('filtering selects the composer thread but dropping it submits unlabelled with the filter intact', async () => {
+test('filtering selects the composer topic but dropping it submits unlabelled with the filter intact', async () => {
   const app = await page();
   const result = await app.run(`(async()=>{
-    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]};refreshComposer();
-    const initial=!!element('field').querySelector('.thread-new');
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};refreshComposer();
+    const initial=!!element('field').querySelector('.topic-new');
     const sent=[];rendered=async()=>{};fetchJSON=async(path,body)=>{sent.push(body);return {disposition:'queued'}};
-    setThread('one');const selected=[composerThreadName(),threadFilter()];
-    editor.setText('first');await send();const sticky=composerThreadName();
-    setComposerThread('two');editor.setText('second');await send();
-    element('field').querySelector('.thread-clear').onclick();
-    editor.setText('classify this');await send();const filterAfterDrop=threadFilter();
-    setThread('two');element('threads').querySelector('.thread-clear').onclick();
-    return [initial,selected,sticky,sent.map(body=>body.thread),filterAfterDrop,threadFilter(),composerThreadName(),!!element('field').querySelector('.composer-thread')];
+    setTopic('one');const selected=[composerTopicName(),topicFilter()];
+    editor.setText('first');await send();const sticky=composerTopicName();
+    setComposerTopic('two');editor.setText('second');await send();
+    element('field').querySelector('.topic-clear').onclick();
+    editor.setText('classify this');await send();const filterAfterDrop=topicFilter();
+    setTopic('two');element('topics').querySelector('.topic-clear').onclick();
+    return [initial,selected,sticky,sent.map(body=>body.topic),filterAfterDrop,topicFilter(),composerTopicName(),!!element('field').querySelector('.composer-topic')];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [true,['one','one'],'one',['one','two',null],'one',null,null,true]);
 });
 
-test('composer threads stay with their root draft across reload and do not enter child or job views', async () => {
+test('composer topics stay with their root draft across reload and do not enter child or job views', async () => {
   const app = await page();
   const evaluate = app.repl();
-  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]};setThread('one');setComposerThread('two');editor.setText('draft');`);
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};setTopic('one');setComposerTopic('two');editor.setText('draft');`);
   app.windowListeners.get('pagehide')?.();
   evaluate("element('field').replaceChildren()");
   const restored = app.repl();
   const result = restored(`(()=>{
     state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'}};refreshComposer();
-    const root=[threadFilter(),composerThreadName(),drafts.get('root')];
+    const root=[topicFilter(),composerTopicName(),drafts.get('root')];
     const rows=[];
-    for(const type of ['agent','job']){state={...state,view:{id:'child',path:[],type}};refreshComposer();rows.push([!!element('field').querySelector('.composer-thread'),composerThreadName()]);}
+    for(const type of ['agent','job']){state={...state,view:{id:'child',path:[],type}};refreshComposer();rows.push([!!element('field').querySelector('.composer-topic'),composerTopicName()]);}
     state={...state,sessionId:'other',view:{id:'root',path:[],type:'root'}};refreshComposer();
-    return [root,rows,composerThreadName(),!!element('field').querySelector('.thread-new')];
+    return [root,rows,composerTopicName(),!!element('field').querySelector('.topic-new')];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [['one','two','draft'],[[false,null],[false,null]],null,true]);
 });
 
-test('clearing a widget filter drops its matching composer thread but keeps an independent choice', async () => {
+test('clearing a widget filter drops its matching composer topic but keeps an independent choice', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]};
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};
     const results=[];
     for(const control of ['capsule','all','active']) for(const choice of ['same','other','following']) {
-      setThread('one');
-      if(choice==='other') threadChip('two').onclick();
-      if(choice==='following') composerThreads.delete(filterKey());
-      if(control==='capsule') element('threads').querySelector('.thread-clear').onclick();
-      else if(control==='all') element('threads').querySelector('.thread-all').onclick();
-      else element('threads').querySelector('.current').onclick({detail:0});
-      results.push([threadFilter(),composerThreadName()]);
+      setTopic('one');
+      if(choice==='other') topicChip('two').onclick();
+      if(choice==='following') composerTopics.delete(filterKey());
+      if(control==='capsule') element('topics').querySelector('.topic-clear').onclick();
+      else if(control==='all') element('topics').querySelector('.topic-all').onclick();
+      else element('topics').querySelector('.current').onclick({detail:0});
+      results.push([topicFilter(),composerTopicName()]);
     }
     return results;
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), Array.from({length:3}, () => [[null,null],[null,'two'],[null,null]]).flat());
 });
 
-test('a restored filter supplies only an unset composer thread and preserves an explicit drop', async () => {
+test('a restored filter supplies only an unset composer topic and preserves an explicit drop', async () => {
   const app = await page(), evaluate = app.repl();
-  assert.deepEqual(JSON.parse(JSON.stringify(evaluate(`(()=>{state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'}};threadFilters.set(filterKey(),'one');const derived=composerThreadName();setComposerThread('two');const chosen=composerThreadName();setComposerThread(undefined);return [derived,chosen,composerThreadName()]})()`))), ['one','two',null]);
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate(`(()=>{state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'}};topicFilters.set(filterKey(),'one');const derived=composerTopicName();setComposerTopic('two');const chosen=composerTopicName();setComposerTopic(undefined);return [derived,chosen,composerTopicName()]})()`))), ['one','two',null]);
   app.windowListeners.get('pagehide')?.();
   const restored = app.repl();
-  assert.equal(restored(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'}};composerThreadName()`), undefined);
-  assert.equal(restored('threadFilter()'), 'one');
+  assert.equal(restored(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'}};composerTopicName()`), undefined);
+  assert.equal(restored('topicFilter()'), 'one');
 });
 
-test('a delayed thread click cannot select a filter after a scope switch or a newer filter action', async t => {
+test('a delayed topic click cannot select a filter after a scope switch or a newer filter action', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const app = await page(), evaluate = app.repl();
-  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]};clickThread({detail:1},node('div'),'one');state={...state,sessionId:'other'};`);
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};clickTopic({detail:1},node('div'),'one');state={...state,sessionId:'other'};`);
   t.mock.timers.tick(250);
-  assert.equal(evaluate('threadFilter()'), undefined);
-  evaluate(`clickThread({detail:1},node('div'),'one');setThread('two');`);
+  assert.equal(evaluate('topicFilter()'), undefined);
+  evaluate(`clickTopic({detail:1},node('div'),'one');setTopic('two');`);
   t.mock.timers.tick(250);
-  assert.equal(evaluate('threadFilter()'), 'two');
+  assert.equal(evaluate('topicFilter()'), 'two');
 });
 
-test('a pending thread move updates only its original scope and does not replace a newer filter', async () => {
+test('a pending topic move updates only its original scope and does not replace a newer filter', async () => {
   const app = await page(), evaluate = app.repl();
-  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'A'},{name:'B'},{name:'C'}]};setThread('A');fetchJSON=()=>new Promise(resolve=>window.finishMove=resolve);window.moving=moveThread('A','B');state={...state,sessionId:'other'};setThread('C');window.finishMove({});`);
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'A'},{name:'B'},{name:'C'}]};setTopic('A');fetchJSON=()=>new Promise(resolve=>window.finishMove=resolve);window.moving=moveTopic('A','B');state={...state,sessionId:'other'};setTopic('C');window.finishMove({});`);
   await evaluate('window.moving');
-  assert.deepEqual(JSON.parse(JSON.stringify(evaluate(`[threadFilter(),composerThreadName(),threadFilters.get('root:s'),composerThreads.get('root:s')]`))), ['C','C','B',{type:'thread',name:'B'}]);
-  evaluate(`setThread('A');window.moving=moveThread('A','B');setThread('C');window.finishMove({});`);
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate(`[topicFilter(),composerTopicName(),topicFilters.get('root:s'),composerTopics.get('root:s')]`))), ['C','C','B',{type:'topic',name:'B'}]);
+  evaluate(`setTopic('A');window.moving=moveTopic('A','B');setTopic('C');window.finishMove({});`);
   await evaluate('window.moving');
-  assert.deepEqual(JSON.parse(JSON.stringify(evaluate('[threadFilter(),composerThreadName()]'))), ['C','C']);
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate('[topicFilter(),composerTopicName()]'))), ['C','C']);
 });
 
-test('moving a thread updates its composer chip without replacing an independent composer thread', async () => {
+test('moving a topic updates its composer chip without replacing an independent composer topic', async () => {
   const app = await page();
   const result = await app.run(`(async()=>{
-    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'A'},{name:'B'},{name:'C'}]};
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'A'},{name:'B'},{name:'C'}]};
     fetchJSON=async()=>({});
-    threadChip('A').onclick();await moveThread('A','B');
-    const renamed=[threadFilter(),composerThreadName(),element('field').querySelector('.thread-name').title];
-    setThread('A');threadChip('C').onclick();await moveThread('A','B');
-    return [renamed,[threadFilter(),composerThreadName(),element('field').querySelector('.thread-name').title]];
+    topicChip('A').onclick();await moveTopic('A','B');
+    const renamed=[topicFilter(),composerTopicName(),element('field').querySelector('.topic-name').title];
+    setTopic('A');topicChip('C').onclick();await moveTopic('A','B');
+    return [renamed,[topicFilter(),composerTopicName(),element('field').querySelector('.topic-name').title]];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [[null,'B','B'],['B','C','C']]);
 });
@@ -956,38 +956,38 @@ test('moving a thread updates its composer chip without replacing an independent
 test('composer naming commits with Enter or Tab, keeps its input on refresh and cancels without filtering', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'existing'}]};refreshComposer();
-    const key=value=>({key:value,preventDefault(){},stopPropagation(){}}),open=()=>{element('field').querySelector('.thread-new').onclick();return element('field').querySelector('.thread-input')};
-    let input=open();const initial=[input.placeholder,input.style.width,threadNaming.chip.style['--thread-color']];input.value='existing';input.oninput();const existing=threadNaming.chip.style['--thread-color'];refreshComposer();const retained=element('field').querySelector('.thread-input')===input&&document.activeElement===input;
-    input.onkeydown(key('Tab'));const committed=[composerThreadName(),threadFilter(),editor.hasFocus()];
-    element('field').querySelector('.thread-clear').onclick();input=open();input.value='New topic';input.onkeydown(key('Enter'));const named=[composerThreadName(),editor.hasFocus()];
-    element('field').querySelector('.thread-clear').onclick();input=open();input.value='Cancelled';input.onkeydown(key('Escape'));const escaped=[composerThreadName(),!!element('field').querySelector('.thread-new')];
-    input=open();element('field').querySelector('.thread-clear').onclick();
-    return [initial,existing,retained,committed,named,escaped,composerThreadName(),!!element('field').querySelector('.thread-new')];
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'existing'}]};refreshComposer();
+    const key=value=>({key:value,preventDefault(){},stopPropagation(){}}),open=()=>{element('field').querySelector('.topic-new').onclick();return element('field').querySelector('.topic-input')};
+    let input=open();const initial=[input.placeholder,input.style.width,topicNaming.chip.style['--topic-color']];input.value='existing';input.oninput();const existing=topicNaming.chip.style['--topic-color'];refreshComposer();const retained=element('field').querySelector('.topic-input')===input&&document.activeElement===input;
+    input.onkeydown(key('Tab'));const committed=[composerTopicName(),topicFilter(),editor.hasFocus()];
+    element('field').querySelector('.topic-clear').onclick();input=open();input.value='New topic';input.onkeydown(key('Enter'));const named=[composerTopicName(),editor.hasFocus()];
+    element('field').querySelector('.topic-clear').onclick();input=open();input.value='Cancelled';input.onkeydown(key('Escape'));const escaped=[composerTopicName(),!!element('field').querySelector('.topic-new')];
+    input=open();element('field').querySelector('.topic-clear').onclick();
+    return [initial,existing,retained,committed,named,escaped,composerTopicName(),!!element('field').querySelector('.topic-new')];
   })()`);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['thread name','11ch','var(--thread-1)'],'var(--thread-0)',true,['existing',null,true],['New topic',true],[null,true],null,true]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['topic name','10ch','var(--topic-1)'],'var(--topic-0)',true,['existing',null,true],['New topic',true],[null,true],null,true]);
 });
 
-test('a late thread label cancels reply naming and removes its naming control', async () => {
+test('a late topic label cancels reply naming and removes its naming control', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'}]};
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};
     put({seq:0,at:1,revision:0,kind:'assistant',final:true,blocks:[{type:'text',text:'Reply'}]});
-    views.get(0).view.querySelector('.thread-new').onclick();
-    put({kind:'threads',target:0,threads:['one'],seq:1,revision:0,at:2,final:true});renderDirty();
-    return [threadNaming,!!views.get(0).view.querySelector('.thread-new'),!!views.get(0).view.querySelector('.thread-input'),views.get(0).view.querySelector('.thread-name')?.title];
+    views.get(0).view.querySelector('.topic-new').onclick();
+    put({kind:'topics',target:0,topics:['one'],seq:1,revision:0,at:2,final:true});renderDirty();
+    return [topicNaming,!!views.get(0).view.querySelector('.topic-new'),!!views.get(0).view.querySelector('.topic-input'),views.get(0).view.querySelector('.topic-name')?.title];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [null,false,false,'one']);
 });
 
-test('threaded messages omit the naming control, including mixed reply sections', async () => {
+test('messages with a topic omit the naming control, including mixed reply sections', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'}]};
-    put({seq:0,at:1,revision:0,kind:'user',final:true,text:'Threaded',thread:'one',images:[],attachments:[]});
-    put({seq:1,at:1,revision:0,kind:'user',final:true,text:'Unthreaded',images:[],attachments:[]});
-    put({seq:2,at:1,revision:0,kind:'assistant',final:true,blocks:[{type:'text',text:'First'},{type:'text',text:'Second',thread:'one'}]});
-    return [0,1,2].map(seq=>!!views.get(seq).view.querySelector('.thread-new'));
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};
+    put({seq:0,at:1,revision:0,kind:'user',final:true,text:'With a topic',topic:'one',images:[],attachments:[]});
+    put({seq:1,at:1,revision:0,kind:'user',final:true,text:'Without a topic',images:[],attachments:[]});
+    put({seq:2,at:1,revision:0,kind:'assistant',final:true,blocks:[{type:'text',text:'First'},{type:'text',text:'Second',topic:'one'}]});
+    return [0,1,2].map(seq=>!!views.get(seq).view.querySelector('.topic-new'));
   })()`);
   assert.deepEqual(Array.from(result), [false,true,false]);
 });
@@ -995,56 +995,56 @@ test('threaded messages omit the naming control, including mixed reply sections'
 test('message naming keeps focus and text through updates and ignores composing Enter and Escape', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'old'}]};
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'old'}]};
     const requests=[];fetchJSON=async(path,body)=>{requests.push(body);return {}};
     const results=[];
     for(const kind of ['user','assistant']){
       const seq=kind==='user'?0:1,item=kind==='user'?{seq,at:1,revision:0,kind,final:true,text:'Question',images:[],attachments:[]}:{seq,at:1,revision:0,kind,final:false,blocks:[{type:'text',text:'Reply'}]};
-      put(item);views.get(seq).view.querySelector('.thread-new').onclick();const input=views.get(seq).view.querySelector('.thread-input');input.value='New topic';
+      put(item);views.get(seq).view.querySelector('.topic-new').onclick();const input=views.get(seq).view.querySelector('.topic-input');input.value='New topic';
       const key=(key,isComposing)=>({key,isComposing,preventDefault(){},stopPropagation(){}});
       input.onkeydown(key('Enter',true));input.onkeydown(key('Escape',true));
       put({...item,revision:1,...(kind==='user'?{text:'Updated'}:{blocks:[{type:'text',text:'Reply grows'}]})});renderDirty();
-      results.push([document.activeElement===input,input.value,views.get(seq).view.querySelector('.thread-input')===input,requests.length]);input.onkeydown(key('Enter',false));
+      results.push([document.activeElement===input,input.value,views.get(seq).view.querySelector('.topic-input')===input,requests.length]);input.onkeydown(key('Enter',false));
     }
-    refreshComposer();element('field').querySelector('.thread-new').onclick();const input=element('field').querySelector('.thread-input');input.value='Composer';input.onkeydown({key:'Enter',isComposing:true,stopPropagation(){}});const composing=composerThreadName();input.onkeydown({key:'Enter',isComposing:false,stopPropagation(){},preventDefault(){}});
-    return [results,requests,composing,composerThreadName()];
+    refreshComposer();element('field').querySelector('.topic-new').onclick();const input=element('field').querySelector('.topic-input');input.value='Composer';input.onkeydown({key:'Enter',isComposing:true,stopPropagation(){}});const composing=composerTopicName();input.onkeydown({key:'Enter',isComposing:false,stopPropagation(){},preventDefault(){}});
+    return [results,requests,composing,composerTopicName()];
   })()`);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), [[[true,'New topic',true,0],[true,'New topic',true,1]],[{sessionId:'s',seq:0,thread:'New topic'},{sessionId:'s',seq:1,thread:'New topic'}],null,'Composer']);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [[[true,'New topic',true,0],[true,'New topic',true,1]],[{sessionId:'s',seq:0,topic:'New topic'},{sessionId:'s',seq:1,topic:'New topic'}],null,'Composer']);
 });
 
 test('message naming sends its turn identity and cancels on Escape, outside click or session change', async () => {
   const app = await page(), evaluate = app.repl();
-  evaluate(`state={...state,life:{type:'ready'},sessionId:'origin',view:{id:'root',path:[],type:'root'},threads:[{name:'old'}]};put({seq:0,at:1,revision:0,kind:'user',final:true,text:'Question',images:[],attachments:[]});window.requests=[];fetchJSON=async(path,body)=>{window.requests.push([path,body]);return {}};window.openName=()=>{views.get(0).view.querySelector('.thread-new').onclick();return views.get(0).view.querySelector('.thread-input')};window.key=value=>({key:value,preventDefault(){},stopPropagation(){}});`);
-  assert.equal(evaluate(`(()=>{const input=window.openName();input.value='New topic';input.onkeydown(window.key('Enter'));return !!views.get(0).view.querySelector('.thread-name')})()`), false);
-  assert.deepEqual(JSON.parse(JSON.stringify(evaluate('window.requests'))), [['/messages/thread',{sessionId:'origin',seq:0,thread:'New topic'}]]);
-  evaluate(`window.openName().onkeydown(window.key('Escape'));window.openName();views.get(0).view.querySelector('.thread-clear').onclick();window.openName()`);
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'origin',view:{id:'root',path:[],type:'root'},topics:[{name:'old'}]};put({seq:0,at:1,revision:0,kind:'user',final:true,text:'Question',images:[],attachments:[]});window.requests=[];fetchJSON=async(path,body)=>{window.requests.push([path,body]);return {}};window.openName=()=>{views.get(0).view.querySelector('.topic-new').onclick();return views.get(0).view.querySelector('.topic-input')};window.key=value=>({key:value,preventDefault(){},stopPropagation(){}});`);
+  assert.equal(evaluate(`(()=>{const input=window.openName();input.value='New topic';input.onkeydown(window.key('Enter'));return !!views.get(0).view.querySelector('.topic-name')})()`), false);
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate('window.requests'))), [['/messages/topic',{sessionId:'origin',seq:0,topic:'New topic'}]]);
+  evaluate(`window.openName().onkeydown(window.key('Escape'));window.openName();views.get(0).view.querySelector('.topic-clear').onclick();window.openName()`);
   app.listeners.get('pointerdown')?.({ target:app.context.document.body });
-  assert.equal(evaluate("!!views.get(0).view.querySelector('.thread-input')"), false);
-  evaluate(`window.openName();renderThreads();element('threads').querySelector('.thread-panel').querySelector('.thread-entry').querySelector('.thread-archive').onpointerdown({stopPropagation(){}})`);
-  assert.equal(evaluate("!!views.get(0).view.querySelector('.thread-input')"), false);
+  assert.equal(evaluate("!!views.get(0).view.querySelector('.topic-input')"), false);
+  evaluate(`window.openName();renderTopics();element('topics').querySelector('.topic-panel').querySelector('.topic-entry').querySelector('.topic-archive').onpointerdown({stopPropagation(){}})`);
+  assert.equal(evaluate("!!views.get(0).view.querySelector('.topic-input')"), false);
   evaluate(`window.openName();state={...state,sessionId:'replacement'};refreshComposer()`);
-  assert.deepEqual(JSON.parse(JSON.stringify(evaluate('[window.requests.length,threadNaming,composerThreadName(),threadFilter()]'))), [1,null,null,null]);
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate('[window.requests.length,topicNaming,composerTopicName(),topicFilter()]'))), [1,null,null,null]);
 });
 
 test('archive controls do not filter or drag and archived rows follow live rows without entering the capsule counts', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'archived',archived:true,last:{summary:'Old',at:30}},{name:'live',last:{summary:'Live',at:20}},{name:'older',archived:true,last:{summary:'Older',at:10}}]};renderThreads();
-    const text=root=>root.textContent+root.children.map(text).join(''),panel=element('threads').querySelector('.thread-panel'),rows=panel.querySelectorAll('.thread-entry'),order=rows.map(row=>row.dataset.thread),capsule=text(element('threads').querySelector('.thread-capsule'));
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'archived',archived:true,last:{summary:'Old',at:30}},{name:'live',last:{summary:'Live',at:20}},{name:'older',archived:true,last:{summary:'Older',at:10}}]};renderTopics();
+    const text=root=>root.textContent+root.children.map(text).join(''),panel=element('topics').querySelector('.topic-panel'),rows=panel.querySelectorAll('.topic-entry'),order=rows.map(row=>row.dataset.topic),capsule=text(element('topics').querySelector('.topic-capsule'));
     const requests=[];let stopped=0;fetchJSON=async(path,body)=>{requests.push([path,body]);return {}};
-    const action=rows[0].querySelector('.thread-archive');action.onpointerdown({stopPropagation(){stopped++}});action.onclick({stopPropagation(){stopped++}});
-    rows[1].querySelector('.thread-archive').onclick({stopPropagation(){stopped++}});
-    const actions=[rows[0].tagName,action.tagName,action.textContent,rows[1].querySelector('.thread-archive').textContent,stopped,threadFilter(),threadDragged,renaming];
-    setThread('archived');const selected=element('threads').querySelector('.thread-capsule').querySelector('.thread-name').classList.contains('archived');
-    setThread(undefined);state={...state,threads:state.threads.map(thread=>({...thread,archived:true}))};renderThreads();const empty=text(element('threads').querySelector('.thread-capsule'));
+    const action=rows[0].querySelector('.topic-archive');action.onpointerdown({stopPropagation(){stopped++}});action.onclick({stopPropagation(){stopped++}});
+    rows[1].querySelector('.topic-archive').onclick({stopPropagation(){stopped++}});
+    const actions=[rows[0].tagName,action.tagName,action.textContent,rows[1].querySelector('.topic-archive').textContent,stopped,topicFilter(),topicDragged,renaming];
+    setTopic('archived');const selected=element('topics').querySelector('.topic-capsule').querySelector('.topic-name').classList.contains('archived');
+    setTopic(undefined);state={...state,topics:state.topics.map(topic=>({...topic,archived:true}))};renderTopics();const empty=text(element('topics').querySelector('.topic-capsule'));
     return [order,capsule,requests,actions,selected,empty];
   })()`);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['live','archived','older'],'#live…',[['/threads/archive',{sessionId:'s',name:'live',archived:true}],['/threads/archive',{sessionId:'s',name:'archived',archived:false}]],['DIV','BUTTON','×','↺',3,null,false,false],true,'…']);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['live','archived','older'],'#live…',[['/topics/archive',{sessionId:'s',name:'live',archived:true}],['/topics/archive',{sessionId:'s',name:'archived',archived:false}]],['DIV','BUTTON','×','↺',3,null,false,false],true,'…']);
 });
 
-test('block thread updates preserve the scrolled panel position', async () => {
+test('block topic updates preserve the scrolled panel position', async () => {
   const app=await page();
-  const result=app.run(`(()=>{threadMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:Array.from({length:32},(_,index)=>({name:'thread-'+index,last:{summary:'Before',at:index}}))};renderThreads();element('threads').querySelector('.thread-panel').scrollTop=140;apply({...state,type:'state',threads:state.threads.map(thread=>({...thread,last:{...thread.last,summary:'After'}}))});return element('threads').querySelector('.thread-panel').scrollTop})()`);
+  const result=app.run(`(()=>{topicMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:Array.from({length:32},(_,index)=>({name:'topic-'+index,last:{summary:'Before',at:index}}))};renderTopics();element('topics').querySelector('.topic-panel').scrollTop=140;apply({...state,type:'state',topics:state.topics.map(topic=>({...topic,last:{...topic.last,summary:'After'}}))});return element('topics').querySelector('.topic-panel').scrollTop})()`);
   assert.equal(result,140);
 });
 
@@ -1056,43 +1056,43 @@ test('divider insertion movement and removal update rhythm across rows and reply
 
 test('streamed prose in a run follower updates only its preceding rhythm neighbour', async () => {
   const app=await page();
-  const result=app.run(`(()=>{element('items').hidden=false;state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]};setThread('one');const tool={type:'tool',thread:'one',id:'tool',name:'bash',args:{text:'{}'},state:{type:'done',error:false,result:{text:'',cut:0,images:[]}}};const reply=(seq,blocks,revision=0)=>({seq,revision,at:1,kind:'assistant',final:true,blocks,stop:'stop',error:''});put({seq:0,revision:0,at:1,kind:'agent',final:true,thread:'one',direction:'in',from:{name:'helper'},inbound:{form:'report',relation:'child'},text:{text:'ready',cut:0}});put(reply(1,[tool]));put(reply(2,[{type:'text',thread:'two',text:'hidden boundary'}]));put(reply(3,[tool]));const previous=views.get(0).view.querySelector('.run'),next=views.get(3).view.querySelector('.run'),before=previous.dataset.rhythm;Object.defineProperty(next.dataset,'rhythm',{get:()=> 'block',set:()=>{throw Error('Untouched row was rewritten')}});put(reply(1,[tool,{type:'text',thread:'one',text:'Streamed prose'}],1));return [before,previous.dataset.rhythm]})()`);
+  const result=app.run(`(()=>{element('items').hidden=false;state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};setTopic('one');const tool={type:'tool',topic:'one',id:'tool',name:'bash',args:{text:'{}'},state:{type:'done',error:false,result:{text:'',cut:0,images:[]}}};const reply=(seq,blocks,revision=0)=>({seq,revision,at:1,kind:'assistant',final:true,blocks,stop:'stop',error:''});put({seq:0,revision:0,at:1,kind:'agent',final:true,topic:'one',direction:'in',from:{name:'helper'},inbound:{form:'report',relation:'child'},text:{text:'ready',cut:0}});put(reply(1,[tool]));put(reply(2,[{type:'text',topic:'two',text:'hidden boundary'}]));put(reply(3,[tool]));const previous=views.get(0).view.querySelector('.run'),next=views.get(3).view.querySelector('.run'),before=previous.dataset.rhythm;Object.defineProperty(next.dataset,'rhythm',{get:()=> 'block',set:()=>{throw Error('Untouched row was rewritten')}});put(reply(1,[tool,{type:'text',topic:'one',text:'Streamed prose'}],1));return [before,previous.dataset.rhythm]})()`);
   assert.deepEqual(Array.from(result),['compact','block']);
 });
 
-test('thread modes switch at thirty measured cells and resize across the threshold', async () => {
+test('topic modes switch at thirty measured cells and resize across the threshold', async () => {
   const app = await page();
-  assert.deepEqual(Array.from(app.run(`[threadMode(720+28+29.9*8,720,8),threadMode(720+28+30*8,720,8)]`)),['line','block']);
-  const result=app.run(`(()=>{threadMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'}]};const modes=[];for(const width of [987.2,988,987.2]){document.documentElement.clientWidth=width;renderThreads();resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);modes.push(element('threads').dataset.mode)}return modes})()`);
+  assert.deepEqual(Array.from(app.run(`[topicMode(720+28+29.9*8,720,8),topicMode(720+28+30*8,720,8)]`)),['line','block']);
+  const result=app.run(`(()=>{topicMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};const modes=[];for(const width of [987.2,988,987.2]){document.documentElement.clientWidth=width;renderTopics();resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);modes.push(element('topics').dataset.mode)}return modes})()`);
   assert.deepEqual(Array.from(result),['line','block','line']);
 });
 
-test('the permanent thread block does not consume Escape', async () => {
+test('the permanent topic block does not consume Escape', async () => {
   const app=await page();
-  const result=app.run(`(()=>{threadMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,working:true,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'}]};let stopped=0;stop=async()=>{stopped++};renderThreads();return {get stopped(){return stopped},get hidden(){return element('threads').querySelector('.thread-panel').hidden}}})()`);
+  const result=app.run(`(()=>{topicMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,working:true,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};let stopped=0;stop=async()=>{stopped++};renderTopics();return {get stopped(){return stopped},get hidden(){return element('topics').querySelector('.topic-panel').hidden}}})()`);
   app.listeners.get('keydown')?.({key:'Escape',target:app.context.document.body,preventDefault(){}});
   assert.equal(result.stopped,1);
   assert.equal(result.hidden,false);
 });
 
-test('line thread names apply their filter directly', async () => {
+test('line topic names apply their filter directly', async () => {
   const app=await page();
-  const result=app.run(`state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'}]};renderThreads();element('threads').querySelector('.thread-capsule').querySelector('.thread-name').onclick?.();threadFilter()`);
+  const result=app.run(`state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};renderTopics();element('topics').querySelector('.topic-capsule').querySelector('.topic-name').onclick?.();topicFilter()`);
   assert.equal(result,'one');
 });
 
-test('thread block rows toggle filters and line names filter without opening the panel', async () => {
+test('topic block rows toggle filters and line names filter without opening the panel', async () => {
   const app=await page();
-  const result=app.run(`(()=>{threadMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one',last:{summary:'Last message',at:1}}]};renderThreads();const block=[element('threads').dataset.mode,!element('threads').querySelector('.thread-capsule'),element('threads').querySelector('.thread-panel').hidden];element('threads').querySelector('.thread-entry').onclick({detail:0});block.push(threadFilter(),element('threads').querySelector('.thread-entry').classList.contains('current'));element('threads').querySelector('.thread-entry').onclick({detail:0});block.push(threadFilter());setThread('one');element('threads').querySelector('.thread-all').onclick();block.push(threadFilter());document.documentElement.clientWidth=600;renderThreads();const capsule=element('threads').querySelector('.thread-capsule');capsule.querySelector('.thread-name').onclick();const line=[threadFilter(),element('threads').querySelector('.thread-panel').hidden];setThread(undefined);element('threads').querySelector('.thread-overflow').onclick();line.push(element('threads').querySelector('.thread-panel').hidden);return [block,line]})()`);
+  const result=app.run(`(()=>{topicMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one',last:{summary:'Last message',at:1}}]};renderTopics();const block=[element('topics').dataset.mode,!element('topics').querySelector('.topic-capsule'),element('topics').querySelector('.topic-panel').hidden];element('topics').querySelector('.topic-entry').onclick({detail:0});block.push(topicFilter(),element('topics').querySelector('.topic-entry').classList.contains('current'));element('topics').querySelector('.topic-entry').onclick({detail:0});block.push(topicFilter());setTopic('one');element('topics').querySelector('.topic-all').onclick();block.push(topicFilter());document.documentElement.clientWidth=600;renderTopics();const capsule=element('topics').querySelector('.topic-capsule');capsule.querySelector('.topic-name').onclick();const line=[topicFilter(),element('topics').querySelector('.topic-panel').hidden];setTopic(undefined);element('topics').querySelector('.topic-overflow').onclick();line.push(element('topics').querySelector('.topic-panel').hidden);return [block,line]})()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)),[['block',true,false,'one',true,null,null],['one',true,false]]);
 });
 
 test('the capsule shows every name when all measured names fit', async () => {
   const app = await page();
   const result = app.run(`
-    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:['one','two','three'].map((name,index)=>({name,last:{summary:name,at:3-index}}))};
-    renderThreads();
-    element('threads').querySelector('.thread-open').children.filter(node=>node.classList.contains('thread-name')).map(node=>node.dataset.thread);
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:['one','two','three'].map((name,index)=>({name,last:{summary:name,at:3-index}}))};
+    renderTopics();
+    element('topics').querySelector('.topic-open').children.filter(node=>node.classList.contains('topic-name')).map(node=>node.dataset.topic);
   `);
   assert.deepEqual(Array.from(result),['one','two','three']);
 });
@@ -1100,17 +1100,17 @@ test('the capsule shows every name when all measured names fit', async () => {
 test('measured capsule overflow and resize keep whole names and skip unchanged streaming state', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:['one','two','three'].map((name,index)=>({name,last:{summary:name,at:3-index}}))};renderThreads();
-    const capsule=element('threads').querySelector('.thread-capsule'),button=capsule.querySelector('.thread-open');
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:['one','two','three'].map((name,index)=>({name,last:{summary:name,at:3-index}}))};renderTopics();
+    const capsule=element('topics').querySelector('.topic-capsule'),button=capsule.querySelector('.topic-open');
     capsule.getBoundingClientRect=()=>({width:100});button.getBoundingClientRect=()=>({width:80});
     let reads=0;
-    Object.defineProperty(button,'scrollWidth',{get(){reads++;return button.children.reduce((sum,child)=>{let width;if(child.classList.contains('thread-name'))width={one:80,two:90,three:100}[child.dataset.thread];else if(child.classList.contains('thread-separator'))width=10;else if(child.classList.contains('thread-more'))width=25;else if(child.classList.contains('thread-overflow'))width=10;else throw Error('Unexpected capsule child');return sum+width;},5*(button.children.length-1))}});
-    const snapshot=()=>[button.children.filter(child=>child.classList.contains('thread-name')).map(child=>child.dataset.thread),button.querySelector('.thread-more')?.textContent??''];
-    fitThreads(500);const all=snapshot();
+    Object.defineProperty(button,'scrollWidth',{get(){reads++;return button.children.reduce((sum,child)=>{let width;if(child.classList.contains('topic-name'))width={one:80,two:90,three:100}[child.dataset.topic];else if(child.classList.contains('topic-separator'))width=10;else if(child.classList.contains('topic-more'))width=25;else if(child.classList.contains('topic-overflow'))width=10;else throw Error('Unexpected capsule child');return sum+width;},5*(button.children.length-1))}});
+    const snapshot=()=>[button.children.filter(child=>child.classList.contains('topic-name')).map(child=>child.dataset.topic),button.querySelector('.topic-more')?.textContent??''];
+    fitTopics(500);const all=snapshot();
     document.documentElement.clientWidth=300;resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);const overflow=snapshot();
     document.documentElement.clientWidth=200;resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);const smaller=snapshot();
     document.documentElement.clientWidth=400;resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);const larger=snapshot();
-    const before=reads;apply({...state,type:'state',threads:state.threads.map(thread=>({...thread,last:{...thread.last,summary:'Streaming'}}))});const unchanged=reads===before;
+    const before=reads;apply({...state,type:'state',topics:state.topics.map(topic=>({...topic,last:{...topic.last,summary:'Streaming'}}))});const unchanged=reads===before;
     document.documentElement.clientWidth=120;resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);
     return [all,overflow,smaller,larger,unchanged,snapshot(),button.classList.contains('single')];
   })()`);
@@ -1118,31 +1118,31 @@ test('measured capsule overflow and resize keep whole names and skip unchanged s
   assert.equal(app.observers.length,1);
 });
 
-test('thread ages use now, minutes, hours and days', async () => {
+test('topic ages use now, minutes, hours and days', async () => {
   const app = await page();
-  assert.deepEqual(Array.from(app.run(`[threadAge(0,59000),threadAge(0,60000),threadAge(0,3600000),threadAge(0,86400000)]`)), ['now','1m','1h','1d']);
+  assert.deepEqual(Array.from(app.run(`[topicAge(0,59000),topicAge(0,60000),topicAge(0,3600000),topicAge(0,86400000)]`)), ['now','1m','1h','1d']);
 });
 
-test('thread capsules sort activity, keep palette identity and show the filter controls', async () => {
+test('topic capsules sort activity, keep palette identity and show the filter controls', async () => {
   const app = await page();
   const result = app.run(`
     const text=node=>node.textContent+node.children.map(text).join('');
-    state={...state,name:'pi',life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'s',threads:[{name:'one',last:{summary:'**First**',at:1}},{name:'two',last:{summary:'Second',at:2}}]};
-    renderThreads();const two=text(element('threads').querySelector('.thread-capsule'));
-    state={...state,threads:[state.threads[0]]};renderThreads();const one=text(element('threads').querySelector('.thread-capsule'));
-    state={...state,threads:['one','two','three','four','five','six','seven'].map((name,index)=>({name,last:{summary:name,at:index+1}}))};
-    renderThreads();const many=text(element('threads').querySelector('.thread-capsule'));
-    const colours=[threadColour('one'),threadColour('two'),threadColour('seven')];
-    state={...state,threads:[...state.threads,{name:'pending-old'},{name:'pending-new'}]};renderThreads();const pendingNames=element('threads').querySelector('.thread-open').children.filter(node=>node.classList.contains('thread-name')).slice(0,2).map(node=>node.dataset.thread);
-    setThread('two');renderThreads();refreshComposer();
-    const filtered=text(element('threads').querySelector('.thread-capsule')),foot=!!element('field').querySelector('.thread-cell'),placeholder=element('prompt').children[0].placeholder;
-    toggleThreads();const panel=!element('threads').querySelector('.thread-panel').hidden;
+    state={...state,name:'pi',life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'s',topics:[{name:'one',last:{summary:'**First**',at:1}},{name:'two',last:{summary:'Second',at:2}}]};
+    renderTopics();const two=text(element('topics').querySelector('.topic-capsule'));
+    state={...state,topics:[state.topics[0]]};renderTopics();const one=text(element('topics').querySelector('.topic-capsule'));
+    state={...state,topics:['one','two','three','four','five','six','seven'].map((name,index)=>({name,last:{summary:name,at:index+1}}))};
+    renderTopics();const many=text(element('topics').querySelector('.topic-capsule'));
+    const colours=[topicColour('one'),topicColour('two'),topicColour('seven')];
+    state={...state,topics:[...state.topics,{name:'pending-old'},{name:'pending-new'}]};renderTopics();const pendingNames=element('topics').querySelector('.topic-open').children.filter(node=>node.classList.contains('topic-name')).slice(0,2).map(node=>node.dataset.topic);
+    setTopic('two');renderTopics();refreshComposer();
+    const filtered=text(element('topics').querySelector('.topic-capsule')),foot=!!element('field').querySelector('.topic-cell'),placeholder=element('prompt').children[0].placeholder;
+    toggleTopics();const panel=!element('topics').querySelector('.topic-panel').hidden;
     [one,two,many,colours,filtered,foot,placeholder,panel,pendingNames];
   `);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), ['#one…','#two·#one…','#seven·#six·#five·#four·#three·#two·#one…',['var(--thread-0)','var(--thread-1)','var(--thread-0)'],'#two×',false,'Message koa…',true,['pending-new','pending-old']]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), ['#one…','#two·#one…','#seven·#six·#five·#four·#three·#two·#one…',['var(--topic-0)','var(--topic-1)','var(--topic-0)'],'#two×',false,'Message koa…',true,['pending-new','pending-old']]);
 });
 
-test('unfiltered roots keep the original foot and wrap unthreaded replies', async () => {
+test('unfiltered roots keep the original foot and wrap replies without a topic', async () => {
   const app = await page();
   const html = await readFile(new URL('page/page.html', import.meta.url), 'utf8');
   const first = html.match(/<div class="foot"><span id="([^"]+)"/)?.[1];
@@ -1150,10 +1150,10 @@ test('unfiltered roots keep the original foot and wrap unthreaded replies', asyn
   const result = app.run(`(()=>{
     const foot=node('div'),model=element('model-cell'),initial=element(${JSON.stringify(first)});model.id='model-cell';initial.id=${JSON.stringify(first)};foot.append(initial);if(initial!==model)foot.append(model);
     const cases=[];
-    for(const threads of [[],[{name:'work'}]]){
-      state={...state,life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'old-dom',threads};renderThreads();
+    for(const topics of [[],[{name:'work'}]]){
+      state={...state,life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'old-dom',topics};renderTopics();
       const item={kind:'assistant',seq:0,revision:1,at:1,final:true,blocks:[{type:'text',text:'plain reply'}],stop:'stop',error:''};accept(item);renderItem(visible(0));
-      const reply=views.get(0).view;cases.push([foot.children[0].id,foot.children.some(child=>child.className.includes('thread-')),reply.children.map(child=>child.className),reply.querySelectorAll('.thread-section,.thread-mark,.thread-name').length]);
+      const reply=views.get(0).view;cases.push([foot.children[0].id,foot.children.some(child=>child.className.includes('topic-')),reply.children.map(child=>child.className),reply.querySelectorAll('.topic-section,.topic-mark,.topic-name').length]);
     }
     return cases;
   })()`);
@@ -1163,7 +1163,7 @@ test('unfiltered roots keep the original foot and wrap unthreaded replies', asyn
 test('a filtered composer keeps the working and compaction verbs', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    state={...state,name:'ko',life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'verb',threads:[{name:'work'}]};setThread('work');
+    state={...state,name:'ko',life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'verb',topics:[{name:'work'}]};setTopic('work');
     const hints=[];
     for(const [working,compaction] of [[true,'idle'],[true,'running'],[false,'idle']]){state={...state,working,compaction};refreshComposer();hints.push(element('prompt').children[0].placeholder)}
     return hints;
@@ -1171,18 +1171,18 @@ test('a filtered composer keeps the working and compaction verbs', async () => {
   assert.deepEqual(Array.from(result), ['Steer koa…','Message koa…','Message koa…']);
 });
 
-test('reply sections never draw a thread edge', async () => {
+test('reply sections never draw a topic edge', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    state={...state,life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'edges',threads:[{name:'work'}]};
-    for(let seq=0;seq<3;seq++)accept({kind:'assistant',seq,revision:1,at:1,final:true,blocks:[{type:'text',text:'part',thread:'work'}],stop:'stop',error:''});
+    state={...state,life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'edges',topics:[{name:'work'}]};
+    for(let seq=0;seq<3;seq++)accept({kind:'assistant',seq,revision:1,at:1,final:true,blocks:[{type:'text',text:'part',topic:'work'}],stop:'stop',error:''});
     accept({kind:'user',seq:3,revision:1,at:1,final:true,text:'break',images:[],attachments:[]});
-    accept({kind:'assistant',seq:4,revision:1,at:1,final:true,blocks:[{type:'text',text:'after',thread:'work'}],stop:'stop',error:''});
+    accept({kind:'assistant',seq:4,revision:1,at:1,final:true,blocks:[{type:'text',text:'after',topic:'work'}],stop:'stop',error:''});
     renderDirty();
     const sections=[0,1,2,4].map(seq=>views.get(seq).view.children[0]);
     sections.forEach((section,index)=>section.getBoundingClientRect=()=>({top:[10,40,75,120][index],bottom:[30,60,100,150][index],height:30,width:100,left:0,right:100}));
     renderDirty();
-    return sections.map(section=>[section.classList.contains('thread-edge'),section.style.getPropertyValue('--thread-edge-height')||null]);
+    return sections.map(section=>[section.classList.contains('topic-edge'),section.style.getPropertyValue('--topic-edge-height')||null]);
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [[false,null],[false,null],[false,null],[false,null]]);
 });
@@ -1190,21 +1190,21 @@ test('reply sections never draw a thread edge', async () => {
 test('only pending implicit users show under a filter and chips stay on reply sections', async () => {
   const app = await page();
   const result = app.run(`
-    state={...state,working:true,view:{id:'root',path:[],type:'root'},sessionId:'s',threads:[{name:'one'},{name:'two'}]};
+    state={...state,working:true,view:{id:'root',path:[],type:'root'},sessionId:'s',topics:[{name:'one'},{name:'two'}]};
     const user=seq=>({kind:'user',seq,revision:1,at:1,final:true,text:'request',images:[],attachments:[]});
     const reply=(seq,blocks)=>({kind:'assistant',seq,revision:1,at:2,final:true,blocks,stop:'stop',error:''});
-    accept(user(0));setThread('one');const waits=!!visible(0);
-    if(visible(0))renderItem(visible(0));const waiting=views.get(0)?.view.querySelector('.thread-waiting')?.textContent;
-    accept({kind:'threads',seq:1,revision:1,at:2,final:true,target:0,threads:['two']});const removed=!visible(0);
-    accept(user(2));accept({kind:'threads',seq:3,revision:1,at:2,final:true,target:2,threads:['one']});const stayed=!!visible(2);
+    accept(user(0));setTopic('one');const waits=!!visible(0);
+    if(visible(0))renderItem(visible(0));const waiting=views.get(0)?.view.querySelector('.topic-waiting')?.textContent;
+    accept({kind:'topics',seq:1,revision:1,at:2,final:true,target:0,topics:['two']});const removed=!visible(0);
+    accept(user(2));accept({kind:'topics',seq:3,revision:1,at:2,final:true,target:2,topics:['one']});const stayed=!!visible(2);
     accept(user(4));const waitingAgain=!!visible(4);apply({...state,type:'state',working:false});const settled=!visible(4);
-    setThread(undefined);
-    accept(reply(5,[{type:'text',thread:'one',text:'First'}]));
-    accept(user(6));accept(reply(7,[{type:'text',thread:'one',text:'Same'},{type:'text',text:'Unthreaded'},{type:'text',thread:'two',text:'Other'}]));
+    setTopic(undefined);
+    accept(reply(5,[{type:'text',topic:'one',text:'First'}]));
+    accept(user(6));accept(reply(7,[{type:'text',topic:'one',text:'Same'},{type:'text',text:'Without a topic'},{type:'text',topic:'two',text:'Other'}]));
     renderItem(visible(5));renderItem(visible(6));renderItem(visible(7));
-    const marks=seq=>views.get(seq).view.querySelectorAll('.reply-section>.msg>.message-header>.thread-chip').map(mark=>mark.dataset.thread).filter(Boolean);
-    accept({kind:'agent',seq:8,revision:1,at:2,final:true,thread:'two',direction:'in',from:{name:'worker'},inbound:{form:'report',relation:'child'},text:{text:'done',cut:0}});renderItem(visible(8));renderItem(visible(7));
-    accept({kind:'job',seq:9,revision:1,at:2,final:true,thread:'one',job:{id:'j',name:'verify',service:false,command:'true',log:'/tmp/job',place:{type:'mac'},startedAt:1},event:{type:'ended',end:{type:'exit',code:0},tail:{text:'',cut:0}}});renderItem(visible(9));reconcileRuns();
+    const marks=seq=>views.get(seq).view.querySelectorAll('.reply-section>.msg>.message-header>.topic-chip').map(mark=>mark.dataset.topic).filter(Boolean);
+    accept({kind:'agent',seq:8,revision:1,at:2,final:true,topic:'two',direction:'in',from:{name:'worker'},inbound:{form:'report',relation:'child'},text:{text:'done',cut:0}});renderItem(visible(8));renderItem(visible(7));
+    accept({kind:'job',seq:9,revision:1,at:2,final:true,topic:'one',job:{id:'j',name:'verify',service:false,command:'true',log:'/tmp/job',place:{type:'mac'},startedAt:1},event:{type:'ended',end:{type:'exit',code:0},tail:{text:'',cut:0}}});renderItem(visible(9));reconcileRuns();
     [waits,waiting,removed,stayed,waitingAgain,settled,marks(5),marks(6),marks(7),marks(8),marks(9)];
   `);
   assert.deepEqual(JSON.parse(JSON.stringify(result)),[true,null,true,true,true,true,['one'],[],['one','two'],[],[]]);
@@ -1213,38 +1213,38 @@ test('only pending implicit users show under a filter and chips stay on reply se
 test('a resumed reset before state clears the old filter and restores rows', async () => {
   const app = await page();
   const result = app.run(`
-    state={...state,sessionId:'old',view:{id:'root',path:[],type:'root'},threads:[{name:'one'}]};
+    state={...state,sessionId:'old',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};
     fetch=async()=>({ok:true,json:async()=>({epoch:'new',more:false,items:[]})});
-    setThread('one');
-    apply({type:'reset',epoch:'new',more:false,items:[{kind:'user',seq:0,revision:1,at:1,final:true,thread:'two',text:'new session',images:[],attachments:[]}]});
+    setTopic('one');
+    apply({type:'reset',epoch:'new',more:false,items:[{kind:'user',seq:0,revision:1,at:1,final:true,topic:'two',text:'new session',images:[],attachments:[]}]});
     const hidden=order.length===0;
-    apply({...state,type:'state',sessionId:'new',threads:[{name:'two'}]});
-    [hidden,order.includes(0),historyRequest?.thread===undefined];
+    apply({...state,type:'state',sessionId:'new',topics:[{name:'two'}]});
+    [hidden,order.includes(0),historyRequest?.topic===undefined];
   `);
   assert.deepEqual(Array.from(result), [true,true,true]);
 });
 
-test('thread changes discard in-flight history and composer sends only the active root filter', async () => {
+test('topic changes discard in-flight history and composer sends only the active root filter', async () => {
   const app = await page();
   const result = await app.run(`(async()=>{
-    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},life:{type:'ready'},threads:[{name:'one'},{name:'two'}]};
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},life:{type:'ready'},topics:[{name:'one'},{name:'two'}]};
     epoch='e';const held=[];rendered=async()=>{};fetch=async()=>new Promise(resolve=>{held.push(resolve)});
-    setThread('one');const previous=historyRequest;
-    setThread('two');const current=historyRequest;
-    held[1]({ok:true,json:async()=>({epoch:'e',more:false,items:[{kind:'user',seq:2,revision:1,at:1,final:true,thread:'two',text:'two',images:[],attachments:[]}]})});
+    setTopic('one');const previous=historyRequest;
+    setTopic('two');const current=historyRequest;
+    held[1]({ok:true,json:async()=>({epoch:'e',more:false,items:[{kind:'user',seq:2,revision:1,at:1,final:true,topic:'two',text:'two',images:[],attachments:[]}]})});
     await current.done;
-    held[0]({ok:true,json:async()=>({epoch:'e',more:false,items:[{kind:'user',seq:0,revision:1,at:1,final:true,thread:'one',text:'stale',images:[],attachments:[]}]})});
+    held[0]({ok:true,json:async()=>({epoch:'e',more:false,items:[{kind:'user',seq:0,revision:1,at:1,final:true,topic:'one',text:'stale',images:[],attachments:[]}]})});
     await previous.done;
     const dropped=!items.has(0);
     let sent;fetchJSON=async(path,body)=>{sent=body;return {disposition:'started'}};
     editor.setText('hello');await send();
-    const two=sent.thread;
-    const {threads:unused,...childState}=state;
+    const two=sent.topic;
+    const {topics:unused,...childState}=state;
     apply({...childState,type:'state',sessionId:'child',view:{id:'child',path:[],type:'subagent'}});
     editor.setText('child');await send();
-    const child=sent.thread;
-    apply({...state,type:'state',sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]});
-    return [previous!==current,dropped,two,child===undefined,threadFilter(),historyBefore];
+    const child=sent.topic;
+    apply({...state,type:'state',sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]});
+    return [previous!==current,dropped,two,child===undefined,topicFilter(),historyBefore];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [true, true, 'two', true, 'two', null]);
 });
@@ -2238,19 +2238,19 @@ test('text suffixes and another tool patch retain completed agent and tool DOM',
   assert.equal(link(), name);
 });
 
-test('empty thread labels and whitespace are transparent to one mixed run', async () => {
+test('empty topic labels and whitespace are transparent to one mixed run', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    const thread='koa-design',thinking=()=>({type:'thinking',text:'Plan',thread}),bash=id=>({type:'tool',id,name:'bash',thread,args:{text:'{}'},state:{type:'done',error:false,result:{text:'ok',images:[]}}}),reply=(seq,blocks)=>({seq,at:seq,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks});
+    const topic='koa-design',thinking=()=>({type:'thinking',text:'Plan',topic}),bash=id=>({type:'tool',id,name:'bash',topic,args:{text:'{}'},state:{type:'done',error:false,result:{text:'ok',images:[]}}}),reply=(seq,blocks)=>({seq,at:seq,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks});
     put(reply(0,[thinking()]));
-    put(reply(1,[{type:'text',text:'',thread},bash('one')]));
+    put(reply(1,[{type:'text',text:'',topic},bash('one')]));
     put(reply(2,[bash('two'),thinking()]));
     put(reply(3,[bash('three'),thinking()]));
-    put(reply(4,[{type:'text',text:' \\n\\t ',thread},bash('four'),{...bash('message'),name:'message_agent',agent:{direction:'out',to:{name:'worker'},text:{text:'Check this',cut:0},call:{tool:'message',mode:'message'},outcome:{ok:true}}}]));
+    put(reply(4,[{type:'text',text:' \\n\\t ',topic},bash('four'),{...bash('message'),name:'message_agent',agent:{direction:'out',to:{name:'worker'},text:{text:'Check this',cut:0},call:{tool:'message',mode:'message'},outcome:{ok:true}}}]));
     const owner=views.get(0).slots.get('0:0').view.firstElementChild,marks=runMarks.get(owner),one=[...openers.keys()].filter(key=>key.startsWith('run:'));
     const stepKeys=marks.steps.map(step=>step.key),findOwner=findSegments(visible(4),findContext()).find(segment=>segment.text==='Check this').folds[0];
-    put(reply(5,[{type:'text',text:'Visible prose',thread},bash('after')]));
-    put(reply(6,[{type:'text',text:'   ',thread}]));
+    put(reply(5,[{type:'text',text:'Visible prose',topic},bash('after')]));
+    put(reply(6,[{type:'text',text:'   ',topic}]));
     put(reply(7,[bash('last')]));
     const runs=[...views.values()].flatMap(entry=>[...entry.slots.values()].filter(slot=>slot.type==='run'&&slot.view.firstElementChild));
     return [one.length,stepKeys,findOwner,runs.length,runMarks.get(views.get(5).slots.get('5:1').view.firstElementChild).steps.length];
@@ -2258,23 +2258,23 @@ test('empty thread labels and whitespace are transparent to one mixed run', asyn
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [1,['0:0','1:1','2:0','2:1','3:0','3:1','4:1','4:2'],'run:0:0',2,2]);
 });
 
-test('unthreaded assistant steps and threaded job share one run without step thread marks', async () => {
+test('assistant steps without a topic and a job with a topic share one run without step topic marks', async () => {
   const app = await page();
   const result = app.run(`(()=>{
     const tool=name=>({type:'tool',id:name,name,args:{text:'{}'},state:{type:'pending'}}),reply=(seq,blocks)=>({seq,at:seq,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks});
     put(reply(0,[{type:'thinking',text:'Before'},tool('bash')]));
-    put({seq:1,at:1,kind:'job',thread:'threads',final:true,job:{id:'j',name:'koaproxy',service:true,log:''},event:{type:'stream',batch:{text:'Output',cut:0},omitted:0,cut:false}});
+    put({seq:1,at:1,kind:'job',topic:'topics',final:true,job:{id:'j',name:'koaproxy',service:true,log:''},event:{type:'stream',batch:{text:'Output',cut:0},omitted:0,cut:false}});
     put(reply(2,[{type:'thinking',text:'After'},tool('codemode')]));
-    put({seq:3,at:3,kind:'agent',thread:'other',final:true,direction:'in',from:{name:'worker'},text:{text:'Report',cut:0},inbound:{form:'report'}});
+    put({seq:3,at:3,kind:'agent',topic:'other',final:true,direction:'in',from:{name:'worker'},text:{text:'Report',cut:0},inbound:{form:'report'}});
     put({seq:4,at:4,kind:'notice',final:true,customType:'notice',from:'worker',text:'Notice'});
-    const unfiltered=[[...openers.keys()].filter(key=>key.startsWith('run:')), [1,3,4].map(seq=>views.get(seq).view.querySelectorAll('.thread-mark,.thread-name').length)];
-    threadFilters.set(filterKey(),'threads'); refreshThreadItems(); renderDirty();
+    const unfiltered=[[...openers.keys()].filter(key=>key.startsWith('run:')), [1,3,4].map(seq=>views.get(seq).view.querySelectorAll('.topic-mark,.topic-name').length)];
+    topicFilters.set(filterKey(),'topics'); refreshTopicItems(); renderDirty();
     const filtered=[visible(0)?.blocks.length,!!visible(1),visible(2)?.blocks.length,!!visible(3)];
-    threadFilters.set(filterKey(),'other'); refreshThreadItems();
+    topicFilters.set(filterKey(),'other'); refreshTopicItems();
     const other=[0,1,2,3].map(seq=>!!visible(seq));
-    threadFilters.delete(filterKey()); refreshThreadItems();
+    topicFilters.delete(filterKey()); refreshTopicItems();
     put(reply(5,[{type:'text',text:'Boundary'}])); put(reply(6,[tool('read')]));
-    threadFilters.set(filterKey(),'threads'); refreshThreadItems();
+    topicFilters.set(filterKey(),'topics'); refreshTopicItems();
     return [unfiltered,filtered,other,!!visible(6)];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [[['run:0:0'], [0,0,0]], [2,true,2,true], [false,false,false,false], false]);
@@ -2284,7 +2284,7 @@ test('notices join an open run but do not open one after prose', async () => {
   const app = await page();
   const result = app.run(`(()=>{
     const tool=id=>({type:'tool',id,name:'bash',args:{text:'{}'},state:{type:'pending'}}),reply=(seq,blocks,error='')=>({seq,at:seq,revision:0,final:true,kind:'assistant',stop:'stop',error,blocks});
-    put(reply(0,[{...tool('first'),thread:'one'}]));
+    put(reply(0,[{...tool('first'),topic:'one'}]));
     put({seq:1,at:1,kind:'notify',final:true,level:'warning',text:{text:'Careful\\nDetails',cut:0}});
     put(reply(2,[tool('second')],'Reply failed'));
     const owner=views.get(0).slots.get('0:0').view.firstElementChild, marks=runMarks.get(owner);
@@ -2296,7 +2296,7 @@ test('notices join an open run but do not open one after prose', async () => {
     put({seq:4,at:4,kind:'notice',final:true,customType:'note',from:'worker',text:'Lone notice'});
     put(reply(5,[tool('third')]));
     const standalone=!!views.get(4).view.querySelector('.nrow'), next=runOwner(runContext(),{kind:'block',seq:5,index:0});
-    threadFilters.set(filterKey(),'one'); refreshThreadItems();
+    topicFilters.set(filterKey(),'one'); refreshTopicItems();
     return [steps,marks.names.children.map(child=>child.textContent).join(', '),find.folds,find.step,copied.includes('Careful'),standalone,next,!!visible(1),visible(2)?.error,body.folds];
   })()`);
   const value = JSON.parse(JSON.stringify(result));
@@ -2306,14 +2306,14 @@ test('notices join an open run but do not open one after prose', async () => {
   assert.deepEqual(value.slice(2), [['run:0:0'],'1:item',true,true,{kind:'block',seq:5,index:0},true,'Reply failed',['run:0:0','1:item']]);
 });
 
-test('each prose reply repeats its thread chip across intervening runs', async () => {
+test('each prose reply repeats its topic chip across intervening runs', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    const reply=(seq,blocks)=>({seq,at:seq,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks}),prose=(seq,thread)=>reply(seq,[{type:'text',text:'Prose '+seq,thread}]),steps=(seq,thread)=>reply(seq,[{type:'thinking',text:'Plan',thread}]);
+    const reply=(seq,blocks)=>({seq,at:seq,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks}),prose=(seq,topic)=>reply(seq,[{type:'text',text:'Prose '+seq,topic}]),steps=(seq,topic)=>reply(seq,[{type:'thinking',text:'Plan',topic}]);
     put(prose(0,'one')); put(steps(1,'two')); put(prose(2,'two'));
     put(steps(3,'one')); put(prose(4,'two'));
     put(prose(5,'one')); put(steps(6,'two')); put(prose(7,'one'));
-    return [0,1,2,3,4,5,6,7].map(seq=>views.get(seq).view.querySelectorAll('.reply-section>.msg>.message-header>.thread-chip').map(mark=>mark.dataset.thread).filter(Boolean));
+    return [0,1,2,3,4,5,6,7].map(seq=>views.get(seq).view.querySelectorAll('.reply-section>.msg>.message-header>.topic-chip').map(mark=>mark.dataset.topic).filter(Boolean));
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [['one'],[],['two'],[],['two'],['one'],[],['one']]);
 });
@@ -2334,9 +2334,9 @@ test('joined notice find uses rendered Markdown and command detail text', async 
 test('a filtered bang row keeps the runs on either side separate', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    const tool=id=>({type:'tool',id,name:'read',thread:'one',args:{text:'{}'},state:{type:'pending'}}),reply=(seq)=>({seq,at:seq,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks:[tool(String(seq))]});
+    const tool=id=>({type:'tool',id,name:'read',topic:'one',args:{text:'{}'},state:{type:'pending'}}),reply=(seq)=>({seq,at:seq,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks:[tool(String(seq))]});
     put(reply(0)); put({seq:1,at:1,kind:'bash',final:true,command:'true',excludeFromContext:false,result:{output:{text:'',cut:0},cancelled:false,truncated:false}}); put(reply(2));
-    threadFilters.set(filterKey(),'one'); refreshThreadItems();
+    topicFilters.set(filterKey(),'one'); refreshTopicItems();
     return runOwner(runContext(),{kind:'block',seq:2,index:0});
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), {kind:'block',seq:2,index:0});
@@ -2365,14 +2365,14 @@ test('changing a step into a notice invalidates followers without an earlier run
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [null,{kind:'item',seq:1}]);
 });
 
-test('step-only replies never render a thread mark and streaming keeps active find', async () => {
+test('step-only replies never render a topic mark and streaming keeps active find', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    const reply=(seq,thread,text)=>({seq,at:seq,revision:0,final:false,kind:'assistant',stop:'',error:'',blocks:[{type:'thinking',thread,text}]});
+    const reply=(seq,topic,text)=>({seq,at:seq,revision:0,final:false,kind:'assistant',stop:'',error:'',blocks:[{type:'thinking',topic,text}]});
     put(reply(0,'one','Before')); put(reply(1,undefined,'Late'));
-    put({seq:2,at:2,kind:'threads',final:true,target:1,threads:['one']});
-    const marks=[0,1].map(seq=>views.get(seq).view.querySelectorAll('.thread-section>.thread-mark').length);
-    threadFilters.set(filterKey(),'one'); refreshThreadItems();
+    put({seq:2,at:2,kind:'topics',final:true,target:1,topics:['one']});
+    const marks=[0,1].map(seq=>views.get(seq).view.querySelectorAll('.topic-section>.topic-mark').length);
+    topicFilters.set(filterKey(),'one'); refreshTopicItems();
     const active={query:'Before',backwards:false,started:true}; find=active;
     put(reply(0,'one','Before and after'));
     return [marks,find===active];
@@ -2380,21 +2380,21 @@ test('step-only replies never render a thread mark and streaming keeps active fi
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [[0,0],true]);
 });
 
-test('mixed run find keeps hidden prose as a boundary under a thread filter', async () => {
+test('mixed run find keeps hidden prose as a boundary under a topic filter', async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    const tool={type:'tool',id:'r',name:'read',thread:'one',args:{text:'{}'},state:{type:'done',error:false,result:{text:'read output',images:[]}}};
-    state={...state,view:{id:'root',type:'root',path:[]},threads:[{name:'one'},{name:'two'}]};
+    const tool={type:'tool',id:'r',name:'read',topic:'one',args:{text:'{}'},state:{type:'done',error:false,result:{text:'read output',images:[]}}};
+    state={...state,view:{id:'root',type:'root',path:[]},topics:[{name:'one'},{name:'two'}]};
     put({seq:0,at:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[tool]});
-    put({seq:1,at:1,kind:'agent',thread:'one',final:true,direction:'in',from:{name:'worker'},text:{text:'**Unique report**',cut:0},inbound:{form:'report'}});
+    put({seq:1,at:1,kind:'agent',topic:'one',final:true,direction:'in',from:{name:'worker'},text:{text:'**Unique report**',cut:0},inbound:{form:'report'}});
     const job={id:'j',name:'build',service:false,log:'/tmp/build.log'};
-    put({seq:2,at:2,kind:'job',thread:'one',final:true,job,event:{type:'stream',batch:{text:'Unique output',cut:0},omitted:0,cut:false}});
+    put({seq:2,at:2,kind:'job',topic:'one',final:true,job,event:{type:'stream',batch:{text:'Unique output',cut:0},omitted:0,cut:false}});
     const agent=segmentsOf(1).find(segment=>segment.text.includes('Unique report')), output=segmentsOf(2).find(segment=>segment.text==='Unique output');
     const copied=transcriptText();
     agent.folds.forEach(key=>openers.get(key).open());
-    put({seq:3,at:3,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{type:'text',text:'Hidden prose',thread:'two'}]});
+    put({seq:3,at:3,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{type:'text',text:'Hidden prose',topic:'two'}]});
     put({seq:4,at:4,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{...tool,id:'after'}]});
-    threadFilters.set(filterKey(),'one'); refreshThreadItems();
+    topicFilters.set(filterKey(),'one'); refreshTopicItems();
     const after=findSegments(visible(4),findContext()).find(segment=>segment.text==='read output');
     return [agent.folds,output.folds,(copied.match(/Unique report/g)||[]).length,copied.includes('Unique output'),after.folds[0]];
   })()`);
@@ -4689,7 +4689,7 @@ test('metadata-only history advances the cursor and stops requesting after the l
   page.evaluate("element('scroll').clientHeight=1000");
   Object.assign(page.app.context, { fetch: async (path: string) => {
     const before = Number(path.match(/before=(\d+)/)?.[1]); requests.push(before);
-    return { ok: true, json: async () => ({ epoch: 'a', more: before === 20, items: before === 20 ? [17, 18, 19].map(seq => ({ seq, revision: 0, at: 1, final: true, kind: 'threads', target: seq - 3, threads: ['general'] })) : page.rows(0, 17) }) };
+    return { ok: true, json: async () => ({ epoch: 'a', more: before === 20, items: before === 20 ? [17, 18, 19].map(seq => ({ seq, revision: 0, at: 1, final: true, kind: 'topics', target: seq - 3, topics: ['general'] })) : page.rows(0, 17) }) };
   } });
   page.open(page.rows(20, 21), true);
   for (let turn = 0; turn < 8; turn++) { page.settle(4); await page.settled(); }

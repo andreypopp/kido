@@ -1,5 +1,5 @@
 import type { PageRecord } from "../../koa-records.ts";
-import { parseThreadName } from "../../records.ts";
+import { parseTopicName } from "../../records.ts";
 import { expect, type Scenarios } from "../scenario.ts";
 
 const stamp = 1700000000000;
@@ -8,7 +8,7 @@ const open: PageRecord[] = [
     { seq: 0, revision: 0, at: stamp, final: true, kind: "user", text: Array(80).fill("Earlier message").join("\n\n"), images: [], attachments: [] },
     { seq: 1, revision: 0, at: stamp + 1, final: true, kind: "assistant", blocks: [{ type: "text", text: Array(40).fill("Earlier reply").join("\n\n") }], stop: "stop", error: "" },
   ] },
-  { type: "state", pathEditor: false, compaction: "idle", view: { id: "s1", path: [{ id: "s1", name: "ko", type: "agent" }], type: 'root' }, threads: [], agents: [], bash: [], working: false, aborted: false, name: "trace", levels: [], cwd: "/work", home: "/home", sessionId: "s1", queue: { steering: [], followUp: [], classifying: [] }, dialogs: [], statuses: {}, life: { type: "ready" } },
+  { type: "state", pathEditor: false, compaction: "idle", view: { id: "s1", path: [{ id: "s1", name: "ko", type: "agent" }], type: 'root' }, topics: [], agents: [], bash: [], working: false, aborted: false, name: "trace", levels: [], cwd: "/work", home: "/home", sessionId: "s1", queue: { steering: [], followUp: [], classifying: [] }, dialogs: [], statuses: {}, life: { type: "ready" } },
 ];
 const sent = expect({ on: { method: "POST", path: "/prompt" }, reply: { status: 200, json: { disposition: "started" } } });
 
@@ -22,9 +22,9 @@ const quoteOpen: PageRecord[] = open.map(record => record.type === 'reset' ? { .
 export const scenarios: Scenarios = {
   ReloadKeepsView: () => ({ open: [...open].reverse(), steps: [], files: {} }),
   testKoaWebviewPlaceInset: () => {
-    const name = parseThreadName('inset');
-    if (!name) throw Error('invalid fixture thread');
-    return { open: open.map(record => record.type === 'state' ? { ...record, threads: [{ name, last: { summary: 'Inset test', at: stamp } }] } : record), steps: [], files: {} };
+    const name = parseTopicName('inset');
+    if (!name) throw Error('invalid fixture topic');
+    return { open: open.map(record => record.type === 'state' ? { ...record, topics: [{ name, last: { summary: 'Inset test', at: stamp } }] } : record), steps: [], files: {} };
   },
   QuoteSelection: () => ({ open: quoteOpen, steps: [], files: {} }),
   testKoaWebviewRevealKeepsFollowing: () => ({ open, steps: [], files: {} }),

@@ -1,5 +1,5 @@
 import { classify } from './koa-classify.ts';
-import { decodePrompt, threadPrompt } from './prompt.ts';
+import { decodePrompt, topicPrompt } from './prompt.ts';
 import { isRecord } from './text.ts';
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
@@ -220,25 +220,25 @@ export function createTree(options: TreeOptions): Tree {
   const startupSettings: SettingsManager = pi.SettingsManager.create(options.cwd, agentDir, { projectTrusted: false });
   const global: unknown = startupSettings.getGlobalSettings();
   const koa = isRecord(global) && isRecord(global.koa) ? global.koa : undefined;
-  const configured: unknown = koa && isRecord(koa.threads) ? koa.threads.model : undefined;
+  const configured: unknown = koa && isRecord(koa.topics) ? koa.topics.model : undefined;
   const modelName = configured === undefined ? 'openai-codex/gpt-6-luna' : configured;
   const parts = typeof modelName === 'string' ? /^([^/]+)\/(.+)$/.exec(modelName) : null;
   const classifier: { type: 'off' } | { type: 'model'; provider: string; id: string } | { type: 'invalid'; setting: string } = modelName === 'off' ? { type: 'off' } : parts ? { type: 'model', provider: parts[1], id: parts[2] } : { type: 'invalid', setting: JSON.stringify(modelName) };
   let classifierWarned = false;
   const labelPrompt = (agent: Agent, text: string): string | (() => Promise<string>) | undefined => {
-    if (agent.parent || !text.trim() || text.startsWith('/') || decodePrompt(text, [], 'root').thread) return undefined;
-    const quoted = agent.view.feed.quotedThread(text);
-    if (quoted) return threadPrompt(text, quoted);
+    if (agent.parent || !text.trim() || text.startsWith('/') || decodePrompt(text, [], 'root').topic) return undefined;
+    const quoted = agent.view.feed.quotedTopic(text);
+    if (quoted) return topicPrompt(text, quoted);
     if (classifier.type === 'off') return undefined;
     return async () => { try {
-      if (classifier.type === 'invalid') throw Error(`invalid koa.threads.model: ${classifier.setting}`);
+      if (classifier.type === 'invalid') throw Error(`invalid koa.topics.model: ${classifier.setting}`);
       const queued = agent.view.prompts.view();
-      const { threads, others } = agent.view.feed.threadContext([...queued.steering, ...queued.followUp]);
-      const name = agent.view.feed.resolveThread(await classify(agent.session.modelRuntime, classifier, threads, others, text, AbortSignal.timeout(options.classifierDeadlineMs ?? 15000)));
-      if (agent.view.feed.isThreadArchived(name)) throw Error(`archived thread classification: ${JSON.stringify(name)}`);
-      return threadPrompt(text, name);
+      const { topics, others } = agent.view.feed.topicContext([...queued.steering, ...queued.followUp]);
+      const name = agent.view.feed.resolveTopic(await classify(agent.session.modelRuntime, classifier, topics, others, text, AbortSignal.timeout(options.classifierDeadlineMs ?? 15000)));
+      if (agent.view.feed.isTopicArchived(name)) throw Error(`archived topic classification: ${JSON.stringify(name)}`);
+      return topicPrompt(text, name);
     } catch (error) {
-      if (!classifierWarned) { classifierWarned = true; agent.host.notify(`Thread classifier: ${errorText(error)}`, 'warning'); }
+      if (!classifierWarned) { classifierWarned = true; agent.host.notify(`Topic classifier: ${errorText(error)}`, 'warning'); }
       return text;
     } };
   };

@@ -199,40 +199,40 @@ Guidelines:
 Sections:
 
 ```
-# Threads
+# Topics
 
-Every reply in this session starts with a line `[thread: name]` on
+Every reply in this session starts with a line `[topic: name]` on
 its own. This has no exception: the first reply of the session, a
 short answer and a reply after tool calls all start with it. A
-thread is a workstream of this session, and name is the thread that
+topic is a workstream of this session, and name is the topic that
 the reply is about.
 
-- Reuse an existing thread whenever the reply continues, extends or
+- Reuse an existing topic whenever the reply continues, extends or
   relates to its subject: a follow-up, a deeper look or a subtask
-  belongs to the thread that it grew from.
-- Start a new thread only for a subject that no existing thread
+  belongs to the topic that it grew from.
+- Start a new topic only for a subject that no existing topic
   covers. Name it like a Zulip topic: a short, clear, sentence-like
   topic of its broad subject, not of the current task, so that later
   work fits it, for example `Reload UI open items` or
   `Pane resize bug`. A name has at most 60 characters and no `]`.
-- To continue a thread, repeat its name exactly as it was written.
-- A reply about several threads has one part for each, and each
+- To continue a topic, repeat its name exactly as it was written.
+- A reply about several topics has one part for each, and each
   part starts with its own line.
 - A part about the session as a whole, not about one workstream,
-  goes into the thread `general`.
-- Give `spawn_agent` and `async_bash` the `thread` that the agent or
-  job works for: a thread as above, not the agent's or the job's
+  goes into the topic `general`.
+- Give `spawn_agent` and `async_bash` the `topic` that the agent or
+  job works for: a topic as above, not the agent's or the job's
   name.
-- A user message that starts with such a line is about that thread.
+- A user message that starts with such a line is about that topic.
 ```
 
 ### spawn_agent
 
-- `thread` (string): The thread that this agent or job works for: the exact name of an existing thread when one covers the work, not the name of the agent or job.
+- `topic` (string): The topic that this agent or job works for: the exact name of an existing topic when one covers the work, not the name of the agent or job.
 
 ### async_bash
 
-- `thread` (string): The thread that this agent or job works for: the exact name of an existing thread when one covers the work, not the name of the agent or job.
+- `topic` (string): The topic that this agent or job works for: the exact name of an existing topic when one covers the work, not the name of the agent or job.
 
 ## Messages the extension injects at runtime
 
@@ -280,10 +280,10 @@ the text verbatim, as the user's own message
 ```
 delivered as: followUp
 
-### a root reply without a thread marker
+### a root reply without a topic marker
 
 ```
-Your last reply had no `[thread: name]` line. Start every reply with one.
+Your last reply had no `[topic: name]` line. Start every reply with one.
 ```
 delivered as: hidden; triggerTurn: false
 

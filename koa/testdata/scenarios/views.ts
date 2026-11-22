@@ -20,10 +20,10 @@ const checkerItems = [user(0, "Measure the right column of the sidebar rows at 2
 const links = (...nodes: Node[]): State["agents"] => nodes.map(node => ({ name: node.name, target: { type: "view", id: node.id } }));
 const viewState = (dir: string, path: Node[], extra: Partial<StateData> = {}): PageRecord => {
   const viewed = path[path.length - 1];
-  const { threads: _threads, view: _view, ...base } = stateIdle(dir);
+  const { topics: _topics, view: _view, ...base } = stateIdle(dir);
   const common = { ...base, sessionId: viewed.id, name: viewed === root ? 'koa reference' : viewed.name, ...extra, type: 'state' as const };
   const view = { id: viewed.id, path: path.map(node => ({ id: node.id, name: node.name, type: 'agent' as const })) };
-  if (viewed === root) return { ...common, view: { ...view, type: 'root' }, threads: [] };
+  if (viewed === root) return { ...common, view: { ...view, type: 'root' }, topics: [] };
   return { ...common, view: { ...view, type: 'subagent' } };
 };
 const switchTo = (dir: string, from: Node, to: Node, path: Node[], epoch: string, items: WireItem[], extra: Partial<StateData> = {}): Step => expect({

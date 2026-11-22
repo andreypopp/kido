@@ -53,7 +53,7 @@ const service = [
 ].join("\n") + "\n";
 
 const job = (dir: string, owners: { id: string; name: string }[], id: string, snapshot: JobSnapshot): PageRecord => {
-  const { threads: _threads, view: _view, ...state } = stateIdle(dir);
+  const { topics: _topics, view: _view, ...state } = stateIdle(dir);
   return {
   ...state,
   view: { id, path: [...owners.map(owner => ({ ...owner, type: "agent" as const })), { id, name: snapshot.name, type: "job" }], type: "job", job: snapshot, record: owners.slice(1).map(owner => 'agents/' + owner.name + '/').join('') + 'jobs/' + id },

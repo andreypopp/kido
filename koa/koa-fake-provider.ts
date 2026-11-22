@@ -115,7 +115,7 @@ export async function writeAgentDir(dir: string, baseUrl: string, settings: obje
   const providers = Object.fromEntries([...grouped].map(([name, models]) => [name, { baseUrl, api: "openai-completions", apiKey, compat: { supportsDeveloperRole: false }, models }]));
   const first = models[0];
   await writeFile(join(dir, "models.json"), JSON.stringify({ providers }));
-  await writeFile(join(dir, "settings.json"), JSON.stringify({ defaultProvider: first?.provider, defaultModel: first?.id, quietStartup: true, koa: { threads: { model: "off" } }, ...settings }));
+  await writeFile(join(dir, "settings.json"), JSON.stringify({ defaultProvider: first?.provider, defaultModel: first?.id, quietStartup: true, koa: { topics: { model: "off" } }, ...settings }));
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {

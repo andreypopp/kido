@@ -338,7 +338,7 @@ session state.
 
 A reload of the same document entry keeps this memory: the saved
 positions with the current reader anchor, the non-empty drafts and
-the thread filters. The page writes them to `history.state` on
+the topic filters. The page writes them to `history.state` on
 `pagehide`, so a `reload` record and the app's Reload Page keep them,
 and reads them once at start. `history.state` needs no storage
 permission or origin and ends with its entry. A following view saves
@@ -400,12 +400,12 @@ A reconnect sends the epoch and the last final item, not
 Last-Event-ID. Patches change unfinished items, so an event id would
 be the wrong cursor. A current cursor gets the missing items; another
 epoch gets a capped reset window. Older history uses the same window
-limits. Without a thread filter, the page's cursor for the next older
+limits. Without a topic filter, the page's cursor for the next older
 page is the lowest seq of every record that it received, metadata
 included, so a page of only metadata still moves it; a filtered
-reload's cursor ignores annotation and thread records, which can lie
+reload's cursor ignores annotation and topic records, which can lie
 outside its message range. The page asks for older history when its top comes into view. After
-the first page, each older page and a thread reload, it asks for the
+the first page, each older page and a topic reload, it asks for the
 next older page while its top is still in view, so a window that the
 rows do not fill fills itself; a failed page stops this until the next
 scroll. A slow page whose output queue exceeds the feed cap is
@@ -426,7 +426,7 @@ unloaded history does. `koa/page/extent.ts` assigns each run one owner
 for rendering, positioning, unread counts and find.
 
 The grouping is independent of turn boundaries. A report received
-while idle can join the last run. Thread filtering does not regroup
+while idle can join the last run. Topic filtering does not regroup
 runs: prose hidden by a filter still separates them. Fold state is
 page-local. `koa/page/steps.ts` supplies labels and detail text to
 both rendering and find; the page never parses model-facing message
@@ -511,7 +511,7 @@ bottom or reader input cancels it; only growth after that placement
 makes an unfocused page a reader. So a reload or `/restart` of a
 following view opens at the bottom.
 
-A switch of the thread filter drops the previous filter's reader
+A switch of the topic filter drops the previous filter's reader
 anchor. The view opens at the divider above the first unread row
 that the filter shows, or follows the bottom when it shows none.
 Unread state belongs to the row, not to the filter: a row that the
@@ -697,7 +697,7 @@ default style. Text nodes, not log HTML, reach the page. Job rows use
 byte offsets as scroll anchors under the same scroll owner as the
 transcript.
 
-### Reply annotations and threads
+### Reply annotations and topics
 
 Annotations arrive as custom session entries. The transcript validates
 them against the active branch and projected reply, and drops invalid
@@ -717,34 +717,34 @@ explicit quote lines without a blank line; user rendering therefore
 does not apply CommonMark lazy quote continuation. Assistant Markdown
 keeps its normal rule. koa supplies no annotation-producing model.
 
-Threads belong only to the root. `koa/text.ts` scans markers and
+Topics belong only to the root. `koa/text.ts` scans markers and
 `koa/records.ts` validates names. A name is a short topic, as in
 Zulip, not a slug: the models are asked for at most 60 characters,
 and validation accepts up to 200 without `]` or control characters,
 with whitespace normalised. Names match exactly, because the agent
-continues a thread by repeating its name. The agent labels its own
+continues a topic by repeating its name. The agent labels its own
 text. Tool and thinking blocks follow the last label in the turn.
 Agent and job details carry the root's assignment. Children do not
 receive that label as a task marker.
 
 A user message to the root gets its marker before pi sees it, so the
-agent starts from the right thread (`Tree.labelPrompt` in
+agent starts from the right topic (`Tree.labelPrompt` in
 `koa/koa-agents.ts`). This covers the page's prompts, steers and
 follow-ups, the command-line messages and `ko prompt` to the root;
 not subagents, messages between agents, a resent queue item, a slash
-command, empty text or a text whose thread a filter or a typed marker
+command, empty text or a text whose topic a filter or a typed marker
 already decides. First, quoted lines that match reply sections of
-exactly one thread among the recent replies select that thread
+exactly one topic among the recent replies select that topic
 without a model call; this works also when the classifier is off.
 Otherwise a small model classifies the message
-(`koa/koa-classify.ts`) from the newest threads and their newest
-messages. The setting `koa.threads.model` in pi's global settings is
+(`koa/koa-classify.ts`) from the newest topics and their newest
+messages. The setting `koa.topics.model` in pi's global settings is
 `provider/id` or `off`; the default is on. The call has low reasoning,
 no tools and a 15 s deadline, and the parser accepts the usual
 wrappings of a name. A failure sends the message without a marker
 and shows one warning for each process, with the raw reply in its
 text; there is no retry. The agent still labels its own replies:
-the classifier only gives it the user's thread.
+the classifier only gives it the user's topic.
 
 Classification must not delay the user. The prompt is accepted and
 shown as pending in the queue at once (`hold` in `koa/koa-queue.ts`),
@@ -754,12 +754,12 @@ like a running turn. When the submission of an accepted prompt fails,
 its text and attachments return to the composer through the editor
 state, but only while the same pi session is current.
 
-The user corrects threads with two session entries, which
-`koa/thread-list.ts` folds into one derivation of the branch for
-the transcript and the extension. `koa.thread-move` renames or
-merges a thread: its names resolve to the target, and a chain of
-moves resolves to its end. `koa.message-thread` moves messages, named
-by their pi entry ids, to a thread; a move from a reply moves its
+The user corrects topics with two session entries, which
+`koa/topic-list.ts` folds into one derivation of the branch for
+the transcript and the extension. `koa.topic-move` renames or
+merges a topic: its names resolve to the target, and a chain of
+moves resolves to its end. `koa.message-topic` moves messages, named
+by their pi entry ids, to a topic; a move from a reply moves its
 whole turn. Entry ids, not timestamps, identify messages, because
 timestamps collide. pi emits `message_end` before it persists the
 entry, so the transcript keeps each item's message object and finds
@@ -770,7 +770,7 @@ replay agree by construction. A correction changes items that a
 reconnect cursor may have passed, so it sends the reset record with a
 new epoch rather than a new wire variant.
 
-The root's prompt requires a marker and reuse of an existing thread
+The root's prompt requires a marker and reuse of an existing topic
 for related work. Its branch stores a name index, not a second copy
 of each text label. Compaction sends the names in a hidden message
 for the next run rather than changing the system prompt cache.
@@ -783,74 +783,74 @@ A partial last line that could become a marker is held until resolved.
 A label learned after an item became final is a separate metadata
 item, for the same cursor reason as annotations.
 
-The page derives thread colors from order and keeps filtering local.
+The page derives topic colors from order and keeps filtering local.
 The live feed is not filtered. Older-history reads filter before
-window limits, so sparse threads can load useful history. Runs remain
+window limits, so sparse topics can load useful history. Runs remain
 whole under filtering.
 
-The page shows threads only in its own rendering: a header row on each
-user and agent message holds the message's time and its thread's
+The page shows topics only in its own rendering: a header row on each
+user and agent message holds the message's time and its topic's
 chip, and a later section of a reply starts with a row of its own
 chip. The feed carries no header, so the native app's feed does not
 change. Under a filter the chips are omitted, because each would name
-the same thread.
+the same topic.
 
-The composer's thread and the transcript's filter are two separate
+The composer's topic and the transcript's filter are two separate
 states of the root view, each kept per session in the page's history
 state, so both survive a reload. A click on a message's chip sets the
-composer's thread; it does not filter. Only the thread widget sets and
+composer's topic; it does not filter. Only the topic widget sets and
 clears the filter, and setting a filter also sets the composer's
-thread. A filter that is active without a composer thread, such as
-one restored from the history state, gives the composer its thread,
-unless the user set or dropped the composer's thread after the filter.
-Clearing the filter also drops the composer's thread when it is the
-filtered thread; a different thread that the user chose after the
-filter stays. The composer's × drops only the composer's thread. The
-composer's thread, not the filter, labels a submitted prompt: the
+topic. A filter that is active without a composer topic, such as
+one restored from the history state, gives the composer its topic,
+unless the user set or dropped the composer's topic after the filter.
+Clearing the filter also drops the composer's topic when it is the
+filtered topic; a different topic that the user chose after the
+filter stays. The composer's × drops only the composer's topic. The
+composer's topic, not the filter, labels a submitted prompt: the
 prompt gets a marker and the classifier is not asked, except for a
 slash command, because pi needs the slash at the start to expand a
-template or skill. The thread stays after a send, so the next prompt
-goes to the same thread. Take-back hides the inserted marker. Child
-and job views have no composer thread: only the root takes thread
+template or skill. The topic stays after a send, so the next prompt
+goes to the same topic. Take-back hides the inserted marker. Child
+and job views have no composer topic: only the root takes topic
 labels.
 
-The thread panel shows for each thread the first line of its newest
-non-empty user or assistant message. The user drags a thread row onto
+The topic panel shows for each topic the first line of its newest
+non-empty user or assistant message. The user drags a topic row onto
 another row to merge it, double-clicks a row to rename it, and drags a
 row onto a message to move its turn. Rename to an existing name is a
-merge, and a filter on a merged thread follows to its target. A
+merge, and a filter on a merged topic follows to its target. A
 single click filters only after the double-click interval, so a
 rename does not filter. Long names are cut on the page with the whole
 name in the title. The visual rules of these interactions are in
 `app/design/koa/NOTES.md`, "Threads".
 
-The user names a thread with the "+ thread" chip. In the composer it
-sets the composer's thread and writes nothing to the session. A new
-thread exists only when a message carries it. On the header of a
-message without a thread it moves the message's turn through the same
-`koa.message-thread` entry as a drag. A message with a thread, or a
-reply with a thread in any section, has no "+ thread": a drag from the
-widget changes its thread. A name that no thread has yet creates that thread, so the
+The user names a topic with the "+ topic" chip. In the composer it
+sets the composer's topic and writes nothing to the session. A new
+topic exists only when a message carries it. On the header of a
+message without a topic it moves the message's turn through the same
+`koa.message-topic` entry as a drag. A message with a topic, or a
+reply with a topic in any section, has no "+ topic": a drag from the
+widget changes its topic. A name that no topic has yet creates that topic, so the
 move route accepts any valid name. There is no slash command for
-threads.
+topics.
 
-Archiving hides a thread from the classifier and from the line-mode
-capsule. The thread stays in the panel. A `koa.thread-archive` entry
-records each archive and restore. `koa/thread-list.ts` folds these
+Archiving hides a topic from the classifier and from the line-mode
+capsule. The topic stays in the panel. A `koa.topic-archive` entry
+records each archive and restore. `koa/topic-list.ts` folds these
 entries in branch order together with the moves, so a replay and a
 resume agree. A rename keeps the archived state of its source. A
 merge keeps the state of its target, because the source ends there.
-A thread counts as an existing target when the branch before the move
+A topic counts as an existing target when the branch before the move
 uses it in a message. A name that only the index holds does not count.
 Only a restore clears the archived state. A message, a move, a merge
-or an agent label that goes into an archived thread leaves it
-archived. The classifier gets no archived thread in its context, and
-the quote match ignores archived threads. An answer that resolves to
-an archived thread is a classification failure, so the message goes
+or an agent label that goes into an archived topic leaves it
+archived. The classifier gets no archived topic in its context, and
+the quote match ignores archived topics. An answer that resolves to
+an archived topic is a classification failure, so the message goes
 without a marker. The archive route is serial with the prompt routes,
 so an archive cannot land while a prompt waits for its
 classification. Archived state reaches the page as an optional field
-of the root state's threads. No feed item changes and no reset occurs.
+of the root state's topics. No feed item changes and no reset occurs.
 
 ## Agent extension, subagents and jobs
 

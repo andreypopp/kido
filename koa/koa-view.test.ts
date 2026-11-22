@@ -58,7 +58,7 @@ test('root status keeps the latest visible message through work, errors and resu
   const view = createView({ sessionEntryToContextMessages, branch: () => [],
     kind: 'root', dir, metrics: false, attached: attachments(dir), name: 'test', cwd: dir, home: dir,
     agent: () => ({ session, runtime }),
-    compose: own => ({ ...own, agents: [], pathEditor: false, view: { id: 'root', path: [], type: 'root' }, threads: [] }),
+    compose: own => ({ ...own, agents: [], pathEditor: false, view: { id: 'root', path: [], type: 'root' }, topics: [] }),
     status: (value, message) => { statuses.push([value, message]); },
     title() {}, closed: () => false, cancelEditor() {}, shutdown() {}, agentsChanged() {}, changed() {},
   });
@@ -93,7 +93,7 @@ test('root status keeps the latest visible message through work, errors and resu
   assert.deepEqual(statuses.at(-1), ['error', 'Next request']);
   user('/command arguments');
   assert.deepEqual(statuses.at(-1), ['error', 'Next request']);
-  for (const text of ['[thread: files]\n/tmp/report.txt', '[thread: files]\n \n/tmp/report.txt']) {
+  for (const text of ['[topic: files]\n/tmp/report.txt', '[topic: files]\n \n/tmp/report.txt']) {
     const message = { role: 'user' as const, content: text, timestamp: 0 };
     view.prompts.add(text, 'prompt', [{ id: 'file', name: 'report.txt', size: 1, path: '/tmp/report.txt', kind: 'file' }]);
     view.hooks.onEvent({ type: 'message_start', message });
@@ -103,7 +103,7 @@ test('root status keeps the latest visible message through work, errors and resu
   view.resetSession();
   view.refresh();
   assert.deepEqual(statuses.at(-1), ['idle', 'Next request']);
-  entries.splice(0, entries.length, { type: 'message', id: 'other', parentId: null, timestamp: new Date().toISOString(), message: { role: 'user', content: '[thread: other]\nOther **branch**\nDetails', timestamp: 0 } });
+  entries.splice(0, entries.length, { type: 'message', id: 'other', parentId: null, timestamp: new Date().toISOString(), message: { role: 'user', content: '[topic: other]\nOther **branch**\nDetails', timestamp: 0 } });
   view.hooks.treeNavigated(undefined);
   assert.deepEqual(statuses.at(-1), ['idle', 'Other branch']);
 });

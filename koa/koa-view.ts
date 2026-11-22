@@ -5,12 +5,12 @@ import { transcript, appendBashOutput } from "./koa-transcript.ts";
 import { attachments } from "./koa-attach.ts";
 import { prompts } from "./koa-queue.ts";
 import { later } from "./koa-timer.ts";
-import { errorText, contentText, threadSections } from "./text.ts";
+import { errorText, contentText, topicSections } from "./text.ts";
 import { markdownLine } from "./markdown-line.ts";
 import { decodePrompt } from './prompt.ts';
 import type { Dialogs } from "./koa-agents.ts";
-import type { Life, State, StateData, Dialog, Bash, CommandResult, Attachment, Thread } from "./koa-records.ts";
-import type { ThreadName } from "./records.ts";
+import type { Life, State, StateData, Dialog, Bash, CommandResult, Attachment, Topic } from "./koa-records.ts";
+import type { TopicName } from "./records.ts";
 
 const FLUSH_MS = 50;
 
@@ -30,7 +30,7 @@ type ViewOptions = {
   home: string;
   agent(): { session: AgentSession; runtime: AgentSessionRuntime };
   branch(): readonly SessionEntry[];
-  compose(own: Own, threads?: Thread[]): State;
+  compose(own: Own, topics?: Topic[]): State;
   status(value: Root["value"] | "clear", message: string, dialog: string | undefined): void;
   title(own: Own): void;
   closed(): boolean;
@@ -47,12 +47,12 @@ function messageLine(message: Extract<AgentSessionEvent, { type: 'message_end' }
   const source = contentText(message.content);
   const text = message.role === 'user' ? decodePrompt(source, attachments, kind).text : source;
   if (message.role === 'user' && text.startsWith('/')) return '';
-  return markdownLine((threadSections(text, true).find(section => section.text.trim())?.text ?? '').replace(/^(?:[^\S\n]*\n)+/, ''));
+  return markdownLine((topicSections(text, true).find(section => section.text.trim())?.text ?? '').replace(/^(?:[^\S\n]*\n)+/, ''));
 }
 
 export function createView(options: ViewOptions) {
-  let publishedThreads: Thread[] | undefined;
-  const feed = transcript({ dir: options.dir, flushMs: FLUSH_MS, metrics: options.metrics, kind: options.kind, changed: () => publishThreads(), branch: options.branch, sessionEntryToContextMessages: options.sessionEntryToContextMessages });
+  let publishedTopics: Topic[] | undefined;
+  const feed = transcript({ dir: options.dir, flushMs: FLUSH_MS, metrics: options.metrics, kind: options.kind, changed: () => publishTopics(), branch: options.branch, sessionEntryToContextMessages: options.sessionEntryToContextMessages });
   const { attached } = options;
   const pendingPrompts = prompts(options.kind);
   let compaction: { value: Root['value']; working: boolean; since?: number } | undefined;
@@ -63,25 +63,25 @@ export function createView(options: ViewOptions) {
   const state: Omit<Own, "life" | "queue"> = { bash: [], get compaction() { return compaction ? "running" : "idle"; }, working: false, aborted: false, name: options.name ?? "pi", levels: [], cwd: options.cwd, home: options.home, dialogs: [], statuses: {} };
   const queue = () => {
     const queued = pendingPrompts.view();
-    const resolved = <T extends { thread?: ThreadName }>(list: readonly T[]): T[] => list.map(prompt => prompt.thread ? { ...prompt, thread: feed.resolveThread(prompt.thread) } : prompt);
+    const resolved = <T extends { topic?: TopicName }>(list: readonly T[]): T[] => list.map(prompt => prompt.topic ? { ...prompt, topic: feed.resolveTopic(prompt.topic) } : prompt);
     return { steering: resolved(queued.steering), followUp: resolved(queued.followUp), classifying: resolved(queued.classifying) };
   };
   const own = (): Own => ({ ...state, queue: queue(), life });
   let root: Root = { value: "idle", message: options.name ?? "pi" };
   let lastText = "";
-  const publish = (dialogsChanged = false, threads?: Thread[]) => {
+  const publish = (dialogsChanged = false, topics?: Topic[]) => {
     options.changed();
     if (life.type === 'starting' && !dialogsChanged) return;
-    const next = options.compose(own(), threads);
-    if ('threads' in next) publishedThreads = next.threads;
+    const next = options.compose(own(), topics);
+    if ('topics' in next) publishedTopics = next.topics;
     feed.state(next);
   };
-  const publishThreads = () => {
+  const publishTopics = () => {
     if (options.kind !== 'root') return;
-    const next = feed.threads();
-    if (publishedThreads?.length === next.length && next.every((thread, index) => {
-      const previous = publishedThreads?.[index];
-      return previous?.name === thread.name && previous.archived === thread.archived && previous.last?.summary === thread.last?.summary && previous.last?.at === thread.last?.at;
+    const next = feed.topics();
+    if (publishedTopics?.length === next.length && next.every((topic, index) => {
+      const previous = publishedTopics?.[index];
+      return previous?.name === topic.name && previous.archived === topic.archived && previous.last?.summary === topic.last?.summary && previous.last?.at === topic.last?.at;
     })) return;
     publish(false, next);
   };
@@ -180,7 +180,7 @@ export function createView(options: ViewOptions) {
         }
         break;
       }
-      case "entry_appended": feed.annotation(event.entry); publishThreads(); break;
+      case "entry_appended": feed.annotation(event.entry); publishTopics(); break;
       case "message_start": {
         if (event.message.role === "user") { const sent = pendingPrompts.start(contentText(event.message.content)); userAttachments = sent?.attachments ?? []; userWarning = sent?.warning; attached.consume(userAttachments.map(file => file.id), "used"); }
         feed.message(event.message, "start");

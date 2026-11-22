@@ -11,7 +11,7 @@ import { markdownLine } from "./markdown-line.ts";
 import { revealHeight, type Unit } from "./page/reveal.ts";
 import { estimateExtent, windowOf, runOwner, runOf, invalidateRuns, type RunContext } from "./page/extent.ts";
 import type { Block, WireItem } from "./koa-records.ts";
-import { parseThreadName, type JobRef } from "./records.ts";
+import { parseTopicName, type JobRef } from "./records.ts";
 import { answer, current, quote } from "./page/answers.ts";
 import { composerLanguage } from "./page/composer.ts";
 import { highlightTree, tags } from '@lezer/highlight';
@@ -291,7 +291,7 @@ test('incremental markdown matches a fresh render after random chunks, replaceme
   assert.equal(html(split(before + '\nE', false, [], before.length)), html(markdown()(before + '\nE')));
 });
 
-test('the composer foot keeps the optional thread before the model and has no agent status cell', async () => {
+test('the composer foot keeps the optional topic before the model and has no agent status cell', async () => {
   const html = await readFile(new URL('page/page.html', import.meta.url), 'utf8');
   const css = await readFile(new URL('page/page.css', import.meta.url), 'utf8');
   assert.match(html, /<div class="foot"><span id="model-cell"/);
@@ -348,12 +348,12 @@ test('estimateExtent follows the rule of every item kind', () => {
   }
 });
 
-test('run ownership joins steps regardless of thread', () => {
+test('run ownership joins steps regardless of topic', () => {
   const sources = new Map<number, WireItem>([
     [0, assistant([{ type: 'thinking', text: 'before' }, step('bash')])],
-    [1, { ...base, seq: 1, kind: 'job', thread: parseThreadName('threads'), job, event: { type: 'stream', batch: body, omitted: 0, cut: false } }],
+    [1, { ...base, seq: 1, kind: 'job', topic: parseTopicName('topics'), job, event: { type: 'stream', batch: body, omitted: 0, cut: false } }],
     [2, { ...assistant([{ type: 'thinking', text: 'after' }, step('codemode')]), seq: 2 }],
-    [3, { ...assistant([{ ...step('same'), thread: parseThreadName('threads') }, { ...step('different'), thread: parseThreadName('other') }]), seq: 3 }],
+    [3, { ...assistant([{ ...step('same'), topic: parseTopicName('topics') }, { ...step('different'), topic: parseTopicName('other') }]), seq: 3 }],
   ]);
   const context: RunContext = { raw: seq => sources.get(seq), shown: seq => sources.get(seq), owners: new Map() };
   const owner = { kind: 'block', seq: 0, index: 0 };

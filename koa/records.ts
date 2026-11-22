@@ -1,29 +1,29 @@
 import type { components } from "../webview/ko-api.d.ts";
 
-declare const threadName: unique symbol;
-export type ThreadName = string & { readonly [threadName]: true };
-export const THREAD_NAME_PATTERN = '^[^\\]\\u0000-\\u001f\\u007f-\\u009f]{1,200}$';
-const threadNamePattern = new RegExp(THREAD_NAME_PATTERN, 'u');
-const isThreadName = (value: string): value is ThreadName => threadNamePattern.test(value);
-export const parseThreadName = (value: unknown): ThreadName | undefined => {
+declare const topicName: unique symbol;
+export type TopicName = string & { readonly [topicName]: true };
+export const TOPIC_NAME_PATTERN = '^[^\\]\\u0000-\\u001f\\u007f-\\u009f]{1,200}$';
+const topicNamePattern = new RegExp(TOPIC_NAME_PATTERN, 'u');
+const isTopicName = (value: string): value is TopicName => topicNamePattern.test(value);
+export const parseTopicName = (value: unknown): TopicName | undefined => {
   const name = typeof value === 'string' ? value.replace(/[^\S\u0000-\u001f\u007f-\u009f]+/gu, ' ').replace(/^ | $/g, '') : undefined;
-  return name !== undefined && isThreadName(name) ? name : undefined;
+  return name !== undefined && isTopicName(name) ? name : undefined;
 };
-export const threadMove = (entry: { type: string; customType?: string; data?: unknown }): { from: ThreadName; to: ThreadName } | undefined => {
-  if (entry.type !== 'custom' || entry.customType !== 'koa.thread-move' || typeof entry.data !== 'object' || entry.data === null) return;
-  const from = parseThreadName('from' in entry.data ? entry.data.from : undefined), to = parseThreadName('to' in entry.data ? entry.data.to : undefined);
+export const topicMove = (entry: { type: string; customType?: string; data?: unknown }): { from: TopicName; to: TopicName } | undefined => {
+  if (entry.type !== 'custom' || entry.customType !== 'koa.topic-move' || typeof entry.data !== 'object' || entry.data === null) return;
+  const from = parseTopicName('from' in entry.data ? entry.data.from : undefined), to = parseTopicName('to' in entry.data ? entry.data.to : undefined);
   return from && to ? { from, to } : undefined;
 };
-export const threadArchive = (entry: { type: string; customType?: string; data?: unknown }): { name: ThreadName; archived: boolean } | undefined => {
-  if (entry.type !== 'custom' || entry.customType !== 'koa.thread-archive' || typeof entry.data !== 'object' || entry.data === null) return;
-  const name = parseThreadName('name' in entry.data ? entry.data.name : undefined);
+export const topicArchive = (entry: { type: string; customType?: string; data?: unknown }): { name: TopicName; archived: boolean } | undefined => {
+  if (entry.type !== 'custom' || entry.customType !== 'koa.topic-archive' || typeof entry.data !== 'object' || entry.data === null) return;
+  const name = parseTopicName('name' in entry.data ? entry.data.name : undefined);
   return name && 'archived' in entry.data && typeof entry.data.archived === 'boolean' ? { name, archived: entry.data.archived } : undefined;
 };
-export const messageThread = (entry: { type: string; customType?: string; data?: unknown }): { entries: string[]; thread: ThreadName } | undefined => {
-  if (entry.type !== 'custom' || entry.customType !== 'koa.message-thread' || typeof entry.data !== 'object' || entry.data === null) return;
+export const messageTopic = (entry: { type: string; customType?: string; data?: unknown }): { entries: string[]; topic: TopicName } | undefined => {
+  if (entry.type !== 'custom' || entry.customType !== 'koa.message-topic' || typeof entry.data !== 'object' || entry.data === null) return;
   const data = entry.data, entries = 'entries' in data ? data.entries : undefined;
-  const name = parseThreadName('thread' in data ? data.thread : undefined);
-  return Array.isArray(entries) && entries.length > 0 && entries.every((id): id is string => typeof id === 'string' && id.length > 0) && new Set(entries).size === entries.length && name ? { entries, thread: name } : undefined;
+  const name = parseTopicName('topic' in data ? data.topic : undefined);
+  return Array.isArray(entries) && entries.length > 0 && entries.every((id): id is string => typeof id === 'string' && id.length > 0) && new Set(entries).size === entries.length && name ? { entries, topic: name } : undefined;
 };
 
 export type Relation = components["schemas"]["Relation"];
@@ -40,11 +40,11 @@ export type JobEnd = { type: 'exit'; code: number } | { type: 'signal'; signal: 
 export type JobPlace = { type: 'runtime'; name: string } | { type: 'mac' } | { type: 'machine' } | { type: 'remote'; host: string };
 export type JobSnapshot = { name: string; command: string; service: boolean; startedAt: number; place: JobPlace; log: string; state: { type: 'running' } | { type: 'ended'; end: JobEnd; at: number } | { type: 'cleared' } };
 export type JobRef = { id: string; name: string; service: boolean; log: string; command: string; startedAt: number; place: JobPlace };
-export type AgentDetails = { thread?: ThreadName; agent: AgentRef; body: string; inbound: Inbound };
+export type AgentDetails = { topic?: TopicName; agent: AgentRef; body: string; inbound: Inbound };
 export type MessageDetails = AgentDetails & { from?: string; work?: boolean; inbound: Extract<Inbound, { form: 'message' }> };
 export type SteerDetails = AgentDetails & { from?: string; work?: boolean; inbound: Extract<Inbound, { form: 'steer' }> };
-export type NoticeDetails = ((AgentDetails & { inbound: Extract<Inbound, { form: 'notice' | 'report' }> }) | { kind: 'job'; thread?: ThreadName; job: JobRef & { end: JobEnd }; tail: string }) & { from?: string };
-export type StreamDetails = { thread?: ThreadName; from?: string; job: JobRef; batch: string; omitted: number; cut: boolean };
+export type NoticeDetails = ((AgentDetails & { inbound: Extract<Inbound, { form: 'notice' | 'report' }> }) | { kind: 'job'; topic?: TopicName; job: JobRef & { end: JobEnd }; tail: string }) & { from?: string };
+export type StreamDetails = { topic?: TopicName; from?: string; job: JobRef; batch: string; omitted: number; cut: boolean };
 export function jobEndText(end: JobEnd): string {
   switch (end.type) {
     case 'exit': return `exit ${end.code}`;

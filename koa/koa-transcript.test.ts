@@ -36,17 +36,17 @@ function record(line: string | undefined) {
 
 test('message moves use persisted entry identity with equal timestamps', t => {
   const branch: SessionEntry[] = [
-    { type: 'message', id: 'one', parentId: null, timestamp: new Date(123).toISOString(), message: { role: 'user', content: '[thread: one]\nFirst', timestamp: 123 } },
-    { type: 'message', id: 'two', parentId: 'one', timestamp: new Date(123).toISOString(), message: { role: 'user', content: '[thread: two]\nSecond', timestamp: 123 } },
+    { type: 'message', id: 'one', parentId: null, timestamp: new Date(123).toISOString(), message: { role: 'user', content: '[topic: one]\nFirst', timestamp: 123 } },
+    { type: 'message', id: 'two', parentId: 'one', timestamp: new Date(123).toISOString(), message: { role: 'user', content: '[topic: two]\nSecond', timestamp: 123 } },
   ];
   const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
   view.rebuild(branch, 'session', 'two');
   assert.deepEqual(view.moveTargets(0), ['one']);
   const before = JSON.parse(request(view, '/items?before=100').join(''));
-  const move: SessionEntry = { type: 'custom', id: 'move', parentId: 'two', timestamp: new Date(124).toISOString(), customType: 'koa.message-thread', data: { entries: ['one'], thread: 'target' } };
+  const move: SessionEntry = { type: 'custom', id: 'move', parentId: 'two', timestamp: new Date(124).toISOString(), customType: 'koa.message-topic', data: { entries: ['one'], topic: 'target' } };
   branch.push(move); view.annotation(move);
   const after = JSON.parse(request(view, '/items?before=100').join(''));
-  assert.deepEqual(after.items.filter((item: WireItem) => item.kind === 'user').map((item: { thread: string }) => item.thread), ['target', 'two']);
+  assert.deepEqual(after.items.filter((item: WireItem) => item.kind === 'user').map((item: { topic: string }) => item.topic), ['target', 'two']);
   assert.notEqual(after.epoch, before.epoch);
   view.rebuild(branch, 'session', 'move');
   assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, after.items);
@@ -55,10 +55,10 @@ test('message moves use persisted entry identity with equal timestamps', t => {
 test('corrections reset reconnect cursors and replay merges and whole reply turns', t => {
   const branch: SessionEntry[] = [];
   const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
-  const user: AgentMessage = { role: 'user', content: '[thread: one]\nWork', timestamp: 100 };
-  const reply = assistant('[thread: one]\nReply with a sufficiently long quotation');
+  const user: AgentMessage = { role: 'user', content: '[topic: one]\nWork', timestamp: 100 };
+  const reply = assistant('[topic: one]\nReply with a sufficiently long quotation');
   reply.content.push({ type: 'toolCall', id: 'call', name: 'read', arguments: { path: 'a' } });
-  const later = { ...assistant('[thread: one]\nFinal'), timestamp: 124 };
+  const later = { ...assistant('[topic: one]\nFinal'), timestamp: 124 };
   const add = (id: string, message: Extract<AgentMessage, { role: 'user' | 'assistant' }>) => { branch.push({ type: 'message', id, parentId: branch.at(-1)?.id ?? null, timestamp: new Date(message.timestamp).toISOString(), message }); view.message(message, 'end'); };
   add('user', user); add('reply', reply); add('later', later);
   assert.deepEqual(view.moveTargets(0), ['user', 'reply', 'later']);
@@ -68,48 +68,48 @@ test('corrections reset reconnect cursors and replay merges and whole reply turn
   branch.push({ type: 'message', id: 'unsaved', parentId: 'later', timestamp: new Date(125).toISOString(), message: unpersisted });
   const before = JSON.parse(request(view, '/items?before=100').join(''));
   const custom = (id: string, customType: string, data: unknown) => { const entry: SessionEntry = { type: 'custom', id, parentId: branch.at(-1)?.id ?? null, timestamp: new Date(130).toISOString(), customType, data }; branch.push(entry); view.annotation(entry); };
-  custom('move', 'koa.message-thread', { entries: ['user', 'reply', 'later', 'unsaved'], thread: 'target' });
-  custom('merge', 'koa.thread-move', { from: 'target', to: 'renamed' });
+  custom('move', 'koa.message-topic', { entries: ['user', 'reply', 'later', 'unsaved'], topic: 'target' });
+  custom('merge', 'koa.topic-move', { from: 'target', to: 'renamed' });
   const live = JSON.parse(request(view, '/items?before=100').join(''));
-  assert.ok(live.items.filter((item: WireItem) => item.kind === 'assistant').every((item: { blocks: { thread: string }[] }) => item.blocks.every(block => block.thread === 'renamed')));
+  assert.ok(live.items.filter((item: WireItem) => item.kind === 'assistant').every((item: { blocks: { topic: string }[] }) => item.blocks.every(block => block.topic === 'renamed')));
   const reconnect = record(request(view, '/events?epoch=' + before.epoch + '&after=3')[0]);
   assert.equal(reconnect.type, 'reset'); assert.equal(reconnect.epoch, live.epoch);
-  assert.equal(view.quotedThread('> Reply with a sufficiently long quotation'), 'renamed');
+  assert.equal(view.quotedTopic('> Reply with a sufficiently long quotation'), 'renamed');
   view.rebuild(branch, 'session', 'merge');
   const replay = JSON.parse(request(view, '/items?before=100').join(''));
-  assert.deepEqual(replay.items.map((item: WireItem) => item.kind === 'assistant' ? item.blocks.map(block => block.thread) : item.kind === 'user' ? item.thread : item.kind), live.items.map((item: WireItem) => item.kind === 'assistant' ? item.blocks.map(block => block.thread) : item.kind === 'user' ? item.thread : item.kind));
+  assert.deepEqual(replay.items.map((item: WireItem) => item.kind === 'assistant' ? item.blocks.map(block => block.topic) : item.kind === 'user' ? item.topic : item.kind), live.items.map((item: WireItem) => item.kind === 'assistant' ? item.blocks.map(block => block.topic) : item.kind === 'user' ? item.topic : item.kind));
 });
 
-test('moving the latest persisted reply removes its only old thread', t => {
+test('moving the latest persisted reply removes its only old topic', t => {
   const branch: SessionEntry[] = [];
   const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
-  const reply = assistant('[thread: old]\nThe only reply in the old thread');
+  const reply = assistant('[topic: old]\nThe only reply in the old topic');
   view.message(reply, 'end');
   branch.push({ type: 'message', id: 'reply', parentId: null, timestamp: new Date(123).toISOString(), message: reply });
-  const move: SessionEntry = { type: 'custom', id: 'move', parentId: 'reply', timestamp: new Date(124).toISOString(), customType: 'koa.message-thread', data: { entries: ['reply'], thread: 'target' } };
+  const move: SessionEntry = { type: 'custom', id: 'move', parentId: 'reply', timestamp: new Date(124).toISOString(), customType: 'koa.message-topic', data: { entries: ['reply'], topic: 'target' } };
   branch.push(move); view.annotation(move);
-  assert.deepEqual(view.threads().map(thread => thread.name), ['target']);
-  assert.deepEqual(view.threadContext([]).others, []);
+  assert.deepEqual(view.topics().map(topic => topic.name), ['target']);
+  assert.deepEqual(view.topicContext([]).others, []);
 });
 
-test('archive metadata changes thread state without changing feed items or epoch and survives rebuild', t => {
+test('archive metadata changes topic state without changing feed items or epoch and survives rebuild', t => {
   const branch: SessionEntry[] = [];
   const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
-  const reply = assistant('[thread: one]\nReply with a sufficiently long quotation');
+  const reply = assistant('[topic: one]\nReply with a sufficiently long quotation');
   branch.push({ type: 'message', id: 'reply', parentId: null, timestamp: new Date(123).toISOString(), message: reply }); view.message(reply, 'end');
   const before = JSON.parse(request(view, '/items?before=100').join(''));
-  const archive: SessionEntry = { type: 'custom', id: 'archive', parentId: 'reply', timestamp: new Date(124).toISOString(), customType: 'koa.thread-archive', data: { name: 'one', archived: true } };
+  const archive: SessionEntry = { type: 'custom', id: 'archive', parentId: 'reply', timestamp: new Date(124).toISOString(), customType: 'koa.topic-archive', data: { name: 'one', archived: true } };
   branch.push(archive); view.annotation(archive);
   assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')), before);
-  assert.equal(view.threads()[0]?.archived, true);
-  assert.deepEqual(view.threadContext([]), { threads: [], others: [] });
-  assert.equal(view.quotedThread('> Reply with a sufficiently long quotation'), undefined);
+  assert.equal(view.topics()[0]?.archived, true);
+  assert.deepEqual(view.topicContext([]), { topics: [], others: [] });
+  assert.equal(view.quotedTopic('> Reply with a sufficiently long quotation'), undefined);
   view.rebuild(branch, 'session', 'archive');
-  assert.equal(view.threads()[0]?.archived, true);
+  assert.equal(view.topics()[0]?.archived, true);
   const restore: SessionEntry = { ...archive, id: 'restore', parentId: 'archive', data: { name: 'one', archived: false } };
   branch.push(restore); view.annotation(restore);
-  assert.equal(view.threads()[0]?.archived, undefined);
-  assert.equal(view.quotedThread('> Reply with a sufficiently long quotation'), 'one');
+  assert.equal(view.topics()[0]?.archived, undefined);
+  assert.equal(view.quotedTopic('> Reply with a sufficiently long quotation'), 'one');
 });
 
 test('rebuild replays the whole active branch across compactions', t => {
@@ -136,25 +136,25 @@ test('rebuild replays the whole active branch across compactions', t => {
   assert.equal(items[8].blocks[0].text, 'after');
 });
 
-test('selecting a thread loads its items before compaction and outside the live window', t => {
+test('selecting a topic loads its items before compaction and outside the live window', t => {
   let branch: SessionEntry[] = [];
   const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
   const entries: SessionEntry[] = [
-    { type: 'message', id: 'old', parentId: null, timestamp: new Date(123).toISOString(), message: assistant('[thread: old]\nHistorical reply') },
-    { type: 'custom', id: 'index', parentId: 'old', timestamp: new Date(124).toISOString(), customType: 'koa.thread', data: { name: 'old', at: 123 } },
+    { type: 'message', id: 'old', parentId: null, timestamp: new Date(123).toISOString(), message: assistant('[topic: old]\nHistorical reply') },
+    { type: 'custom', id: 'index', parentId: 'old', timestamp: new Date(124).toISOString(), customType: 'koa.topic', data: { name: 'old', at: 123 } },
     { type: 'message', id: 'recent', parentId: 'index', timestamp: new Date(125).toISOString(), message: { role: 'user', content: 'Recent input', timestamp: 125 } },
     { type: 'compaction', id: 'compact', parentId: 'recent', timestamp: new Date(126).toISOString(), summary: 'Compacted history', tokensBefore: 100, firstKeptEntryId: 'recent' },
   ];
   branch = entries; view.rebuild(entries, 'session', 'compact');
-  assert.ok(view.threads().some(thread => thread.name === 'old'));
-  const selected = () => JSON.parse(request(view, '/items?before=' + Number.MAX_SAFE_INTEGER + '&thread=old').join(''));
+  assert.ok(view.topics().some(topic => topic.name === 'old'));
+  const selected = () => JSON.parse(request(view, '/items?before=' + Number.MAX_SAFE_INTEGER + '&topic=old').join(''));
   const historical = selected();
   assert.deepEqual(historical.items.filter((item: WireItem) => item.kind === 'assistant').map((item: { blocks: { text: string }[] }) => item.blocks[0].text), ['Historical reply']);
   assert.equal(historical.more, false);
-  for (let index = 0; index < 80; index++) view.message({ ...assistant('[thread: recent]\nRecent reply ' + index), timestamp: 200 + index }, 'end');
+  for (let index = 0; index < 80; index++) view.message({ ...assistant('[topic: recent]\nRecent reply ' + index), timestamp: 200 + index }, 'end');
   const live = JSON.parse(request(view, '/items?before=' + Number.MAX_SAFE_INTEGER).join(''));
   assert.equal(live.more, true);
-  assert.equal(live.items.some((item: WireItem) => item.kind === 'assistant' && item.blocks.some(block => block.thread === 'old')), false);
+  assert.equal(live.items.some((item: WireItem) => item.kind === 'assistant' && item.blocks.some(block => block.topic === 'old')), false);
   assert.deepEqual(selected(), historical);
 });
 
@@ -184,18 +184,18 @@ function assistant(text: string, stopReason: "stop" | "error" = "stop"): Extract
   return { role: "assistant", content: [{ type: "text", text }], api: "openai-responses", provider: "openai", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason, timestamp: 123 };
 }
 
-test('root thread projection splits sections, preserves tool indexes and remaps annotations', t => {
+test('root topic projection splits sections, preserves tool indexes and remaps annotations', t => {
   const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
-  const text = '[thread: one]\n😀 Pick one?\n[thread: two]\nNext?';
+  const text = '[topic: one]\n😀 Pick one?\n[topic: two]\nNext?';
   const message = { ...assistant(text), content: [{ type: 'text' as const, text }, { type: 'toolCall' as const, id: 'read', name: 'read', arguments: { path: '/tmp/source' } }] };
   view.rebuild(...linked([message]));
   let items = JSON.parse(request(view, '/items?before=100').join('')).items;
-  assert.deepEqual(items[0].blocks.map((block: { type: string; thread?: string; text?: string }) => [block.type, block.thread, block.text]), [['text', 'one', '😀 Pick one?\n'], ['text', 'two', 'Next?'], ['tool', 'two', undefined]]);
+  assert.deepEqual(items[0].blocks.map((block: { type: string; topic?: string; text?: string }) => [block.type, block.topic, block.text]), [['text', 'one', '😀 Pick one?\n'], ['text', 'two', 'Next?'], ['tool', 'two', undefined]]);
   assert.equal(view.itemFile(0, 2), '/tmp/source');
   view.toolDone('read', [{ type: 'image', data: Buffer.from('image').toString('base64'), mimeType: 'image/png' }], false, 124);
   const tool = JSON.parse(request(view, '/items?before=100').join('')).items[0].blocks[2];
   assert.equal(tool.state.result.images[0].id, '0.1.0');
-  view.annotation({ type: 'custom', id: 'mark', parentId: null, timestamp: new Date(124).toISOString(), customType: 'reply-annotations', data: { reply: { at: 123, block: 0, length: Array.from(text).length }, annotations: [{ type: 'question', kind: 'choice', range: [16, 25], options: [[21, 24]] }, { type: 'question', kind: 'open', range: [16, 43] }] } });
+  view.annotation({ type: 'custom', id: 'mark', parentId: null, timestamp: new Date(124).toISOString(), customType: 'reply-annotations', data: { reply: { at: 123, block: 0, length: Array.from(text).length }, annotations: [{ type: 'question', kind: 'choice', range: [15, 24], options: [[20, 23]] }, { type: 'question', kind: 'open', range: [15, 41] }] } });
   items = JSON.parse(request(view, '/items?before=100').join('')).items;
   assert.deepEqual(items[1].reply, { seq: 0, block: 0 });
   assert.deepEqual(items[1].annotations, [{ type: 'question', kind: 'choice', range: [2, 11], options: [[7, 10]] }]);
@@ -203,75 +203,75 @@ test('root thread projection splits sections, preserves tool indexes and remaps 
   assert.equal(JSON.parse(request(child, '/items?before=100').join('')).items[0].blocks[0].text, text);
 });
 
-test('thread attribution labels final prefixes with metadata without changing them', t => {
+test('topic attribution labels final prefixes with metadata without changing them', t => {
   const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
   const user = { role: 'user' as const, content: 'work', timestamp: 100 };
   const prefix = { ...assistant(''), content: [{ type: 'thinking' as const, thinking: 'Plan' }] };
   view.message(user, 'end'); view.message(prefix, 'end');
   const before = JSON.parse(request(view, '/items?before=100').join('')).items;
-  view.message({ ...assistant('[thread: one]\nFirst\n[thread: two]\nSecond'), timestamp: 130 }, 'end');
+  view.message({ ...assistant('[topic: one]\nFirst\n[topic: two]\nSecond'), timestamp: 130 }, 'end');
   const items = JSON.parse(request(view, '/items?before=100').join('')).items;
   assert.deepEqual(items[1], before[1]); assert.equal(items[1].final, true);
-  assert.ok(items.some((item: { kind: string; target?: number; threads?: string[] }) => item.kind === 'threads' && item.target === 1 && item.threads?.join() === 'one'));
-  assert.deepEqual(items.filter((item: { kind: string; target?: number }) => item.kind === 'threads' && item.target === 0).at(-1).threads, ['one', 'two']);
-  const filtered = JSON.parse(request(view, '/items?before=100&thread=two').join(''));
+  assert.ok(items.some((item: { kind: string; target?: number; topics?: string[] }) => item.kind === 'topics' && item.target === 1 && item.topics?.join() === 'one'));
+  assert.deepEqual(items.filter((item: { kind: string; target?: number }) => item.kind === 'topics' && item.target === 0).at(-1).topics, ['one', 'two']);
+  const filtered = JSON.parse(request(view, '/items?before=100&topic=two').join(''));
   assert.ok(filtered.items.some((item: { kind: string }) => item.kind === 'user'));
   assert.equal(filtered.more, false);
 });
 
-test('streaming markers do not leak and explicit users stay in one thread', t => {
+test('streaming markers do not leak and explicit users stay in one topic', t => {
   const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
-  view.message({ role: 'user', content: '[thread: selected]\nwork', timestamp: 100 }, 'end');
-  view.message(assistant('[thread: one]\nBody\n[thre'), 'update');
+  view.message({ role: 'user', content: '[topic: selected]\nwork', timestamp: 100 }, 'end');
+  view.message(assistant('[topic: one]\nBody\n[topi'), 'update');
   let items = JSON.parse(request(view, '/items?before=100').join('')).items;
-  assert.equal(items[0].text, 'work'); assert.equal(items[0].thread, 'selected');
+  assert.equal(items[0].text, 'work'); assert.equal(items[0].topic, 'selected');
   assert.deepEqual(items[1].blocks.map((block: { text: string }) => block.text), ['Body\n']);
-  view.message(assistant('[thread: one]\nBody\n[thread: two]\nOther'), 'end');
-  items = JSON.parse(request(view, '/items?before=100&thread=two').join('')).items;
+  view.message(assistant('[topic: one]\nBody\n[topic: two]\nOther'), 'end');
+  items = JSON.parse(request(view, '/items?before=100&topic=two').join('')).items;
   assert.equal(items.some((item: { kind: string }) => item.kind === 'user'), false);
 });
 
-test('thread intervals follow inputs, tools inherit the turn thread and unmarked replies stay unlabelled', t => {
+test('topic intervals follow inputs, tools inherit the turn topic and unmarked replies stay unlabelled', t => {
   const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
-  const inbound: AgentMessage = { role: 'custom', customType: 'agent-message', display: true, content: 'event', details: { thread: 'agent', agent: { name: 'worker' }, body: 'event', inbound: { form: 'message', relation: 'child' } }, timestamp: 100 };
+  const inbound: AgentMessage = { role: 'custom', customType: 'agent-message', display: true, content: 'event', details: { topic: 'agent', agent: { name: 'worker' }, body: 'event', inbound: { form: 'message', relation: 'child' } }, timestamp: 100 };
   const tool = { ...assistant(''), content: ['read', 'spawn_agent', 'message_agent', 'async_bash'].map(name => ({ type: 'toolCall' as const, id: name, name, arguments: { path: '/tmp/file' } })) };
   const messages: AgentMessage[] = [
-    { role: 'user', content: 'first', timestamp: 90 }, assistant('[thread: first]\nFirst'),
+    { role: 'user', content: 'first', timestamp: 90 }, assistant('[topic: first]\nFirst'),
     inbound, tool,
-    { role: 'user', content: 'steer', timestamp: 140 }, { ...assistant('[thread: steer]\nSteered'), timestamp: 150 },
+    { role: 'user', content: 'steer', timestamp: 140 }, { ...assistant('[topic: steer]\nSteered'), timestamp: 150 },
     { role: 'user', content: 'follow-up', timestamp: 160 }, { ...assistant('No marker'), timestamp: 170 },
   ];
   view.rebuild(...linked(messages));
   const items = JSON.parse(request(view, '/items?before=100').join('')).items;
-  assert.equal(items.find((item: { kind: string }) => item.kind === 'agent').thread, 'agent');
-  assert.deepEqual(items.find((item: { kind: string; blocks?: { type: string }[] }) => item.kind === 'assistant' && item.blocks?.[0].type === 'tool').blocks.map((block: { thread?: string }) => block.thread), ['agent', 'agent', 'agent', 'agent']);
+  assert.equal(items.find((item: { kind: string }) => item.kind === 'agent').topic, 'agent');
+  assert.deepEqual(items.find((item: { kind: string; blocks?: { type: string }[] }) => item.kind === 'assistant' && item.blocks?.[0].type === 'tool').blocks.map((block: { topic?: string }) => block.topic), ['agent', 'agent', 'agent', 'agent']);
   const users = items.filter((item: { kind: string }) => item.kind === 'user');
-  const names = (seq: number) => items.filter((item: { kind: string; target?: number }) => item.kind === 'threads' && item.target === seq).at(-1)?.threads;
+  const names = (seq: number) => items.filter((item: { kind: string; target?: number }) => item.kind === 'topics' && item.target === seq).at(-1)?.topics;
   assert.deepEqual(names(users[0].seq), ['first']); assert.deepEqual(names(users[1].seq), ['steer']); assert.equal(names(users[2].seq), undefined);
   const unmarked = items.filter((item: { kind: string }) => item.kind === 'assistant').at(-1);
-  assert.deepEqual(unmarked.blocks.map((block: { thread?: string }) => block.thread), [undefined]);
+  assert.deepEqual(unmarked.blocks.map((block: { topic?: string }) => block.topic), [undefined]);
 });
 
-test('thread state keeps entry order, raw last section and source time through compaction', t => {
+test('topic state keeps entry order, raw last section and source time through compaction', t => {
   let branch: SessionEntry[] = [];
   const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
-  const historical = { type: 'message' as const, id: 'old', parentId: null, timestamp: new Date(123).toISOString(), message: assistant('[thread: old]\n**raw summary**\nBody') };
-  const entries = [historical, { type: 'custom' as const, id: 'empty', parentId: 'old', timestamp: new Date(124).toISOString(), customType: 'koa.thread', data: { name: 'empty', at: 124 } }, { type: 'custom' as const, id: 'index', parentId: 'empty', timestamp: new Date(125).toISOString(), customType: 'koa.thread', data: { name: 'old', at: 125 } }];
+  const historical = { type: 'message' as const, id: 'old', parentId: null, timestamp: new Date(123).toISOString(), message: assistant('[topic: old]\n**raw summary**\nBody') };
+  const entries = [historical, { type: 'custom' as const, id: 'empty', parentId: 'old', timestamp: new Date(124).toISOString(), customType: 'koa.topic', data: { name: 'empty', at: 124 } }, { type: 'custom' as const, id: 'index', parentId: 'empty', timestamp: new Date(125).toISOString(), customType: 'koa.topic', data: { name: 'old', at: 125 } }];
   branch = entries; view.rebuild(entries, 'session', 'index');
-  assert.deepEqual(view.threads(), [{ name: 'old', last: { summary: '**raw summary**', at: 123 } }]);
-  view.message({ ...assistant('[thread: fresh]\n# New'), timestamp: 200 }, 'update');
+  assert.deepEqual(view.topics(), [{ name: 'old', last: { summary: '**raw summary**', at: 123 } }]);
+  view.message({ ...assistant('[topic: fresh]\n# New'), timestamp: 200 }, 'update');
   request(view, '/items?before=100');
-  assert.deepEqual(view.threads().at(-1), { name: 'fresh', last: { summary: '# New', at: 200 } });
-  view.annotation({ type: 'custom', id: 'promoted', parentId: 'index', timestamp: new Date(201).toISOString(), customType: 'koa.thread', data: { name: 'fresh', at: 200 } });
-  assert.deepEqual(view.threads().map(thread => thread.name), ['old', 'fresh']);
+  assert.deepEqual(view.topics().at(-1), { name: 'fresh', last: { summary: '# New', at: 200 } });
+  view.annotation({ type: 'custom', id: 'promoted', parentId: 'index', timestamp: new Date(201).toISOString(), customType: 'koa.topic', data: { name: 'fresh', at: 200 } });
+  assert.deepEqual(view.topics().map(topic => topic.name), ['old', 'fresh']);
 });
 
-test('thread rebuild emits one final label set per user across several assistant messages', t => {
+test('topic rebuild emits one final label set per user across several assistant messages', t => {
   const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
-  view.rebuild(...linked([{ role: 'user', content: 'both', timestamp: 1 }, { ...assistant('[thread: one]\nOne'), timestamp: 2 }, { ...assistant('[thread: two]\nTwo'), timestamp: 3 }, { role: 'user', content: 'next', timestamp: 4 }]));
+  view.rebuild(...linked([{ role: 'user', content: 'both', timestamp: 1 }, { ...assistant('[topic: one]\nOne'), timestamp: 2 }, { ...assistant('[topic: two]\nTwo'), timestamp: 3 }, { role: 'user', content: 'next', timestamp: 4 }]));
   const items = JSON.parse(request(view, '/items?before=100').join('')).items;
-  const labels = items.filter((item: { kind: string; target?: number }) => item.kind === 'threads' && item.target === 0);
-  assert.equal(labels.length, 1); assert.deepEqual(labels[0].threads, ['one', 'two']);
+  const labels = items.filter((item: { kind: string; target?: number }) => item.kind === 'topics' && item.target === 0);
+  assert.equal(labels.length, 1); assert.deepEqual(labels[0].topics, ['one', 'two']);
   assert.deepEqual(items.filter((item: { kind: string }) => item.kind === 'user').map((item: { text: string }) => item.text), ['both', 'next']);
 });
 
@@ -611,7 +611,7 @@ test("identical image partials emit no patch and changed bytes advance the wire 
 
 test("rebuild sends reset then exactly one caller-supplied state and keeps the epoch format", t => {
   const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1000 });
-  const state = { pathEditor: false, agents: [], bash: [], compaction: 'idle' as const, working: false, name: "before", model: { provider: "test", id: "test" }, aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, view: { id: "root", path: [{ id: "root", name: "pi", type: "agent" as const }], type: 'root' as const }, threads: [], life: { type: "ready" as const } };
+  const state = { pathEditor: false, agents: [], bash: [], compaction: 'idle' as const, working: false, name: "before", model: { provider: "test", id: "test" }, aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, view: { id: "root", path: [{ id: "root", name: "pi", type: "agent" as const }], type: 'root' as const }, topics: [], life: { type: "ready" as const } };
   view.state(state);
   const lines = request(view, "/events");
   const firstEpoch = record(lines[0]).epoch;
@@ -707,9 +707,9 @@ test("an aborted turn shows no provider error text and a real error still shows"
 
 test("show moves the open pages to this feed, sends its state before the reset under a fresh epoch", t => {
   const before = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1000 }), after = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1000 });
-  const state = { pathEditor: false, agents: [], bash: [], compaction: 'idle' as const, working: false, name: "a", aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, view: { id: "a", path: [{ id: "a", name: "a", type: "agent" as const }], type: 'root' as const }, threads: [], life: { type: "ready" as const } };
+  const state = { pathEditor: false, agents: [], bash: [], compaction: 'idle' as const, working: false, name: "a", aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, view: { id: "a", path: [{ id: "a", name: "a", type: "agent" as const }], type: 'root' as const }, topics: [], life: { type: "ready" as const } };
   before.state(state);
-  after.state({ ...state, name: "b", view: { id: "b", path: [{ id: "a", name: "a", type: "agent" as const }, { id: "b", name: "b", type: "agent" as const }], type: 'root' as const }, threads: [] });
+  after.state({ ...state, name: "b", view: { id: "b", path: [{ id: "a", name: "a", type: "agent" as const }, { id: "b", name: "b", type: "agent" as const }], type: 'root' as const }, topics: [] });
   after.message(assistant("from b"), "end");
   const lines = request(before, "/events");
   const firstEpoch = record(lines[0]).epoch;

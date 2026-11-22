@@ -89,4 +89,4 @@ that the user accepts or refuses; `open` asks for a fact or a text.
 `options` are ignored for a kind other than `choice`.
 
 For koa's controls and composer behavior, see
-[design-koa.md](design-koa.md#reply-annotations-and-threads).
+[design-koa.md](design-koa.md#reply-annotations-and-topics).

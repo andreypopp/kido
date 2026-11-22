@@ -49,7 +49,7 @@ export function findSegments(item: WireItem, context: FindContext): Segment[] {
   }
   switch (item.kind) {
     case 'user': return proseSegments(context, item.text, item.seq + ':user', [], true);
-    case 'annotations': case 'threads': return [];
+    case 'annotations': case 'topics': return [];
     case 'assistant': return [...item.blocks.flatMap((block, index) => blockSegments(item, index, context).map(segment => block.type === 'text' ? segment : { ...segment, step: item.seq + ':' + index })), ...noticeSegments];
     case 'agent': {
       const key = sourceKey({ kind: 'item', seq: item.seq }), run = 'run:' + sourceKey(runOwner(contextOf(context), { kind: 'item', seq: item.seq }));

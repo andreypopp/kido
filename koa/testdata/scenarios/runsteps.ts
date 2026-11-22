@@ -2,7 +2,7 @@ import type { Block, PageRecord, State, WireAssistant, WireItem, WireJob } from 
 import { next, type Scenarios } from '../scenario.ts';
 
 const at = 1700000000000;
-const state: State = { pathEditor: false, compaction: 'idle', view: { id: 's1', path: [{ id: 's1', name: 'ko', type: 'agent' }], type: 'root' }, threads: [], agents: [], bash: [], life: { type: 'ready' }, working: false, aborted: false, name: 'runsteps', levels: [], cwd: '/work', home: '/home', sessionId: 's1', statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, dialogs: [] };
+const state: State = { pathEditor: false, compaction: 'idle', view: { id: 's1', path: [{ id: 's1', name: 'ko', type: 'agent' }], type: 'root' }, topics: [], agents: [], bash: [], life: { type: 'ready' }, working: false, aborted: false, name: 'runsteps', levels: [], cwd: '/work', home: '/home', sessionId: 's1', statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, dialogs: [] };
 const job: WireJob = { id: 'build', name: 'build', service: false, log: '/tmp/build.log', command: 'make build', startedAt: at, place: { type: 'mac' } };
 const tool = (id: string, done: boolean): Block => ({ type: 'tool', id, name: 'bash', args: { text: JSON.stringify({ command: id }), cut: 0 }, state: done ? { type: 'done', error: false, result: { text: 'ok', cut: 0, images: [] } } : { type: 'running' }, started: at, ...done ? { ended: at + 1000 } : {} });
 const reply = (seq: number, blocks: Block[]): WireAssistant => ({ seq, revision: 0, at, final: false, kind: 'assistant', stop: '', error: '', blocks });

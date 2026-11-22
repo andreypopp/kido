@@ -1,33 +1,33 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { prompts } from './koa-queue.ts';
-import { bashCommand, decodePrompt, threadPrompt } from './prompt.ts';
-import { parseThreadName } from './records.ts';
+import { bashCommand, decodePrompt, topicPrompt } from './prompt.ts';
+import { parseTopicName } from './records.ts';
 
-test('thread prompts hide their marker and retain attachment identity in queues', () => {
-  const one = parseThreadName('one'); assert.ok(one);
-  const two = parseThreadName('two'); assert.ok(two);
-  assert.equal(threadPrompt('[thread: one]\nhello', two), '[thread: two]\nhello');
-  assert.deepEqual(decodePrompt('[thread: one]\nhello\n/tmp/a', [{ id: 'f', name: 'a', path: '/tmp/a', kind: 'file', size: 1 }], 'root'), { text: 'hello', thread: one });
-  assert.deepEqual(decodePrompt('[thread: one]\nhello', [], 'subagent'), { text: '[thread: one]\nhello' });
+test('topic prompts hide their marker and retain attachment identity in queues', () => {
+  const one = parseTopicName('one'); assert.ok(one);
+  const two = parseTopicName('two'); assert.ok(two);
+  assert.equal(topicPrompt('[topic: one]\nhello', two), '[topic: two]\nhello');
+  assert.deepEqual(decodePrompt('[topic: one]\nhello\n/tmp/a', [{ id: 'f', name: 'a', path: '/tmp/a', kind: 'file', size: 1 }], 'root'), { text: 'hello', topic: one });
+  assert.deepEqual(decodePrompt('[topic: one]\nhello', [], 'subagent'), { text: '[topic: one]\nhello' });
   const queue = prompts('root');
-  queue.add(threadPrompt('same', one), 'steer', []); queue.add(threadPrompt('same', two), 'steer', []);
-  queue.update({ steering: [threadPrompt('same', one), threadPrompt('same', two)], followUp: [] });
-  assert.deepEqual(queue.view().steering, [{ text: 'same', thread: one, attachments: [] }, { text: 'same', thread: two, attachments: [] }]);
-  assert.deepEqual(queue.takeBack({ steering: [threadPrompt('same', two)], followUp: [] }).steering, [{ text: 'same', thread: two, attachments: [] }]);
+  queue.add(topicPrompt('same', one), 'steer', []); queue.add(topicPrompt('same', two), 'steer', []);
+  queue.update({ steering: [topicPrompt('same', one), topicPrompt('same', two)], followUp: [] });
+  assert.deepEqual(queue.view().steering, [{ text: 'same', topic: one, attachments: [] }, { text: 'same', topic: two, attachments: [] }]);
+  assert.deepEqual(queue.takeBack({ steering: [topicPrompt('same', two)], followUp: [] }).steering, [{ text: 'same', topic: two, attachments: [] }]);
 });
 
 test('held duplicate texts keep attachments through settle, start and rejection', () => {
   const queue = prompts('root');
   const first = queue.hold('same', 'prompt', [a]), second = queue.hold('same', 'prompt', [b]);
   assert.deepEqual(queue.view().classifying.map(entry => entry.attachments), [[a], [b]]);
-  queue.settle(first, '[thread: one]\nsame', 'followUp');
-  queue.update({ steering: [], followUp: ['[thread: one]\nsame'] });
-  assert.deepEqual(queue.view().followUp, [{ text: 'same', thread: 'one', attachments: [a] }]);
+  queue.settle(first, '[topic: one]\nsame', 'followUp');
+  queue.update({ steering: [], followUp: ['[topic: one]\nsame'] });
+  assert.deepEqual(queue.view().followUp, [{ text: 'same', topic: 'one', attachments: [a] }]);
   queue.reject(second);
   assert.deepEqual(queue.view().classifying, []);
   queue.update({ steering: [], followUp: [] });
-  assert.deepEqual(queue.start('[thread: one]\nsame')?.attachments, [a]);
+  assert.deepEqual(queue.start('[topic: one]\nsame')?.attachments, [a]);
   assert.deepEqual(queue.view(), { steering: [], followUp: [], classifying: [] });
 });
 

@@ -17,8 +17,8 @@ import { dots } from './working.ts';
 import { install } from './metrics.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
 import type { State, WireJob, WireItem, QueuedPrompt, Block, Patch, PageRecord, MetricsSample, Stages, PromptMode, ImageRef, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
-import type { ThreadName, AgentRef, Relation } from '../records.ts';
-import { parseThreadName } from '../records.ts';
+import type { TopicName, AgentRef, Relation } from '../records.ts';
+import { parseTopicName } from '../records.ts';
 
 type Step = StepInput & { key: string; slots: Map<string, Slot> };
 type Slot = { type: 'image'; view: HTMLButtonElement } | { type: 'run'; view: HTMLDivElement };
@@ -47,30 +47,30 @@ const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, clas
   return result;
 };
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
-type ComposerThread = { type: 'thread'; name: ThreadName } | { type: 'dropped' };
-type PageMemory = { scroll: Saved[]; drafts: [view: string, text: string][]; filters: [scope: string, thread: ThreadName][]; composerThreads: [scope: string, thread: ComposerThread][] };
+type ComposerTopic = { type: 'topic'; name: TopicName } | { type: 'dropped' };
+type PageMemory = { scroll: Saved[]; drafts: [view: string, text: string][]; filters: [scope: string, topic: TopicName][]; composerTopics: [scope: string, topic: ComposerTopic][] };
 const stored: unknown = history.state;
 const pageMemory = (stored: unknown): stored is PageMemory => isRecord(stored) && Array.isArray(stored.scroll) && stored.scroll.every(saved => {
   if (!isRecord(saved) || !isRecord(saved.scope) || typeof saved.scope.view !== 'string' || saved.scope.sessionId !== undefined && typeof saved.scope.sessionId !== 'string' || !Number.isInteger(saved.last) || !isRecord(saved.anchor) || saved.anchor.edge !== 'row' && saved.anchor.edge !== 'divider' || typeof saved.anchor.offset !== 'number' || !Number.isFinite(saved.anchor.offset) || !isRecord(saved.anchor.item)) return false;
   const item = saved.anchor.item;
   return item.kind === 'message' && Number.isInteger(item.seq) && (item.row === undefined || typeof item.row === 'string') || item.kind === 'job' && Number.isInteger(item.byte);
-}) && Array.isArray(stored.drafts) && stored.drafts.every(entry => Array.isArray(entry) && entry.length === 2 && entry.every(value => typeof value === 'string')) && ['filters', 'composerThreads'].every(key => { const entries = stored[key]; return Array.isArray(entries) && entries.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && (key === 'composerThreads' ? isRecord(entry[1]) && (entry[1].type === 'dropped' || entry[1].type === 'thread' && parseThreadName(entry[1].name) !== undefined) : parseThreadName(entry[1]) !== undefined)); });
+}) && Array.isArray(stored.drafts) && stored.drafts.every(entry => Array.isArray(entry) && entry.length === 2 && entry.every(value => typeof value === 'string')) && ['filters', 'composerTopics'].every(key => { const entries = stored[key]; return Array.isArray(entries) && entries.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && (key === 'composerTopics' ? isRecord(entry[1]) && (entry[1].type === 'dropped' || entry[1].type === 'topic' && parseTopicName(entry[1].name) !== undefined) : parseTopicName(entry[1]) !== undefined)); });
 const memory = pageMemory(stored) ? stored : undefined;
-const threadItems = new Map<number, Extract<WireItem, { kind: 'threads' }>>();
+const topicItems = new Map<number, Extract<WireItem, { kind: 'topics' }>>();
 const projections = new Map<number, WireItem | undefined>();
-const threadFilters = new Map<string, ThreadName>(memory?.filters);
-const composerThreads = new Map<string, ComposerThread>(memory?.composerThreads);
-const composerThread = node('div', undefined, 'message-header composer-thread');
-const threadMeasure = node('span', '0', 'thread-measure');
-threadMeasure.setAttribute('aria-hidden', 'true'); document.body.append(threadMeasure);
-const threadFilter = (): ThreadName | undefined => state.view.type === 'root' ? threadFilters.get(filterKey()) : undefined;
+const topicFilters = new Map<string, TopicName>(memory?.filters);
+const composerTopics = new Map<string, ComposerTopic>(memory?.composerTopics);
+const composerTopic = node('div', undefined, 'message-header composer-topic');
+const topicMeasure = node('span', '0', 'topic-measure');
+topicMeasure.setAttribute('aria-hidden', 'true'); document.body.append(topicMeasure);
+const topicFilter = (): TopicName | undefined => state.view.type === 'root' ? topicFilters.get(filterKey()) : undefined;
 let historyBefore: number | undefined;
-let threadCapsule: { view: HTMLDivElement; names: ThreadName[]; selected?: ThreadName; width?: number } | undefined;
+let topicCapsule: { view: HTMLDivElement; names: TopicName[]; selected?: TopicName; width?: number } | undefined;
 
 const rhythmPending = new Set<HTMLElement>();
 const annotationItems = new Map<number, Map<number, Extract<WireItem, { kind: 'annotations' }>>>();
 const items = new Map<number, WireItem>();
-const views = new Map<number, { view: HTMLElement; item: WireItem; warning?: string; slots: Map<string, Slot>; filter?: ThreadName; runs: string }>();
+const views = new Map<number, { view: HTMLElement; item: WireItem; warning?: string; slots: Map<string, Slot>; filter?: TopicName; runs: string }>();
 const openers = new Map<string, { view: HTMLElement; open: () => void }>(), fenceOpeners = new Map<string, { view: HTMLElement; open: () => void }>(), patched = new Set<number>(), live = new Set<number>(), order: number[] = [], extents = new Map<number, Extent>(), openFences = new Set<string>(), animating = new Map<HTMLElement, number>();
 type Extent = { kind: 'measured'; width: number; lh: number; px: number } | { kind: 'estimated'; px: number };
 type Group = SeqRange;
@@ -101,242 +101,242 @@ let revealDirty = false, resetting = false, annotated = false;
 const growing: HTMLElement[] = [], observed = new Map<Element, Watch>(), measuredHolds = new Map<HTMLElement, number>(), fits = new Map<HTMLElement, boolean>();
 const pathWarnings = new Map<number, string>();
 let pathWarningEpoch = 0;
-let state: State = { pathEditor: false, view: { id: '', path: [], type: 'root' }, threads: [], agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, dialogs: [] };
+let state: State = { pathEditor: false, view: { id: '', path: [], type: 'root' }, topics: [], agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, dialogs: [] };
 const filterKey = () => state.view.id + ':' + (state.sessionId ?? '');
-function latestThreadInput(): WireItem | undefined {
+function latestTopicInput(): WireItem | undefined {
   let latest: WireItem | undefined;
   for (const item of items.values()) if ((item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') && (!latest || item.seq > latest.seq)) latest = item;
   return latest;
 }
-function waitingForThread(item: WireItem): boolean {
-  return state.view.type === 'root' && state.working && item.kind === 'user' && !item.thread && !threadItems.has(item.seq) && latestThreadInput()?.seq === item.seq;
+function waitingForTopic(item: WireItem): boolean {
+  return state.view.type === 'root' && state.working && item.kind === 'user' && !item.topic && !topicItems.has(item.seq) && latestTopicInput()?.seq === item.seq;
 }
 const runKeys = new Map<number, string>();
-let runThreads: { owners: RunContext['owners']; names: Map<string, ThreadName> } | undefined;
-function runThread(source: Parameters<typeof runOwner>[1]): ThreadName | undefined {
-  if (!runThreads) {
-    const context: RunContext = { raw: seq => items.get(seq), shown: seq => items.get(seq), owners: new Map() }, names = new Map<string, ThreadName>();
+let runTopics: { owners: RunContext['owners']; names: Map<string, TopicName> } | undefined;
+function runTopic(source: Parameters<typeof runOwner>[1]): TopicName | undefined {
+  if (!runTopics) {
+    const context: RunContext = { raw: seq => items.get(seq), shown: seq => items.get(seq), owners: new Map() }, names = new Map<string, TopicName>();
     for (const seq of [...items.keys()].sort((a, b) => a - b)) for (const part of runParts(items.get(seq), items.get(seq))) {
       if (part.kind !== 'step') continue;
       const key = sourceKey(runOwner(context, part.source));
-      const thread = part.step.kind === 'block' ? part.step.block.thread ?? threadItems.get(seq)?.threads[0] : part.step.kind === 'agent' || part.step.kind === 'job' ? part.step.item.thread : undefined;
-      if (thread && !names.has(key)) names.set(key, thread);
+      const topic = part.step.kind === 'block' ? part.step.block.topic ?? topicItems.get(seq)?.topics[0] : part.step.kind === 'agent' || part.step.kind === 'job' ? part.step.item.topic : undefined;
+      if (topic && !names.has(key)) names.set(key, topic);
     }
-    runThreads = { owners: context.owners, names };
+    runTopics = { owners: context.owners, names };
   }
-  return runThreads.names.get(sourceKey(runOwner({ raw: seq => items.get(seq), shown: seq => items.get(seq), owners: runThreads.owners }, source)));
+  return runTopics.names.get(sourceKey(runOwner({ raw: seq => items.get(seq), shown: seq => items.get(seq), owners: runTopics.owners }, source)));
 }
 function visible(seq: number): WireItem | undefined {
-  const item = items.get(seq), filter = threadFilter();
-  if (!item || item.kind === 'annotations' || item.kind === 'threads') return item;
+  const item = items.get(seq), filter = topicFilter();
+  if (!item || item.kind === 'annotations' || item.kind === 'topics') return item;
   if (projections.has(seq)) return projections.get(seq);
-  const names = threadItems.get(seq)?.threads ?? [];
+  const names = topicItems.get(seq)?.topics ?? [];
   let projected: WireItem | undefined;
   if (!filter) {
-    if ((item.kind === 'agent' || item.kind === 'job') && !item.thread && names[0]) { const projected = { ...item, thread: names[0] }; projections.set(seq, projected); return projected; }
-    if (item.kind !== 'assistant' || !names[0] || item.blocks.every(block => block.thread)) return item;
-    projected = { ...item, blocks: item.blocks.map(block => block.thread ? block : { ...block, thread: names[0] }) };
+    if ((item.kind === 'agent' || item.kind === 'job') && !item.topic && names[0]) { const projected = { ...item, topic: names[0] }; projections.set(seq, projected); return projected; }
+    if (item.kind !== 'assistant' || !names[0] || item.blocks.every(block => block.topic)) return item;
+    projected = { ...item, blocks: item.blocks.map(block => block.topic ? block : { ...block, topic: names[0] }) };
   } else if (item.kind === 'assistant') {
-    const matches = (block: Block, index: number) => (block.type === 'text' ? block.thread ?? names[0] : runThread({ kind: 'block', seq, index })) === filter;
-    const error = item.error && runThread({ kind: 'item', seq }) === filter ? item.error : '';
-    if (item.blocks.some(matches) || error) projected = { ...item, error, blocks: item.blocks.map((block, index) => matches(block, index) ? block.thread ? block : { ...block, thread: names[0] } : { type: 'text', text: '' }) };
+    const matches = (block: Block, index: number) => (block.type === 'text' ? block.topic ?? names[0] : runTopic({ kind: 'block', seq, index })) === filter;
+    const error = item.error && runTopic({ kind: 'item', seq }) === filter ? item.error : '';
+    if (item.blocks.some(matches) || error) projected = { ...item, error, blocks: item.blocks.map((block, index) => matches(block, index) ? block.topic ? block : { ...block, topic: names[0] } : { type: 'text', text: '' }) };
   } else if (item.kind === 'agent' || item.kind === 'job' || noticeOf(item)) {
-    if (runThread({ kind: 'item', seq }) === filter) projected = item;
-  } else if (item.kind === 'user' && (item.thread ? item.thread === filter : names.includes(filter)) || waitingForThread(item)) projected = item;
+    if (runTopic({ kind: 'item', seq }) === filter) projected = item;
+  } else if (item.kind === 'user' && (item.topic ? item.topic === filter : names.includes(filter)) || waitingForTopic(item)) projected = item;
   projections.set(seq, projected);
   return projected;
 }
-function refreshThreadItems() {
-  runThreads = undefined;
+function refreshTopicItems() {
+  runTopics = undefined;
   projections.clear(); segmentCache.clear(); owners.clear(); find = undefined; selected = undefined;
   order.length = 0; extents.clear(); table = undefined;
   for (const seq of items.keys()) { if (visible(seq)) order.splice(orderIndex(seq), 0, seq); dirty.add(seq); }
   for (const seq of views.keys()) if (!visible(seq)) unmountRow(seq);
   windowDirty = true; schedule();
 }
-function setThread(name: ThreadName | undefined) {
-  const previous = threadFilter(), next = previous === name ? undefined : name;
-  if (!next && previous && composerThreadName() === previous) composerThreads.set(filterKey(), { type: 'dropped' });
-  if (next) { composerThreads.set(filterKey(), { type: 'thread', name: next }); if (threadNaming?.target.kind === 'composer') threadNaming = undefined; }
-  updateThreadFilter(next);
+function setTopic(name: TopicName | undefined) {
+  const previous = topicFilter(), next = previous === name ? undefined : name;
+  if (!next && previous && composerTopicName() === previous) composerTopics.set(filterKey(), { type: 'dropped' });
+  if (next) { composerTopics.set(filterKey(), { type: 'topic', name: next }); if (topicNaming?.target.kind === 'composer') topicNaming = undefined; }
+  updateTopicFilter(next);
 }
-function updateThreadFilter(name: ThreadName | undefined) {
-  clearTimeout(threadClick); threadClick = undefined;
-  if (name) threadFilters.set(filterKey(), name); else threadFilters.delete(filterKey());
+function updateTopicFilter(name: TopicName | undefined) {
+  clearTimeout(topicClick); topicClick = undefined;
+  if (name) topicFilters.set(filterKey(), name); else topicFilters.delete(filterKey());
   historyRequest = undefined; historyBefore = undefined;
-  closeThreads(); refreshThreadItems(); renderThreads(); refreshComposer();
+  closeTopics(); refreshTopicItems(); renderTopics(); refreshComposer();
   enqueue({ type: 'filter', active: name !== undefined });
   for (const seq of items.keys()) changedItem(seq, false);
-  if (epoch) void reloadThread();
+  if (epoch) void reloadTopic();
 }
-function threadColour(name?: ThreadName): string {
-  const threads = 'threads' in state ? state.threads : [], index = threads.findIndex(thread => thread.name === name);
-  return `var(--thread-${(index < 0 ? threads.length : index) % 6})`;
+function topicColour(name?: TopicName): string {
+  const topics = 'topics' in state ? state.topics : [], index = topics.findIndex(topic => topic.name === name);
+  return `var(--topic-${(index < 0 ? topics.length : index) % 6})`;
 }
-function threadName(name: ThreadName) {
-  const label = node('span', undefined, 'thread-name'); label.dataset.thread = name; label.title = name;
-  label.style.setProperty('--thread-color', threadColour(name));
-  label.append(node('span', '#', 'thread-hash'), node('span', name));
+function topicName(name: TopicName) {
+  const label = node('span', undefined, 'topic-name'); label.dataset.topic = name; label.title = name;
+  label.style.setProperty('--topic-color', topicColour(name));
+  label.append(node('span', '#', 'topic-hash'), node('span', name));
   return label;
 }
-function composerThreadName(): ThreadName | undefined {
+function composerTopicName(): TopicName | undefined {
   if (state.view.type !== 'root') return undefined;
-  const choice = composerThreads.get(filterKey());
-  return choice ? choice.type === 'thread' ? choice.name : undefined : threadFilter();
+  const choice = composerTopics.get(filterKey());
+  return choice ? choice.type === 'topic' ? choice.name : undefined : topicFilter();
 }
-function setComposerThread(name: ThreadName | undefined) {
-  if (threadNaming?.target.kind === 'composer') threadNaming = undefined;
-  composerThreads.set(filterKey(), name ? { type: 'thread', name } : { type: 'dropped' });
+function setComposerTopic(name: TopicName | undefined) {
+  if (topicNaming?.target.kind === 'composer') topicNaming = undefined;
+  composerTopics.set(filterKey(), name ? { type: 'topic', name } : { type: 'dropped' });
   refreshComposer();
 }
-type ThreadNamingTarget = { kind: 'composer' } | { kind: 'message'; seq: number; key: string };
-let threadNaming: { target: ThreadNamingTarget; scope: string; sessionId: string | undefined; chip: HTMLElement; input: HTMLInputElement } | undefined;
-function newThreadChip(target: ThreadNamingTarget) {
-  const chip = node('span', undefined, 'thread-chip thread-new'); chip.append(node('span', '+', 'thread-hash'), node('span', 'thread'));
-  chip.setAttribute('role', 'button'); chip.tabIndex = -1; chip.setAttribute('aria-label', 'Name a thread');
-  chip.onclick = () => startThreadNaming(chip, target);
-  chip.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); startThreadNaming(chip, target); } };
+type TopicNamingTarget = { kind: 'composer' } | { kind: 'message'; seq: number; key: string };
+let topicNaming: { target: TopicNamingTarget; scope: string; sessionId: string | undefined; chip: HTMLElement; input: HTMLInputElement } | undefined;
+function newTopicChip(target: TopicNamingTarget) {
+  const chip = node('span', undefined, 'topic-chip topic-new'); chip.append(node('span', '+', 'topic-hash'), node('span', 'topic'));
+  chip.setAttribute('role', 'button'); chip.tabIndex = -1; chip.setAttribute('aria-label', 'Name a topic');
+  chip.onclick = () => startTopicNaming(chip, target);
+  chip.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); startTopicNaming(chip, target); } };
   return chip;
 }
-function finishThreadNaming(commit: boolean) {
-  const naming = threadNaming;
+function finishTopicNaming(commit: boolean) {
+  const naming = topicNaming;
   if (!naming) return;
-  const name = commit ? parseThreadName(naming.input.value) : undefined;
+  const name = commit ? parseTopicName(naming.input.value) : undefined;
   if (commit && !name) { naming.input.focus(); return; }
-  threadNaming = undefined;
-  naming.chip.replaceWith(newThreadChip(naming.target));
+  topicNaming = undefined;
+  naming.chip.replaceWith(newTopicChip(naming.target));
   if (naming.scope !== filterKey()) return;
-  if (naming.target.kind === 'composer') { setComposerThread(name); editor.focus(); }
-  else if (name) void fetchJSON('/messages/thread', { sessionId: naming.sessionId, seq: naming.target.seq, thread: name }).catch(reportError);
+  if (naming.target.kind === 'composer') { setComposerTopic(name); editor.focus(); }
+  else if (name) void fetchJSON('/messages/topic', { sessionId: naming.sessionId, seq: naming.target.seq, topic: name }).catch(reportError);
 }
-function startThreadNaming(plus: HTMLElement, target: ThreadNamingTarget) {
-  finishThreadNaming(false);
-  const chip = node('span', undefined, 'thread-chip thread-naming'), input = node('input', undefined, 'thread-input');
-  input.placeholder = 'thread name'; input.maxLength = 200; input.spellcheck = false; input.setAttribute('aria-label', 'Thread name');
+function startTopicNaming(plus: HTMLElement, target: TopicNamingTarget) {
+  finishTopicNaming(false);
+  const chip = node('span', undefined, 'topic-chip topic-naming'), input = node('input', undefined, 'topic-input');
+  input.placeholder = 'topic name'; input.maxLength = 200; input.spellcheck = false; input.setAttribute('aria-label', 'Topic name');
   const colour = () => {
-    chip.style.setProperty('--thread-color', threadColour(parseThreadName(input.value)));
+    chip.style.setProperty('--topic-color', topicColour(parseTopicName(input.value)));
     input.style.width = Math.max(6, input.value.length || input.placeholder.length) + 'ch';
   };
   input.oninput = colour; colour();
   input.onkeydown = event => {
     event.stopPropagation();
     if (event.isComposing) return;
-    if (event.key === 'Enter' || event.key === 'Tab' && target.kind === 'composer') { event.preventDefault(); finishThreadNaming(true); }
-    else if (event.key === 'Escape') { event.preventDefault(); finishThreadNaming(false); }
+    if (event.key === 'Enter' || event.key === 'Tab' && target.kind === 'composer') { event.preventDefault(); finishTopicNaming(true); }
+    else if (event.key === 'Escape') { event.preventDefault(); finishTopicNaming(false); }
   };
-  const cancel = node('button', '×', 'thread-clear'); cancel.type = 'button'; cancel.setAttribute('aria-label', 'Cancel thread name'); cancel.onclick = () => finishThreadNaming(false);
-  chip.append(node('span', '#', 'thread-hash'), input, cancel); plus.replaceWith(chip);
-  threadNaming = { target, scope: filterKey(), sessionId: state.sessionId, chip, input }; input.focus();
+  const cancel = node('button', '×', 'topic-clear'); cancel.type = 'button'; cancel.setAttribute('aria-label', 'Cancel topic name'); cancel.onclick = () => finishTopicNaming(false);
+  chip.append(node('span', '#', 'topic-hash'), input, cancel); plus.replaceWith(chip);
+  topicNaming = { target, scope: filterKey(), sessionId: state.sessionId, chip, input }; input.focus();
 }
-function threadChip(name: ThreadName, clear = false) {
-  const mark = node('span', undefined, 'thread-chip');
-  mark.dataset.thread = name;
-  mark.style.setProperty('--thread-color', threadColour(name));
-  mark.title = name; mark.append(threadName(name));
+function topicChip(name: TopicName, clear = false) {
+  const mark = node('span', undefined, 'topic-chip');
+  mark.dataset.topic = name;
+  mark.style.setProperty('--topic-color', topicColour(name));
+  mark.title = name; mark.append(topicName(name));
   if (clear) {
-    const button = node('button', '×', 'thread-clear'); button.type = 'button'; button.setAttribute('aria-label', 'Drop composer thread'); button.onclick = () => setComposerThread(undefined); mark.append(button);
+    const button = node('button', '×', 'topic-clear'); button.type = 'button'; button.setAttribute('aria-label', 'Drop composer topic'); button.onclick = () => setComposerTopic(undefined); mark.append(button);
   } else {
     mark.setAttribute('role', 'button'); mark.tabIndex = -1;
-    mark.setAttribute('aria-label', 'Compose in thread ' + name); mark.onclick = () => setComposerThread(name);
-    mark.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setComposerThread(name); } };
+    mark.setAttribute('aria-label', 'Compose in topic ' + name); mark.onclick = () => setComposerTopic(name);
+    mark.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setComposerTopic(name); } };
   }
   return mark;
 }
-function messageHeader(name: ThreadName | undefined, at?: number, target?: Extract<ThreadNamingTarget, { kind: 'message' }>) {
-  if (target && threadNaming?.scope === filterKey() && threadNaming.target.kind === 'message' && threadNaming.target.key === target.key && threadNaming.chip.parentElement?.classList.contains('message-header')) return threadNaming.chip.parentElement;
+function messageHeader(name: TopicName | undefined, at?: number, target?: Extract<TopicNamingTarget, { kind: 'message' }>) {
+  if (target && topicNaming?.scope === filterKey() && topicNaming.target.kind === 'message' && topicNaming.target.key === target.key && topicNaming.chip.parentElement?.classList.contains('message-header')) return topicNaming.chip.parentElement;
   const row = node('div', undefined, 'message-header');
-  if (name && !threadFilter() && state.view.type === 'root') row.append(threadChip(name));
-  if (target && state.view.type === 'root') row.append(threadNaming?.scope === filterKey() && threadNaming.target.kind === 'message' && threadNaming.target.key === target.key ? threadNaming.chip : newThreadChip(target));
+  if (name && !topicFilter() && state.view.type === 'root') row.append(topicChip(name));
+  if (target && state.view.type === 'root') row.append(topicNaming?.scope === filterKey() && topicNaming.target.kind === 'message' && topicNaming.target.key === target.key ? topicNaming.chip : newTopicChip(target));
   if (at !== undefined) { const time = node('time', timestamp(at)); time.dateTime = new Date(at).toISOString(); row.append(time); }
   return row;
 }
-let threadDragged = false;
-function dragThread(event: PointerEvent, source: HTMLElement, from: ThreadName) {
+let topicDragged = false;
+function dragTopic(event: PointerEvent, source: HTMLElement, from: TopicName) {
   if (event.button !== 0 || !event.isPrimary) return;
   const startX = event.clientX, startY = event.clientY;
   let dragging = false, target: HTMLElement | undefined, hovered: HTMLElement | undefined, eligible = false;
   const mark = (next: HTMLElement | undefined) => {
     target?.classList.remove('drop-target'); target?.style.removeProperty('--drop-color');
     target = next;
-    target?.style.setProperty('--drop-color', threadColour(from)); target?.classList.add('drop-target');
+    target?.style.setProperty('--drop-color', topicColour(from)); target?.classList.add('drop-target');
   };
   const move = (moved: PointerEvent) => {
     if (!dragging && Math.hypot(moved.clientX - startX, moved.clientY - startY) < 5) return;
-    if (!dragging) { dragging = true; source.classList.add('dragging'); document.body.classList.add('thread-dragging'); }
+    if (!dragging) { dragging = true; source.classList.add('dragging'); document.body.classList.add('topic-dragging'); }
     moved.preventDefault();
     const scroller = element('scroll').getBoundingClientRect();
     if (moved.clientX >= scroller.left && moved.clientX <= scroller.right) element('scroll').scrollBy(0, moved.clientY < scroller.top + 48 ? -24 : moved.clientY > scroller.bottom - 48 ? 24 : 0);
     const under = document.elementFromPoint(moved.clientX, moved.clientY);
-    const row = under?.closest<HTMLElement>('.thread-entry[data-thread]') ?? undefined;
+    const row = under?.closest<HTMLElement>('.topic-entry[data-topic]') ?? undefined;
     const message = row ? undefined : under?.closest<HTMLElement>('#items > [data-seq]') ?? undefined, item = message && items.get(Number(message.dataset.seq));
     if (message !== hovered) {
       hovered = message;
-      eligible = item?.kind === 'user' && item.thread !== from;
+      eligible = item?.kind === 'user' && item.topic !== from;
       if (item?.kind === 'assistant' && item.final) {
         let different = false, finished = true;
         for (const other of items.values()) {
           if (other.kind === 'user') {
             if (other.seq > item.seq) break;
-            different = other.thread !== from; finished = true;
+            different = other.topic !== from; finished = true;
           } else if (other.kind === 'assistant') {
-            different ||= other.blocks.some(block => block.thread !== from);
+            different ||= other.blocks.some(block => block.topic !== from);
             finished &&= other.final;
           }
         }
         eligible = different && finished;
       }
     }
-    mark(row ? row.dataset.thread !== from ? row : undefined : eligible ? message : undefined);
+    mark(row ? row.dataset.topic !== from ? row : undefined : eligible ? message : undefined);
   };
   const cancel = (key: KeyboardEvent) => { if (key.key === 'Escape') { key.preventDefault(); key.stopImmediatePropagation(); end(); } };
   const end = (ended?: PointerEvent) => {
     document.removeEventListener('keydown', cancel, true);
     document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', end); document.removeEventListener('pointercancel', end);
-    source.classList.remove('dragging'); document.body.classList.remove('thread-dragging');
+    source.classList.remove('dragging'); document.body.classList.remove('topic-dragging');
     const dropped = ended?.type === 'pointerup' ? target : undefined;
     mark(undefined);
     if (!dragging) return;
-    threadDragged = true; setTimeout(() => { threadDragged = false; });
-    const into = parseThreadName(dropped?.dataset.thread);
-    if (into) void moveThread(from, into);
-    else if (dropped?.dataset.seq !== undefined) fetchJSON('/messages/thread', { sessionId: state.sessionId, seq: Number(dropped.dataset.seq), thread: from }).catch(reportError);
+    topicDragged = true; setTimeout(() => { topicDragged = false; });
+    const into = parseTopicName(dropped?.dataset.topic);
+    if (into) void moveTopic(from, into);
+    else if (dropped?.dataset.seq !== undefined) fetchJSON('/messages/topic', { sessionId: state.sessionId, seq: Number(dropped.dataset.seq), topic: from }).catch(reportError);
   };
   document.addEventListener('keydown', cancel, true);
   document.addEventListener('pointermove', move); document.addEventListener('pointerup', end); document.addEventListener('pointercancel', end);
 }
-async function moveThread(from: ThreadName, to: ThreadName) {
+async function moveTopic(from: TopicName, to: TopicName) {
   try {
-    const scope = filterKey(), filter = threadFilter();
-    await fetchJSON('/threads/move', { sessionId: state.sessionId, from, to });
-    const choice = composerThreads.get(scope);
-    if ((choice?.type === 'thread' ? choice.name : choice ? undefined : threadFilters.get(scope)) === from) composerThreads.set(scope, { type: 'thread', name: to });
-    if (filter === from && threadFilters.get(scope) === from) {
-      if (filterKey() === scope) updateThreadFilter(to);
-      else threadFilters.set(scope, to);
+    const scope = filterKey(), filter = topicFilter();
+    await fetchJSON('/topics/move', { sessionId: state.sessionId, from, to });
+    const choice = composerTopics.get(scope);
+    if ((choice?.type === 'topic' ? choice.name : choice ? undefined : topicFilters.get(scope)) === from) composerTopics.set(scope, { type: 'topic', name: to });
+    if (filter === from && topicFilters.get(scope) === from) {
+      if (filterKey() === scope) updateTopicFilter(to);
+      else topicFilters.set(scope, to);
     } else if (filterKey() === scope) refreshComposer();
   } catch (error) { reportError(error); }
 }
-let renaming = false, threadClick: number | undefined;
-function clickThread(event: MouseEvent, entry: HTMLElement, name: ThreadName) {
-  if (threadDragged || renaming) return;
-  clearTimeout(threadClick);
-  if (event.detail === 0) setThread(name);
-  else if (event.detail === 1) { const scope = filterKey(); threadClick = setTimeout(() => { threadClick = undefined; if (filterKey() === scope) setThread(name); }, 250); }
-  else renameThread(entry, name);
+let renaming = false, topicClick: number | undefined;
+function clickTopic(event: MouseEvent, entry: HTMLElement, name: TopicName) {
+  if (topicDragged || renaming) return;
+  clearTimeout(topicClick);
+  if (event.detail === 0) setTopic(name);
+  else if (event.detail === 1) { const scope = filterKey(); topicClick = setTimeout(() => { topicClick = undefined; if (filterKey() === scope) setTopic(name); }, 250); }
+  else renameTopic(entry, name);
 }
-function renameThread(entry: HTMLElement, name: ThreadName) {
-  const label = entry.querySelector('.thread-name');
+function renameTopic(entry: HTMLElement, name: TopicName) {
+  const label = entry.querySelector('.topic-name');
   if (!label) return;
   renaming = true;
-  const input = node('input', undefined, 'thread-rename');
-  input.value = name; input.spellcheck = false; input.setAttribute('aria-label', 'Thread name');
+  const input = node('input', undefined, 'topic-rename');
+  input.value = name; input.spellcheck = false; input.setAttribute('aria-label', 'Topic name');
   let done = false;
   const finish = (commit: boolean) => {
     if (done) return;
     done = true; renaming = false;
-    const to = commit ? parseThreadName(input.value.slice(0, 200)) : undefined;
-    renderThreads();
-    if (to && to !== name) void moveThread(name, to);
+    const to = commit ? parseTopicName(input.value.slice(0, 200)) : undefined;
+    renderTopics();
+    if (to && to !== name) void moveTopic(name, to);
   };
   input.onkeydown = event => {
     event.stopPropagation();
@@ -348,104 +348,104 @@ function renameThread(entry: HTMLElement, name: ThreadName) {
   input.onclick = event => event.stopPropagation();
   input.onblur = () => finish(true);
   const row = node('div', undefined, entry.className + ' renaming');
-  const hash = node('span', '#', 'thread-name'); hash.style.setProperty('--thread-color', threadColour(name));
+  const hash = node('span', '#', 'topic-name'); hash.style.setProperty('--topic-color', topicColour(name));
   row.append(hash, input);
   entry.replaceWith(row);
   input.focus(); input.select();
 }
-function threadMode(paneWidth: number, transcriptWidth: number, cellWidth: number): 'line' | 'block' {
+function topicMode(paneWidth: number, transcriptWidth: number, cellWidth: number): 'line' | 'block' {
   return paneWidth - transcriptWidth - 28 >= 30 * cellWidth ? 'block' : 'line';
 }
-function toggleThreads() {
-  if (element('threads').dataset.mode === 'block') return;
-  const panel = element('threads').querySelector<HTMLElement>('.thread-panel');
-  if (panel) { const open = panel.hidden; renderThreads(); const current = element('threads').querySelector<HTMLElement>('.thread-panel'); if (current) current.hidden = !open; element('threads').querySelector(threadFilter() ? '.thread-open' : '.thread-overflow')?.setAttribute('aria-expanded', String(open)); }
+function toggleTopics() {
+  if (element('topics').dataset.mode === 'block') return;
+  const panel = element('topics').querySelector<HTMLElement>('.topic-panel');
+  if (panel) { const open = panel.hidden; renderTopics(); const current = element('topics').querySelector<HTMLElement>('.topic-panel'); if (current) current.hidden = !open; element('topics').querySelector(topicFilter() ? '.topic-open' : '.topic-overflow')?.setAttribute('aria-expanded', String(open)); }
 }
-function closeThreads() {
-  const panel = element('threads').querySelector<HTMLElement>('.thread-panel');
-  if (panel && element('threads').dataset.mode !== 'block') panel.hidden = true;
-  element('threads').querySelector(threadFilter() ? '.thread-open' : '.thread-overflow')?.setAttribute('aria-expanded', 'false');
+function closeTopics() {
+  const panel = element('topics').querySelector<HTMLElement>('.topic-panel');
+  if (panel && element('topics').dataset.mode !== 'block') panel.hidden = true;
+  element('topics').querySelector(topicFilter() ? '.topic-open' : '.topic-overflow')?.setAttribute('aria-expanded', 'false');
 }
-function threadAge(at: number, now: number): string {
+function topicAge(at: number, now: number): string {
   const minutes = Math.max(0, Math.floor((now - at) / 60000));
   return minutes < 1 ? 'now' : minutes < 60 ? minutes + 'm' : minutes < 1440 ? Math.floor(minutes / 60) + 'h' : Math.floor(minutes / 1440) + 'd';
 }
-function fitThreads(width = document.documentElement.clientWidth) {
-  const capsule = threadCapsule;
+function fitTopics(width = document.documentElement.clientWidth) {
+  const capsule = topicCapsule;
   if (!capsule || capsule.selected || capsule.width === width) return;
-  const button = capsule.view.querySelector<HTMLElement>('.thread-open');
+  const button = capsule.view.querySelector<HTMLElement>('.topic-open');
   if (!button) return;
   button.classList.remove('single');
   for (let count = Math.max(1, capsule.names.length); count >= 1; count--) {
     const children: HTMLElement[] = [];
     for (const name of capsule.names.slice(0, count)) {
-      if (children.length) children.push(node('span', '·', 'thread-separator'));
-      const label = threadName(name); label.setAttribute('role', 'button'); label.tabIndex = -1;
-      label.onclick = () => setThread(name);
-      label.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setThread(name); } };
+      if (children.length) children.push(node('span', '·', 'topic-separator'));
+      const label = topicName(name); label.setAttribute('role', 'button'); label.tabIndex = -1;
+      label.onclick = () => setTopic(name);
+      label.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setTopic(name); } };
       children.push(label);
     }
-    if (count < capsule.names.length) children.push(node('span', '·', 'thread-separator'), node('span', '+' + (capsule.names.length - count), 'thread-more'));
-    const more = node('button', '…', 'thread-overflow'); more.type = 'button'; more.setAttribute('aria-label', 'Choose thread'); more.setAttribute('aria-expanded', String(element('threads').querySelector<HTMLElement>('.thread-panel')?.hidden === false)); more.onclick = toggleThreads;
+    if (count < capsule.names.length) children.push(node('span', '·', 'topic-separator'), node('span', '+' + (capsule.names.length - count), 'topic-more'));
+    const more = node('button', '…', 'topic-overflow'); more.type = 'button'; more.setAttribute('aria-label', 'Choose topic'); more.setAttribute('aria-expanded', String(element('topics').querySelector<HTMLElement>('.topic-panel')?.hidden === false)); more.onclick = toggleTopics;
     children.push(more); button.replaceChildren(...children);
     const measured = button.scrollWidth + capsule.view.getBoundingClientRect().width - button.getBoundingClientRect().width;
     if (measured <= Math.max(0, width - 16) || count === 1) { button.classList.toggle('single', count === 1); break; }
   }
   capsule.width = width;
 }
-function renderThreads() {
+function renderTopics() {
   if (renaming) return;
-  const host = element('threads'), filter = threadFilter();
-  host.hidden = state.view.type !== 'root' || !('threads' in state) || !state.threads.length;
+  const host = element('topics'), filter = topicFilter();
+  host.hidden = state.view.type !== 'root' || !('topics' in state) || !state.topics.length;
   const column = element('transcript').getBoundingClientRect(), width = document.documentElement.clientWidth;
-  const mode = threadMode(width, column.width, threadMeasure.getBoundingClientRect().width);
+  const mode = topicMode(width, column.width, topicMeasure.getBoundingClientRect().width);
   const previousMode = host.dataset.mode; host.dataset.mode = mode;
-  document.body.classList.toggle('with-threads', !host.hidden && mode === 'line');
+  document.body.classList.toggle('with-topics', !host.hidden && mode === 'line');
   host.style.left = mode === 'block' ? column.left + column.width + 20 + 'px' : '';
   host.style.width = mode === 'block' ? Math.min(360, width - column.width - 28) + 'px' : '';
-  if (!('threads' in state) || host.hidden) { host.replaceChildren(); threadCapsule = undefined; return; }
-  const previousPanel = host.querySelector<HTMLElement>('.thread-panel'), open = previousMode === 'line' && previousPanel?.hidden === false;
+  if (!('topics' in state) || host.hidden) { host.replaceChildren(); topicCapsule = undefined; return; }
+  const previousPanel = host.querySelector<HTMLElement>('.topic-panel'), open = previousMode === 'line' && previousPanel?.hidden === false;
   const scrollTop = previousPanel?.scrollTop ?? 0;
-  const threads = state.threads.map((thread, index) => ({ ...thread, index })).sort((a, b) => Number(!!a.archived) - Number(!!b.archived) || (a.last && b.last ? b.last.at - a.last.at || b.index - a.index : a.last ? 1 : b.last ? -1 : b.index - a.index));
-  const names = threads.filter(thread => !thread.archived).map(thread => thread.name), changed = !threadCapsule || threadCapsule.selected !== filter || names.length !== threadCapsule.names.length || names.some((name, index) => name !== threadCapsule?.names[index]);
-  if (mode === 'block') threadCapsule = undefined;
+  const topics = state.topics.map((topic, index) => ({ ...topic, index })).sort((a, b) => Number(!!a.archived) - Number(!!b.archived) || (a.last && b.last ? b.last.at - a.last.at || b.index - a.index : a.last ? 1 : b.last ? -1 : b.index - a.index));
+  const names = topics.filter(topic => !topic.archived).map(topic => topic.name), changed = !topicCapsule || topicCapsule.selected !== filter || names.length !== topicCapsule.names.length || names.some((name, index) => name !== topicCapsule?.names[index]);
+  if (mode === 'block') topicCapsule = undefined;
   else if (changed) {
-    const capsule = node('div', undefined, 'thread-capsule'), button = node(filter ? 'button' : 'div', undefined, 'thread-open');
-    button.setAttribute('aria-label', 'Threads');
-    if (filter) { button.setAttribute('type', 'button'); button.onclick = toggleThreads; }
-    if (filter) { button.classList.add('single'); const label = threadName(filter); label.classList.toggle('archived', !!state.threads.find(thread => thread.name === filter)?.archived); button.append(label); }
+    const capsule = node('div', undefined, 'topic-capsule'), button = node(filter ? 'button' : 'div', undefined, 'topic-open');
+    button.setAttribute('aria-label', 'Topics');
+    if (filter) { button.setAttribute('type', 'button'); button.onclick = toggleTopics; }
+    if (filter) { button.classList.add('single'); const label = topicName(filter); label.classList.toggle('archived', !!state.topics.find(topic => topic.name === filter)?.archived); button.append(label); }
     capsule.append(button);
-    if (filter) { const clear = node('button', '×', 'thread-clear'); clear.type = 'button'; clear.setAttribute('aria-label', 'All threads'); clear.onclick = () => setThread(undefined); capsule.append(clear); }
-    threadCapsule = { view: capsule, names, selected: filter };
+    if (filter) { const clear = node('button', '×', 'topic-clear'); clear.type = 'button'; clear.setAttribute('aria-label', 'All topics'); clear.onclick = () => setTopic(undefined); capsule.append(clear); }
+    topicCapsule = { view: capsule, names, selected: filter };
   }
-  const capsule = threadCapsule?.view;
-  if (filter) capsule?.querySelector('.thread-open')?.setAttribute('aria-expanded', String(open));
-  const panel = node('div', undefined, 'thread-panel'); panel.hidden = mode === 'line' && !open; panel.setAttribute('aria-label', 'Choose thread');
-  for (const thread of threads) {
-    const entry = node('div', undefined, 'thread-entry'); entry.setAttribute('role', 'button'); entry.tabIndex = -1; entry.dataset.thread = thread.name;
-    entry.classList.toggle('archived', !!thread.archived);
-    entry.classList.toggle('current', thread.name === filter); entry.setAttribute('aria-pressed', String(thread.name === filter));
-    const label = threadName(thread.name); label.classList.add('thread-toggle'); entry.append(label);
-    const age = node('span', undefined, 'thread-age');
-    if (thread.last) {
-      const time = node('time', threadAge(thread.last.at, Date.now())); time.dateTime = new Date(thread.last.at).toISOString();
-      entry.append(node('span', markdownLine(thread.last.summary), 'thread-summary')); age.append(time);
+  const capsule = topicCapsule?.view;
+  if (filter) capsule?.querySelector('.topic-open')?.setAttribute('aria-expanded', String(open));
+  const panel = node('div', undefined, 'topic-panel'); panel.hidden = mode === 'line' && !open; panel.setAttribute('aria-label', 'Choose topic');
+  for (const topic of topics) {
+    const entry = node('div', undefined, 'topic-entry'); entry.setAttribute('role', 'button'); entry.tabIndex = -1; entry.dataset.topic = topic.name;
+    entry.classList.toggle('archived', !!topic.archived);
+    entry.classList.toggle('current', topic.name === filter); entry.setAttribute('aria-pressed', String(topic.name === filter));
+    const label = topicName(topic.name); label.classList.add('topic-toggle'); entry.append(label);
+    const age = node('span', undefined, 'topic-age');
+    if (topic.last) {
+      const time = node('time', topicAge(topic.last.at, Date.now())); time.dateTime = new Date(topic.last.at).toISOString();
+      entry.append(node('span', markdownLine(topic.last.summary), 'topic-summary')); age.append(time);
     }
-    const archive = node('button', thread.archived ? '↺' : '×', 'thread-archive'); archive.type = 'button'; archive.setAttribute('aria-label', thread.archived ? 'Restore thread' : 'Archive thread');
-    archive.onpointerdown = event => { if (threadNaming?.target.kind === 'message') finishThreadNaming(false); event.stopPropagation(); };
-    archive.onclick = event => { event.stopPropagation(); void fetchJSON('/threads/archive', { sessionId: state.sessionId, name: thread.name, archived: !thread.archived }).catch(reportError); };
+    const archive = node('button', topic.archived ? '↺' : '×', 'topic-archive'); archive.type = 'button'; archive.setAttribute('aria-label', topic.archived ? 'Restore topic' : 'Archive topic');
+    archive.onpointerdown = event => { if (topicNaming?.target.kind === 'message') finishTopicNaming(false); event.stopPropagation(); };
+    archive.onclick = event => { event.stopPropagation(); void fetchJSON('/topics/archive', { sessionId: state.sessionId, name: topic.name, archived: !topic.archived }).catch(reportError); };
     age.append(archive); entry.append(age);
-    entry.onkeydown = event => { if (event.target === entry && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setThread(thread.name); } };
-    entry.onpointerdown = event => dragThread(event, entry, thread.name);
-    entry.onclick = event => clickThread(event, entry, thread.name); panel.append(entry);
+    entry.onkeydown = event => { if (event.target === entry && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setTopic(topic.name); } };
+    entry.onpointerdown = event => dragTopic(event, entry, topic.name);
+    entry.onclick = event => clickTopic(event, entry, topic.name); panel.append(entry);
   }
-  if (filter) { const all = node('button', 'All threads', 'thread-entry thread-all'); all.type = 'button'; all.onclick = () => setThread(undefined); panel.append(all); }
+  if (filter) { const all = node('button', 'All topics', 'topic-entry topic-all'); all.type = 'button'; all.onclick = () => setTopic(undefined); panel.append(all); }
   host.replaceChildren(...(capsule ? [capsule, panel] : [panel]));
   if (open || previousMode === 'block' && mode === 'block') panel.scrollTop = scrollTop;
-  if (capsule && !filter) fitThreads();
-  for (const mark of [...element('items').querySelectorAll<HTMLElement>('.thread-chip,.thread-name'), ...host.querySelectorAll<HTMLElement>('.thread-name')]) {
-    const thread = state.threads.find(thread => thread.name === mark.dataset.thread);
-    if (thread) mark.style.setProperty('--thread-color', threadColour(thread.name));
+  if (capsule && !filter) fitTopics();
+  for (const mark of [...element('items').querySelectorAll<HTMLElement>('.topic-chip,.topic-name'), ...host.querySelectorAll<HTMLElement>('.topic-name')]) {
+    const topic = state.topics.find(topic => topic.name === mark.dataset.topic);
+    if (topic) mark.style.setProperty('--topic-color', topicColour(topic.name));
   }
 }
 let scrolling = scrollInitial({ view: '', sessionId: undefined }, memory?.scroll);
@@ -456,7 +456,7 @@ let dockHeight = 0;
 let epoch = '', after = -1, first: number | undefined, more = false, delay = 200;
 let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
-let historyRequest: { before: number; thread?: ThreadName; patches: Patch[]; done: Promise<void> } | undefined;
+let historyRequest: { before: number; topic?: TopicName; patches: Patch[]; done: Promise<void> } | undefined;
 let editorOpening = false;
 const draft = attach(element('attachments'), () => refreshComposer(), () => state.edit ? 'editing' : editor.bash() ? 'command' : undefined);
 const pendingBash = new Map<string, ReturnType<typeof commandRun>>();
@@ -1201,12 +1201,12 @@ function commandNotice(item: Pick<Extract<WireItem, { kind: 'command' }>, 'seq' 
 }
 function accept(item: WireItem) {
   const old = items.get(item.seq), previous = visible(item.seq);
-  const priorInput = !old && threadFilter() && (item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') ? latestThreadInput() : undefined;
-  const rawKey = runParts(item, item).map(part => part.kind === 'boundary' ? 'boundary' : part.kind + ':' + sourceKey(part.source) + ':' + (part.step.kind === 'block' ? part.step.block.thread ?? threadItems.get(item.seq)?.threads[0] ?? '' : part.step.kind === 'agent' || part.step.kind === 'job' ? part.step.item.thread ?? '' : '')).join('|') + ':' + (item.kind === 'assistant' ? item.blocks.filter(visibleText).map(block => block.thread ?? threadItems.get(item.seq)?.threads[0] ?? '').join('|') : item.kind === 'user' ? item.thread ?? threadItems.get(item.seq)?.threads.join('|') ?? '' : '');
+  const priorInput = !old && topicFilter() && (item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') ? latestTopicInput() : undefined;
+  const rawKey = runParts(item, item).map(part => part.kind === 'boundary' ? 'boundary' : part.kind + ':' + sourceKey(part.source) + ':' + (part.step.kind === 'block' ? part.step.block.topic ?? topicItems.get(item.seq)?.topics[0] ?? '' : part.step.kind === 'agent' || part.step.kind === 'job' ? part.step.item.topic ?? '' : '')).join('|') + ':' + (item.kind === 'assistant' ? item.blocks.filter(visibleText).map(block => block.topic ?? topicItems.get(item.seq)?.topics[0] ?? '').join('|') : item.kind === 'user' ? item.topic ?? topicItems.get(item.seq)?.topics.join('|') ?? '' : '');
   const changedRun = runKeys.get(item.seq) !== rawKey;
   runKeys.set(item.seq, rawKey);
   items.set(item.seq, item);
-  if (changedRun) runThreads = undefined;
+  if (changedRun) runTopics = undefined;
   if (old !== item || changedRun) projections.delete(item.seq);
   const shown = visible(item.seq);
   if (shown && !previous) order.splice(orderIndex(item.seq), 0, item.seq);
@@ -1223,13 +1223,13 @@ function accept(item: WireItem) {
   windowDirty = true;
   if (item.kind === 'assistant' && !item.final || item.kind === 'command' && item.result.type === 'compaction' && item.result.state.type === 'running') live.add(item.seq); else live.delete(item.seq);
   first = first === undefined ? item.seq : Math.min(first, item.seq);
-  if (item.kind === 'threads') {
-    const previous = threadItems.get(item.target);
+  if (item.kind === 'topics') {
+    const previous = topicItems.get(item.target);
     if (!previous || previous.seq < item.seq) {
       projections.set(item.target, visible(item.target));
-      threadItems.set(item.target, item);
+      topicItems.set(item.target, item);
       const target = items.get(item.target);
-      if (target && (!previous || previous.threads.length !== item.threads.length || previous.threads.some((name, index) => name !== item.threads[index]))) {
+      if (target && (!previous || previous.topics.length !== item.topics.length || previous.topics.some((name, index) => name !== item.topics[index]))) {
         accept({ ...target }); changedItem(target.seq, false);
       }
     }
@@ -1250,7 +1250,7 @@ function accept(item: WireItem) {
     if (seq > item.seq) dirty.add(seq);
   }
   if (priorInput?.kind === 'user' && priorInput.seq !== item.seq) accept({ ...priorInput });
-  if (threadFilter() && changedRun) {
+  if (topicFilter() && changedRun) {
     let from = item.seq, to = item.seq;
     while (from > 0) {
       const previous = items.get(from - 1); if (!previous) break;
@@ -1278,7 +1278,7 @@ function syncChildren(parent: HTMLElement, children: HTMLElement[]) {
   while (parent.childNodes.length > children.length) { const extra = parent.lastChild; if (extra) unwatch(extra); extra?.remove(); }
 }
 function renderItem(item: WireItem) {
-  const previous = views.get(item.seq), warning = pathWarnings.get(item.seq), filter = threadFilter();
+  const previous = views.get(item.seq), warning = pathWarnings.get(item.seq), filter = topicFilter();
   const context = runContext(), runs = runParts(items.get(item.seq), item).map(part => part.kind === 'boundary' ? 'boundary' : part.kind + ':' + sourceKey(part.source) + ':' + (runOf(context, part.source) ? sourceKey(runOwner(context, part.source)) : '')).join('|');
   if (previous?.item === item && previous.warning === warning && previous.filter === filter && previous.runs === runs) return false;
   const view = previous?.view ?? node('div');
@@ -1287,7 +1287,7 @@ function renderItem(item: WireItem) {
   const ids = new Set(refs.map(ref => 'image:' + ref.id));
   const children: HTMLElement[] = [], slots = new Map([...previous?.slots ?? []].filter(([key]) => ids.has(key)));
   let steps: Step[] = [], parts = children;
-  let section: HTMLElement | undefined, sectionThread: ThreadName | undefined, hasHeader = false;
+  let section: HTMLElement | undefined, sectionTopic: TopicName | undefined, hasHeader = false;
   const finishSection = () => {
     if (section) syncChildren(section, parts);
     section = undefined; parts = children;
@@ -1300,29 +1300,29 @@ function renderItem(item: WireItem) {
     }
     steps = [];
   };
-  const startSection = (name: ThreadName | undefined, index: number) => {
-    if (filter) { if (section) { flush(); finishSection(); } sectionThread = undefined; return; }
-    if (section && sectionThread === name) return;
-    flush(); finishSection(); sectionThread = name;
+  const startSection = (name: TopicName | undefined, index: number) => {
+    if (filter) { if (section) { flush(); finishSection(); } sectionTopic = undefined; return; }
+    if (section && sectionTopic === name) return;
+    flush(); finishSection(); sectionTopic = name;
     section = [...previous?.view.children ?? []].find((child): child is HTMLElement => child instanceof HTMLElement && child.classList.contains('reply-section') && child.dataset.block === String(index));
     section ??= node('div', undefined, 'reply-section'); section.dataset.block = String(index);
     children.push(section); parts = [];
   };
   if (item.kind === 'assistant') {
-    if ((item.blocks.some(block => block.thread) || threadItems.get(item.seq)?.threads.length) && threadNaming?.target.kind === 'message' && threadNaming.target.seq === item.seq) finishThreadNaming(false);
+    if ((item.blocks.some(block => block.topic) || topicItems.get(item.seq)?.topics.length) && topicNaming?.target.kind === 'message' && topicNaming.target.seq === item.seq) finishTopicNaming(false);
     view.className = 'assistant';
     item.blocks.forEach((block, index) => {
       if (block.type === 'text' && !visibleText(block)) return;
       const previousStep = steps.at(-1), context = runContext();
       if (block.type === 'text' || previousStep?.kind === 'block' && sourceKey(runOwner(context, { kind: 'block', seq: item.seq, index })) !== sourceKey(runOwner(context, { kind: 'block', seq: item.seq, index: previousStep.index }))) flush();
-      if (block.type === 'text') startSection(block.thread, index);
+      if (block.type === 'text') startSection(block.topic, index);
       const key = item.seq + ':' + index;
       if (block.type === 'text') {
         flush();
         const message = prose(key, block.text, item.final || index < item.blocks.length - 1, annotationItems.get(item.seq)?.get(index), 'assistant');
         const header = message.querySelector('.message-header');
-        if (!header?.contains(threadNaming?.chip ?? null)) header?.remove();
-        if (!parts.some(part => part.classList.contains('msg'))) { if (!message.querySelector('.message-header')) message.prepend(messageHeader(block.thread, hasHeader ? undefined : item.at, item.blocks.some(block => block.thread) || threadItems.get(item.seq)?.threads.length ? undefined : { kind: 'message', seq: item.seq, key })); hasHeader = true; }
+        if (!header?.contains(topicNaming?.chip ?? null)) header?.remove();
+        if (!parts.some(part => part.classList.contains('msg'))) { if (!message.querySelector('.message-header')) message.prepend(messageHeader(block.topic, hasHeader ? undefined : item.at, item.blocks.some(block => block.topic) || topicItems.get(item.seq)?.topics.length ? undefined : { kind: 'message', seq: item.seq, key })); hasHeader = true; }
         parts.push(message);
       }
       else steps.push({ kind: 'block', block, item, key, index, slots });
@@ -1338,8 +1338,8 @@ function renderItem(item: WireItem) {
   } else {
     view.className = 'msg ' + item.kind;
     if (item.kind === 'user') {
-      const names = threadItems.get(item.seq)?.threads ?? [];
-      const header = messageHeader(item.thread ?? (names.length === 1 ? names[0] : undefined), item.at, item.thread || names.length ? undefined : { kind: 'message', seq: item.seq, key: item.seq + ':user' });
+      const names = topicItems.get(item.seq)?.topics ?? [];
+      const header = messageHeader(item.topic ?? (names.length === 1 ? names[0] : undefined), item.at, item.topic || names.length ? undefined : { kind: 'message', seq: item.seq, key: item.seq + ':user' });
       const text = node('div', undefined, 't'); text.append(prose(item.seq + ':user', item.text, true, undefined, 'user'));
       if (item.images.length) { const images = thumbnails(item.images, () => slots); images.load(); text.append(images.view); }
       const paths = item.attachments.filter(file => file.kind === 'file').map(file => file.path);
@@ -1351,7 +1351,7 @@ function renderItem(item: WireItem) {
       const slot: Slot = saved?.type === 'run' ? saved : { type: 'run', view: node('div') };
       slots.set(key, slot); children.push(slot.view);
     }
-    else if (item.kind === 'annotations' || item.kind === 'threads') { view.hidden = true; }
+    else if (item.kind === 'annotations' || item.kind === 'topics') { view.hidden = true; }
     else if (item.kind === 'bash') { view.className = ''; children.push(commandRun(item, 'bash:' + item.seq).view); }
     else { const row = noticeOf(item); view.className = ''; if (row) children.push(noticeRow(row)); }
   }
@@ -1642,15 +1642,15 @@ function refreshComposer() {
   editor.running(running);
   editor.readonly(editing());
   draft.refresh();
-  if (threadNaming && threadNaming.scope !== filterKey()) finishThreadNaming(false);
-  const thread = composerThreadName();
-  if (threadNaming?.target.kind !== 'composer' || !composerThread.contains(threadNaming.chip)) {
-    composerThread.remove(); composerThread.replaceChildren();
+  if (topicNaming && topicNaming.scope !== filterKey()) finishTopicNaming(false);
+  const topic = composerTopicName();
+  if (topicNaming?.target.kind !== 'composer' || !composerTopic.contains(topicNaming.chip)) {
+    composerTopic.remove(); composerTopic.replaceChildren();
     if (state.view.type === 'root') {
-      if (threadNaming?.target.kind === 'composer') composerThread.append(threadNaming.chip);
-      else if (thread) composerThread.append(threadChip(thread, true));
-      else composerThread.append(newThreadChip({ kind: 'composer' }));
-      element('field').prepend(composerThread);
+      if (topicNaming?.target.kind === 'composer') composerTopic.append(topicNaming.chip);
+      else if (topic) composerTopic.append(topicChip(topic, true));
+      else composerTopic.append(newTopicChip({ kind: 'composer' }));
+      element('field').prepend(composerTopic);
     }
   }
   const addressed = viewedName();
@@ -1754,7 +1754,7 @@ function queue() {
     close.onclick = () => {
       close.disabled = true;
       const origin = state.sessionId;
-      fetchJSON('/queue/remove', { sessionId: origin, kind, index, text: entry.text, ...(entry.thread ? { thread: entry.thread } : {}) }).catch(error => {
+      fetchJSON('/queue/remove', { sessionId: origin, kind, index, text: entry.text, ...(entry.topic ? { topic: entry.topic } : {}) }).catch(error => {
         const unsent = error?.body?.unsent;
         if (unsent && state.sessionId === origin) restoreQueued([...unsent.steering, ...unsent.followUp]);
         reportError(error); close.disabled = false;
@@ -1887,16 +1887,16 @@ function applyPatch(record: Patch, buffer: boolean) {
 }
 function apply(record: PageRecord) {
   if (record.type === 'reset') {
-    if (threadNaming?.target.kind === 'message') finishThreadNaming(false);
+    if (topicNaming?.target.kind === 'message') finishTopicNaming(false);
     pathWarnings.clear(); pathWarningEpoch++;
     editor.resetCompletion();
-    find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); runKeys.clear(); runThreads = undefined; order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); threadItems.clear(); projections.clear(); folds.clear(); historyRequest = undefined; more = record.more;
+    find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); runKeys.clear(); runTopics = undefined; order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); topicItems.clear(); projections.clear(); folds.clear(); historyRequest = undefined; more = record.more;
     enqueue({ type: 'reset' });
     lastMeasurement = undefined;
     resetting = true;
     for (const item of record.items) { accept(item); changedItem(item.seq, false); }
-    historyBefore = record.items.filter(item => !threadFilter() || item.kind !== 'annotations' && item.kind !== 'threads').reduce((lowest, item) => Math.min(lowest, item.seq), Infinity);
-    if (threadFilter()) void reloadThread();
+    historyBefore = record.items.filter(item => !topicFilter() || item.kind !== 'annotations' && item.kind !== 'topics').reduce((lowest, item) => Math.min(lowest, item.seq), Infinity);
+    if (topicFilter()) void reloadTopic();
     else { const generation = scrolling.generation; void rendered().then(() => { if (epoch === record.epoch && scrolling.generation === generation) fillHistory(); }); }
     schedule();
   } else if (record.type === 'item') {
@@ -1915,16 +1915,16 @@ function apply(record: PageRecord) {
     if (viewChanged) leaveView(record.view.id);
     if (viewChanged || state.sessionId !== record.sessionId) { pathWarnings.clear(); pathWarningEpoch++; }
     if (viewChanged || state.sessionId !== record.sessionId) decide({ type: 'switch', scope: { view: record.view.id, sessionId: record.sessionId } });
-    const scopeChanged = viewChanged || state.sessionId !== record.sessionId, previousFilter = threadFilter(), priorInput = latestThreadInput();
+    const scopeChanged = viewChanged || state.sessionId !== record.sessionId, previousFilter = topicFilter(), priorInput = latestTopicInput();
     if (previousFilter && priorInput?.kind === 'user') visible(priorInput.seq);
     const workingChanged = state.working !== record.working;
     state = record;
     reportComposer();
-    if (scopeChanged) { clearTimeout(threadClick); threadClick = undefined; historyRequest = undefined; historyBefore = undefined; }
-    if ('threads' in record && !record.threads.some(thread => thread.name === threadFilter())) threadFilters.delete(filterKey());
-    renderThreads();
-    if (previousFilter !== threadFilter() || scopeChanged && threadFilter() !== undefined) { historyRequest = undefined; historyBefore = undefined; refreshThreadItems(); if (epoch && record.view.type === 'root') void reloadThread(); }
-    if (workingChanged && previousFilter === threadFilter() && threadFilter() && priorInput?.kind === 'user') accept({ ...priorInput });
+    if (scopeChanged) { clearTimeout(topicClick); topicClick = undefined; historyRequest = undefined; historyBefore = undefined; }
+    if ('topics' in record && !record.topics.some(topic => topic.name === topicFilter())) topicFilters.delete(filterKey());
+    renderTopics();
+    if (previousFilter !== topicFilter() || scopeChanged && topicFilter() !== undefined) { historyRequest = undefined; historyBefore = undefined; refreshTopicItems(); if (epoch && record.view.type === 'root') void reloadTopic(); }
+    if (workingChanged && previousFilter === topicFilter() && topicFilter() && priorInput?.kind === 'user') accept({ ...priorInput });
     windowDirty = true; schedule(); if (agentsChanged || viewChanged) { for (const seq of views.keys()) dirty.add(seq); } document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
     showJobView();
     if (viewChanged) rescopeImages();
@@ -2254,23 +2254,23 @@ function fillHistory() {
 }
 function older() {
   if (state.view.type === 'job' || !more || first === undefined) return;
-  if (!historyRequest) { const request = historyRequest = { before: historyBefore ?? first, ...(threadFilter() ? { thread: threadFilter() } : {}), patches: [], done: Promise.resolve() }; request.done = loadOlder(request); }
+  if (!historyRequest) { const request = historyRequest = { before: historyBefore ?? first, ...(topicFilter() ? { topic: topicFilter() } : {}), patches: [], done: Promise.resolve() }; request.done = loadOlder(request); }
   return historyRequest.done;
 }
-async function reloadThread() {
-  const request = historyRequest = { before: Number.MAX_SAFE_INTEGER, ...(threadFilter() ? { thread: threadFilter() } : {}), patches: [], done: Promise.resolve() };
+async function reloadTopic() {
+  const request = historyRequest = { before: Number.MAX_SAFE_INTEGER, ...(topicFilter() ? { topic: topicFilter() } : {}), patches: [], done: Promise.resolve() };
   request.done = loadOlder(request);
   return request.done;
 }
 async function loadOlder(mine: NonNullable<typeof historyRequest>) {
   let applied = false;
   try {
-    const response = await fetch(scoped('/items?before=' + mine.before + (mine.thread ? '&thread=' + encodeURIComponent(mine.thread) : ''), state.sessionId)); if (!response.ok) throw Error('Could not load earlier messages');
+    const response = await fetch(scoped('/items?before=' + mine.before + (mine.topic ? '&topic=' + encodeURIComponent(mine.topic) : ''), state.sessionId)); if (!response.ok) throw Error('Could not load earlier messages');
     const result: Extract<PageRecord, { type: 'reset' }> = await response.json();
     if (historyRequest === mine && result.epoch === epoch) {
       enqueue({ type: 'history' });
       more = result.more;
-      historyBefore = result.items.filter(item => !mine.thread || item.kind !== 'annotations' && item.kind !== 'threads').reduce((lowest, item) => Math.min(lowest, item.seq), mine.before);
+      historyBefore = result.items.filter(item => !mine.topic || item.kind !== 'annotations' && item.kind !== 'topics').reduce((lowest, item) => Math.min(lowest, item.seq), mine.before);
       for (const item of result.items) if (!items.has(item.seq)) accept(item);
       for (const patch of mine.patches) { applyPatch(patch, false); if (historyRequest !== mine) return; }
       await rendered();
@@ -2412,7 +2412,7 @@ async function send(mode: PromptMode = 'prompt') {
   submitting = true;
   decide({ type: 'submit' });
   try {
-    const result = await fetchJSON('/prompt', { sessionId: sendingSession, text, mode, attachments: files.map(file => file.id), ...(composerThreadName() ? { thread: composerThreadName() } : {}) });
+    const result = await fetchJSON('/prompt', { sessionId: sendingSession, text, mode, attachments: files.map(file => file.id), ...(composerTopicName() ? { topic: composerTopicName() } : {}) });
     if (result.disposition !== 'handled') draft.sent(files);
     if (state.view.id !== origin) { if (drafts.get(origin) === text) drafts.delete(origin); return; }
     if (state.sessionId !== sendingSession || scrolling.generation !== generation) return;
@@ -2456,7 +2456,7 @@ window.addEventListener('pagehide', () => {
   decide({ type: 'visibility' }); stopFrames();
   const current = new Map(drafts);
   current.set(state.view.id, editor.text());
-  const memory: PageMemory = { scroll, drafts: [...current].filter(([view, text]) => !!view && !!text), filters: [...threadFilters], composerThreads: [...composerThreads] };
+  const memory: PageMemory = { scroll, drafts: [...current].filter(([view, text]) => !!view && !!text), filters: [...topicFilters], composerTopics: [...composerTopics] };
   history.replaceState(memory, '');
 });
 document.addEventListener('visibilitychange', () => { decide({ type: 'visibility' }); cancelPending(); if (!document.hidden) { revealDirty ||= revealing.size > 0; windowDirty = true; armCap(); } schedule(); });
@@ -2515,9 +2515,9 @@ document.addEventListener('keydown', event => {
       : ['ArrowDown', 'PageDown', 'End', ' '].includes(event.key) ? 'down' : undefined;
     if (direction) decide({ type: 'input', direction });
   }
-  previewHover(event); if (previewKey(event)) return; if (event.key === 'Escape' && element('threads').dataset.mode === 'line' && element('threads').querySelector<HTMLElement>('.thread-panel')?.hidden === false) { event.preventDefault(); closeThreads(); return; } if (!barMenu.hidden && event.key === 'Escape') { event.preventDefault(); closeBarMenu(); return; } if (state.view.type === 'job') return; if (!event.defaultPrevented && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.isComposing && event.key === 'g' && composerReceivesKeys() && !editing()) { event.preventDefault(); void openEditor(); return; } if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasFailed() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
+  previewHover(event); if (previewKey(event)) return; if (event.key === 'Escape' && element('topics').dataset.mode === 'line' && element('topics').querySelector<HTMLElement>('.topic-panel')?.hidden === false) { event.preventDefault(); closeTopics(); return; } if (!barMenu.hidden && event.key === 'Escape') { event.preventDefault(); closeBarMenu(); return; } if (state.view.type === 'job') return; if (!event.defaultPrevented && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.isComposing && event.key === 'g' && composerReceivesKeys() && !editing()) { event.preventDefault(); void openEditor(); return; } if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasFailed() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
-document.addEventListener('pointerdown', event => { if (threadNaming?.target.kind === 'message' && !threadNaming.chip.contains(event.target instanceof Node ? event.target : null)) finishThreadNaming(false); if (!element('threads').contains(event.target instanceof Node ? event.target : null)) closeThreads(); if (!barMenu.hidden && !barMenu.contains(event.target instanceof Node ? event.target : null) && !(event.target instanceof Element && event.target.closest('.ellipsis'))) closeBarMenu(); if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
+document.addEventListener('pointerdown', event => { if (topicNaming?.target.kind === 'message' && !topicNaming.chip.contains(event.target instanceof Node ? event.target : null)) finishTopicNaming(false); if (!element('topics').contains(event.target instanceof Node ? event.target : null)) closeTopics(); if (!barMenu.hidden && !barMenu.contains(event.target instanceof Node ? event.target : null) && !(event.target instanceof Element && event.target.closest('.ellipsis'))) closeBarMenu(); if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
 element('scroll').onscroll = () => {
   decide({ type: 'scroll' });
   const geo = geometry(), top = geo.top - geo.origin, half = geo.viewport / 2, { total } = ensureTable();
@@ -2556,11 +2556,11 @@ function resized(entries: ResizeObserverEntry[]) {
     if (target === element('dock')) { dockResized(borderBoxSize[0].blockSize); positionPicker(); }
     if (target === element('scroll') && column) layoutBar(column);
   }
-  if (entries.some(({ target }) => target === threadMeasure) && threadCapsule) delete threadCapsule.width;
-  if (entries.some(({ target }) => target === element('scroll') || target === threadMeasure)) renderThreads();
+  if (entries.some(({ target }) => target === topicMeasure) && topicCapsule) delete topicCapsule.width;
+  if (entries.some(({ target }) => target === element('scroll') || target === topicMeasure)) renderTopics();
   decide({ type: 'layout', cause: 'layout' });
 }
-layoutObserver.observe(threadMeasure);
+layoutObserver.observe(topicMeasure);
 for (const id of ['scroll', 'items', 'jobv', 'dock']) layoutObserver.observe(element(id));
 setInterval(() => { job.tick(); if (state.view.type === 'job') return; for (const item of state.bash) pendingBash.get(item.id)?.update(item); }, 1000);
 window.addEventListener('resize', positionPicker);
