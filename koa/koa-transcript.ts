@@ -688,6 +688,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
       req.once("close", () => forget(req));
       flush();
       req.writeHead(200, { "Content-Type": "text/event-stream" });
+      if (currentState) body(req, frame(JSON.stringify(currentState)), true);
       if (url.searchParams.get("epoch") === epoch) {
         if (counters) counters.cursors++;
         const after = Number(url.searchParams.get("after") ?? -1);
@@ -705,7 +706,6 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
       if (req.writableEnded || req.destroyed) return true;
       follow(subscribers, req, address, undefined, url.searchParams.has("koa"));
       if (counters) body(req, frame(JSON.stringify(flushRecord(counters.bytes, counters.flushes))), true);
-      if (currentState) broadcast(currentState);
     } else return false;
     return true;
   };

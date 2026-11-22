@@ -3281,6 +3281,61 @@ test('replacing a running compaction with its summary keeps the reader anchor of
   assert.equal(page.offset(5), anchor);
 });
 
+test('a reload restores reader memory when reset arrives before state and accepts later scrolling', async () => {
+  const page = await flowPage();
+  const items = Array.from({ length: 10 }, (_, seq) => page.text(seq));
+  page.go('r'); page.open(items); page.settle();
+  page.reader(250); page.settle(3);
+  const anchor = page.offset(2);
+  page.evaluate("scrolling=scrollInitial({view:'',sessionId:undefined},scrollMemory(scrolling));state={...state,sessionId:undefined,view:{id:'',path:[]}};");
+  page.open(items);
+  page.go('r'); page.settle();
+  assert.equal(page.evaluate('scrolling.kind'), 'reader');
+  assert.equal(page.offset(2), anchor);
+  page.reader(350); page.settle(3);
+  assert.equal(page.evaluate('scrolling.anchor.item.seq'), 3);
+  page.reader(page.bottom()); page.settle();
+  assert.equal(page.evaluate('scrolling.kind'), 'following');
+});
+
+test('a reload restores an unloaded reader anchor after reset arrives before state', async () => {
+  const page = await flowPage();
+  page.go('r'); page.open(Array.from({ length: 10 }, (_, seq) => page.text(seq))); page.settle();
+  page.reader(250); page.settle(3);
+  const anchor = page.offset(2);
+  page.evaluate("scrolling=scrollInitial({view:'',sessionId:undefined},scrollMemory(scrolling));state={...state,sessionId:undefined,view:{id:'',path:[]}};");
+  const requests: string[] = [], held: ((value: unknown) => void)[] = [];
+  Object.assign(page.app.context, { fetch: (path: string) => { requests.push(path); return new Promise(resolve => held.push(resolve)); } });
+  page.open([page.text(20)], true);
+  page.go('r'); page.settle(3);
+  assert.ok(requests.length > 0);
+  assert.ok(requests.every(path => path.includes('sessionId=s')), JSON.stringify(requests));
+  assert.equal(page.evaluate('scrolling.kind'), 'restoring');
+  for (const release of held) release({ ok: true, json: async () => ({ epoch: 'a', more: false, items: Array.from({ length: 18 }, (_, seq) => page.text(seq + 2)) }) });
+  await page.settled(); page.settle(); await page.settled(); page.settle();
+  assert.equal(page.evaluate('scrolling.kind'), 'reader');
+  assert.equal(page.offset(2), anchor);
+});
+
+test('a reset replaces an in-flight anchor load without accepting its late result', async () => {
+  const page = await flowPage();
+  page.go('r'); page.open(Array.from({ length: 20 }, (_, seq) => page.text(seq))); page.settle();
+  page.reader(550); page.settle(3);
+  page.go('a'); page.open([page.text(30)]);
+  const held: ((value: unknown) => void)[] = [];
+  Object.assign(page.app.context, { fetch: () => new Promise(resolve => held.push(resolve)) });
+  page.go('r'); page.open([page.text(20)], true); page.settle(3);
+  assert.equal(held.length, 1);
+  page.open([page.text(20)], true); page.settle(3);
+  assert.equal(held.length, 2, 'the new snapshot starts its own anchor load');
+  held[0]?.({ ok: true, json: async () => ({ epoch: 'old', more: false, items: [] }) });
+  await page.settled(); page.settle(3);
+  assert.equal(page.evaluate('scrolling.kind'), 'restoring', 'the old load must not follow');
+  held[1]?.({ ok: true, json: async () => ({ epoch: 'a', more: false, items: Array.from({ length: 16 }, (_, seq) => page.text(seq + 5)) }) });
+  await page.settled(); page.settle();
+  assert.equal(page.evaluate('scrolling.kind'), 'reader');
+});
+
 test('a reset that is shorter than the pane keeps a restoring view from following while its older pages load', async () => {
   const page = await flowPage();
   page.go('r'); page.open([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(page.text));

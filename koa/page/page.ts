@@ -849,17 +849,19 @@ function changedItem(seq: number, appended: boolean) {
   const item = items.get(seq), shown = new Set(unitKeys(seq));
   if (item) enqueue({ type: 'item', seq, kind: item.kind === 'user' ? 'user' : item.kind === 'assistant' || item.kind === 'agent' || item.kind === 'job' ? 'assistant' : 'other', visible: shown.size > 0, rows: unitKeys(seq, 'all').map(key => ({ key, visible: shown.has(key) })), appended });
 }
-let loadingAnchor: number | undefined;
+let resets = 0, loadingAnchor: string | undefined;
 async function loadAnchor(item: ItemId, generation: number) {
-  if (loadingAnchor === generation) return;
-  loadingAnchor = generation;
+  const reset = resets, key = generation + ':' + reset;
+  const current = () => scrolling.generation === generation && resets === reset;
+  if (loadingAnchor === key) return;
+  loadingAnchor = key;
   try {
     if (item.kind === 'job') {
-      while (scrolling.generation === generation && state.view.type === 'job' && job.start() > item.byte && await job.earlier());
-    } else for (let before = first; more && first !== undefined && item.seq < first && scrolling.generation === generation;) { await older(); if (first === before) break; before = first; }
-    if (scrolling.generation === generation) enqueue({ type: 'restore-result', generation, found: item.kind === 'message' ? items.has(item.seq) : !!rowOf(item) });
-  } catch (error) { if (scrolling.generation === generation) enqueue({ type: 'restore-result', generation, found: false }); reportError(error); }
-  finally { if (loadingAnchor === generation) loadingAnchor = undefined; }
+      while (current() && state.view.type === 'job' && job.start() > item.byte && await job.earlier());
+    } else for (let before = first; more && first !== undefined && item.seq < first && current();) { await older(); if (first === before) break; before = first; }
+    if (current()) enqueue({ type: 'restore-result', generation, found: item.kind === 'message' ? items.has(item.seq) : !!rowOf(item) });
+  } catch (error) { if (current()) enqueue({ type: 'restore-result', generation, found: false }); reportError(error); }
+  finally { if (loadingAnchor === key) loadingAnchor = undefined; }
 }
 function revealStep(memo: TextMemo, now: number, viewport: number) {
   const { reveal } = memo, tail = reveal?.tail;
@@ -1894,6 +1896,7 @@ function apply(record: PageRecord) {
     pathWarnings.clear(); pathWarningEpoch++;
     editor.resetCompletion();
     find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); runKeys.clear(); runTopics = undefined; order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); topicItems.clear(); projections.clear(); folds.clear(); historyRequest = undefined; more = record.more;
+    resets++;
     enqueue({ type: 'reset' });
     lastMeasurement = undefined;
     resetting = true;
@@ -1908,7 +1911,7 @@ function apply(record: PageRecord) {
     if (!current || record.item.revision > current.revision) { accept(record.item); changedItem(record.item.seq, !current); }
   } else if (record.type === 'patch') applyPatch(record, true);
   else if (record.type === 'reload') location.reload();
-  else if (record.type === 'job-reset') { enqueue({ type: 'reset' }); epoch = record.epoch; job.reset(record); after = job.cursor(); }
+  else if (record.type === 'job-reset') { resets++; enqueue({ type: 'reset' }); epoch = record.epoch; job.reset(record); after = job.cursor(); }
   else if (record.type === 'job-gone') job.gone(record);
   else if (record.type === 'job-append') { job.append(record); after = job.cursor(); }
   else if (record.type === 'state') {
@@ -1918,13 +1921,13 @@ function apply(record: PageRecord) {
     const wasEditing = !!state.edit, viewChanged = state.view.id !== record.view.id;
     if (viewChanged) leaveView(record.view.id);
     if (viewChanged || state.sessionId !== record.sessionId) { pathWarnings.clear(); pathWarningEpoch++; }
-    if (viewChanged || state.sessionId !== record.sessionId) decide({ type: 'switch', scope: { view: record.view.id, sessionId: record.sessionId } });
+    const loaded = state.view.id === '' && epoch !== '';
     const scopeChanged = viewChanged || state.sessionId !== record.sessionId, previousFilter = topicFilter(), priorInput = latestTopicInput();
     if (previousFilter && priorInput?.kind === 'user') visible(priorInput.seq);
     const workingChanged = state.working !== record.working;
     state = record;
     reportComposer();
-    if (scopeChanged) { clearTimeout(topicClick); topicClick = undefined; historyRequest = undefined; historyBefore = undefined; }
+    if (scopeChanged) { clearTimeout(topicClick); topicClick = undefined; historyRequest = undefined; historyBefore = undefined; decide({ type: 'switch', scope: { view: record.view.id, sessionId: record.sessionId }, loaded }); }
     if ('topics' in record && !record.topics.some(topic => topic.name === topicFilter())) {
       const move = topicMoves.get(filterKey());
       if (move && move.from === topicFilter() && record.topics.some(topic => topic.name === move.to)) topicFilters.set(filterKey(), move.to);

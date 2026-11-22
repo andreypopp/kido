@@ -651,7 +651,8 @@ test("rebuild sends reset then exactly one caller-supplied state and keeps the e
   const state = { pathEditor: false, agents: [], bash: [], compaction: 'idle' as const, working: false, name: "before", model: { provider: "test", id: "test" }, aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, view: { id: "root", path: [{ id: "root", name: "pi", type: "agent" as const }], type: 'root' as const }, topics: [], life: { type: "ready" as const } };
   view.state(state);
   const lines = request(view, "/events");
-  const firstEpoch = record(lines[0]).epoch;
+  assert.deepEqual(lines.map(record).map(record => record.type), ['state', 'reset']);
+  const firstEpoch = record(lines[1]).epoch;
   assert.match(firstEpoch, /^[A-Za-z0-9_-]{22}$/);
   lines.length = 0;
   view.rebuild(...linked([{ role: "user", content: "restored", timestamp: 456 }]));

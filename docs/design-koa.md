@@ -394,7 +394,14 @@ needs. History snapshots flush first and contain published state only.
 The page ignores an older patch, applies a matching patch, and resets
 on a revision gap. It holds patches for missing items while a history
 request is pending. A reset invalidates that request even when an old
-answer later arrives.
+answer later arrives, and so does an anchor load of a restore: the
+new snapshot starts its own load.
+
+A connection, as a view switch, gets the state before the reset or
+the catch-up, so the page knows the view before its snapshot. A
+restore waits for the snapshot that follows its switch, except at
+the start of a page: a snapshot that arrives before the first state
+can only be of that state's view.
 
 A reconnect sends the epoch and the last final item, not
 Last-Event-ID. Patches change unfinished items, so an event id would

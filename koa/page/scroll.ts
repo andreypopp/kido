@@ -37,7 +37,7 @@ export type ScrollEvent =
   | { type: 'send-result'; result: PromptResult['disposition'] | 'failed' }
   | { type: 'item'; seq: number; kind: 'user' | 'assistant' | 'other'; visible: boolean; appended: boolean; rows?: { key: string; visible: boolean }[] }
   | { type: 'focus' | 'visibility' | 'frame' | 'resize' | 'latest' | 'history' }
-  | { type: 'switch'; scope: Scope }
+  | { type: 'switch'; scope: Scope; loaded: boolean }
   | { type: 'reset' }
   | { type: 'filter'; active: boolean }
   | { type: 'restore-result'; generation: number; found: boolean }
@@ -238,7 +238,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         clear();
         instant = true;
         state = target && target.scope.sessionId === event.scope.sessionId
-          ? { ...common(state), kind: 'restoring', target, waiting: true }
+          ? { ...common(state), kind: 'restoring', target, waiting: !event.loaded }
           : { ...common(state), kind: 'following', positioning: true };
         force = state.kind === 'following';
         break;
