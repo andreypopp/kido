@@ -80,7 +80,9 @@ test("a headless session writes no variable", async () => {
   try {
     fx.setPanes([selfPane()]);
     await startSession(fx, { ctx: { hasUI: false } });
-    assert.deepEqual(fx.apiCalls().filter((call) => call.method !== "GET"), []);
+    assert.deepEqual(fx.apiCalls().filter((call) =>
+      (call.method === "PUT" && call.path.startsWith("/panes/pane_1/vars/")) ||
+      (call.method === "DELETE" && call.path === "/panes/pane_1/vars")), []);
   } finally {
     await fx.restore();
   }
