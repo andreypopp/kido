@@ -45,6 +45,34 @@ import SidebarFeed
         return pane
     }
 
+    func testKoaDocumentDoesNotScroll() async throws {
+        let pane = try await webviewStart()
+        let web = try XCTUnwrap(pane.webviewView?.browser)
+        let html = try String(contentsOf: checkoutRoot.appendingPathComponent("koa/page/page.html"), encoding: .utf8)
+        let css = try String(contentsOf: checkoutRoot.appendingPathComponent("koa/page/page.css"), encoding: .utf8)
+        let document = html.replacingOccurrences(of: "<!-- style -->", with: "<style>\(css)</style>")
+        let encoded = String(decoding: try JSONEncoder().encode(document), as: UTF8.self)
+        _ = try await webviewJS(web, """
+        (()=>{
+          document.open();document.write(\(encoded));document.close();
+          document.querySelector('#items').innerHTML='<div class="prose">'+ '<p>Transcript line</p>'.repeat(200)+'</div>';
+          return true;
+        })()
+        """)
+        let geometry = try await webviewJS(web, """
+        (()=>{
+          document.body.style.height=(innerHeight+120)+'px';
+          const root=document.scrollingElement,scroll=document.querySelector('#scroll');
+          scroll.scrollTop=100;
+          return {documentOverflows:root.scrollHeight>innerHeight,overflow:getComputedStyle(document.documentElement).overflowY,transcriptScrolls:scroll.scrollTop>0};
+        })()
+        """)
+        let result = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(geometry.utf8)) as? [String: Any])
+        XCTAssertEqual(result["documentOverflows"] as? Bool, true, geometry)
+        XCTAssertTrue(["hidden", "clip"].contains(result["overflow"] as? String ?? ""), geometry)
+        XCTAssertEqual(result["transcriptScrolls"] as? Bool, true, geometry)
+    }
+
     func testWebviewFontBinding() async throws {
         let pane = try await webviewStart()
         let web = try XCTUnwrap(pane.webviewView?.browser)

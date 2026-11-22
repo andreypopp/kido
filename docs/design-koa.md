@@ -481,7 +481,11 @@ stand for absent rows. Mount work is time-bounded per frame.
 `koa/page/scroll.ts` is the one scroll owner for transcripts and job
 logs. It is a pure state machine. DOM code supplies events and
 measurements and applies its decisions. Browser scroll anchoring is
-disabled to avoid a second owner.
+disabled to avoid a second owner. The user never scrolls the document
+itself: every body child is positioned, and the root hides its
+overflow, so a
+body that is taller than the viewport for a moment (a resize) does not
+give the host's web view a scrollbar of its own beside the transcript's.
 
 Following keeps the bottom exact after layout while the pane has
 focus. Reader input establishes an item anchor. Layout changes above
