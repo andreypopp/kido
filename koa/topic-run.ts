@@ -67,19 +67,32 @@ export function invalidateRuns(context: RunContext, seq: number): number {
 }
 
 export type TopicContext = { items: ReadonlyMap<number, WireItem>; labels: (seq: number) => readonly TopicName[]; runs: RunContext; topics?: Map<string, TopicName> };
+export function stepTopic(item: WireItem | undefined, source: Source, labels: readonly TopicName[]): TopicName | undefined {
+  return source.kind === 'block' && item?.kind === 'assistant' ? item.blocks[source.index].topic ?? labels[0] : item?.kind === 'agent' || item?.kind === 'job' ? item.topic ?? labels[0] : undefined;
+}
+export function messageTopics(item: WireItem | undefined, labels: readonly TopicName[] = []): readonly TopicName[] {
+  return item?.kind === 'user' ? item.topic ? [item.topic] : labels : item?.kind === 'assistant' ? [...new Set(item.blocks.flatMap(block => visibleText(block) ? block.topic ?? labels[0] ?? [] : []))] : [];
+}
+export type TopicStep = { source: Source; topic: TopicName };
+export function firstTopicStep(first: TopicStep | undefined, source: Source, topic: TopicName | undefined): TopicStep | undefined {
+  if (!topic) return first;
+  const previous = first?.source;
+  const earlier = !previous || source.seq < previous.seq || source.seq === previous.seq && source.kind === 'block' && (previous.kind === 'item' || source.index < previous.index);
+  return earlier ? { source, topic } : first;
+}
 function runTopic(context: TopicContext, source: Source): TopicName | undefined {
   if (!context.topics) {
-    const names = new Map<string, TopicName>();
+    const names = new Map<string, TopicStep>();
     for (const seq of [...context.items.keys()].sort((a, b) => a - b)) {
       const item = context.items.get(seq);
       for (const part of runParts(item, item)) {
         if (part.kind !== 'step') continue;
         const key = sourceKey(runOwner(context.runs, part.source));
-        const topic = part.source.kind === 'block' && item?.kind === 'assistant' ? item.blocks[part.source.index].topic ?? context.labels(seq)[0] : item?.kind === 'agent' || item?.kind === 'job' ? item.topic ?? context.labels(seq)[0] : undefined;
-        if (topic && !names.has(key)) names.set(key, topic);
+        const first = firstTopicStep(names.get(key), part.source, stepTopic(item, part.source, context.labels(seq)));
+        if (first) names.set(key, first);
       }
     }
-    context.topics = names;
+    context.topics = new Map([...names].map(([key, step]) => [key, step.topic]));
   }
   return context.topics.get(sourceKey(runOwner(context.runs, source)));
 }
@@ -101,4 +114,4 @@ export function projectTopic(context: TopicContext, seq: number, filter?: TopicN
   } else if (item.kind === 'user' && countedMessage(item, names, filter)) return item;
 }
 const textInTopic = (block: Block, labels: readonly TopicName[], filter?: TopicName) => !filter || (block.topic ?? labels[0]) === filter;
-export const countedMessage = (item: WireItem | undefined, labels: readonly TopicName[] = [], filter?: TopicName) => item?.kind === 'user' ? !filter || (item.topic ? item.topic === filter : labels.includes(filter)) : item?.kind === 'assistant' && item.blocks.some(block => visibleText(block) && textInTopic(block, labels, filter));
+export const countedMessage = (item: WireItem | undefined, labels: readonly TopicName[] = [], filter?: TopicName) => filter ? messageTopics(item, labels).includes(filter) : item?.kind === 'user' || item?.kind === 'assistant' && item.blocks.some(visibleText);

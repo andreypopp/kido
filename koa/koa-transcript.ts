@@ -1,5 +1,5 @@
 import { topicTurn } from './topic-turn.ts';
-import { countedMessage, runParts } from './topic-run.ts';
+import { countedMessage, messageTopics, runParts, runOf, invalidateRuns, sourceKey, stepTopic, firstTopicStep, type TopicStep, type RunContext, type Source } from './topic-run.ts';
 import { topicContext, topicQuotes, quotedTopic } from './koa-classify.ts';
 import type { QueuedPrompt } from './koa-records.ts';
 import { cleanLine } from './text.ts';
@@ -194,18 +194,19 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     return source.entryId;
   };
   const projection = (entries = branch()) => {
-    const owner = topics(entries);
-    const id = (seq: number) => entryId(seq, entries);
+    const owner = topics(entries), latest = items.findLast(item => item.kind === 'assistant');
+    const latestId = latest ? entryId(latest.seq, entries) : undefined;
+    const id = (seq: number) => seq === latest?.seq ? latestId : entryId(seq, entries);
     const project = (item: Item): Item => {
       if (kind !== 'root') return item;
-      const assignment = (topic: TopicName | undefined) => owner.assignment(id(item.seq), topic);
+      const entry = id(item.seq);
+      const assignment = (topic: TopicName | undefined) => owner.assignment(entry, topic);
       if (item.kind === 'assistant') return { ...item, blocks: item.blocks.map(block => ({ ...block, topic: assignment(block.topic) })) };
       if (item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') return { ...item, topic: assignment(item.topic) };
       if (item.kind === 'topics') return { ...item, topics: owner.overridden(id(item.target)) ? [] : [...new Set(item.topics.map(owner.resolve))] };
       return item;
     };
-    const latest = items.findLast(item => item.kind === 'assistant');
-    const live = latest && id(latest.seq) === undefined ? project(latest) : undefined;
+    const live = latest && latestId === undefined ? project(latest) : undefined;
     const names = [...new Set([...owner.names, ...(live?.kind === 'assistant' ? live.blocks.flatMap(block => block.topic ? [block.topic] : []) : [])])];
     return { owner, project, names, id, output: (item: Item, seen?: Map<string, boolean>) => wireItem(project(item), seen) };
   };
@@ -213,6 +214,115 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     if (kind !== 'root' || entry.type !== 'custom') return false;
     if (entry.customType === 'koa.topic-move' || messageTopic(entry) || topicArchive(entry)) return true;
     return entry.customType === 'koa.topic';
+  };
+  const indexedItems = new Map<number, WireItem>();
+  const indexedRuns: RunContext = { raw: seq => indexedItems.get(seq), shown: seq => indexedItems.get(seq), owners: new Map() };
+  type Contribution = { source: Source; owner: Source; topic?: TopicName };
+  const contributions = new Map<number, { messages: readonly TopicName[]; sources: Contribution[] }>();
+  type IndexedRun = { owner: Source; sources: Map<string, Contribution>; members: Map<number, number>; first?: TopicStep; firstSeq: number; lastSeq: number; topic?: TopicName };
+  const runs = new Map<string, IndexedRun>();
+  const byTopic = new Map<TopicName, { messages: number[]; runs: Source[] }>();
+  const dependencies = new Map<number, Map<string, Item>>();
+  const compareSource = (a: Source, b: Source): number => a.seq - b.seq || (a.kind === 'item' ? b.kind === 'item' ? 0 : 1 : b.kind === 'item' ? -1 : a.index - b.index);
+  const lowerBound = <T>(values: readonly T[], value: T, compare: (a: T, b: T) => number): number => {
+    let low = 0, high = values.length;
+    while (low < high) { const mid = Math.floor((low + high) / 2); if (compare(values[mid], value) < 0) low = mid + 1; else high = mid; }
+    return low;
+  };
+  const posting = (topic: TopicName) => {
+    let value = byTopic.get(topic);
+    if (!value) { value = { messages: [], runs: [] }; byTopic.set(topic, value); }
+    return value;
+  };
+  const updateIndex = (seqs: Iterable<number>, view = projection()): void => {
+    const { owner, project, id } = view;
+    const changed = new Set(seqs), touched = new Set<string>(), relabel = new Set<string>();
+    for (const seq of changed) {
+      const item = items[seq];
+      if (!item) continue;
+      if (item.kind === 'topics' || item.kind === 'annotations') {
+        const target = item.kind === 'topics' ? item.target : item.reply.seq;
+        const key = item.kind === 'topics' ? 'topics' : 'annotation:' + item.reply.block;
+        let records = dependencies.get(target);
+        if (!records) { records = new Map(); dependencies.set(target, records); }
+        const previous = records.get(key);
+        if (!previous || previous.seq <= seq) records.set(key, item);
+        if (item.kind === 'topics') changed.add(target);
+      }
+    }
+    for (const seq of changed) if (items[seq]) indexedItems.set(seq, project(items[seq]));
+    for (const seq of [...changed].sort((a, b) => a - b)) {
+      const last = invalidateRuns(indexedRuns, seq);
+      for (let at = seq; at <= last; at++) changed.add(at);
+    }
+    for (const seq of [...changed].sort((a, b) => a - b)) {
+      const item = indexedItems.get(seq);
+      if (!item) continue;
+      const names = owner.overridden(id(seq)) ? [] : labels.get(seq)?.map(owner.resolve) ?? [];
+      const next = { messages: messageTopics(item, names), sources: runParts(item, item).flatMap((part): Contribution[] => {
+        if (part.kind === 'boundary') return [];
+        const owner = runOf(indexedRuns, part.source);
+        return owner ? [{ source: part.source, owner, ...(part.kind === 'step' ? { topic: stepTopic(item, part.source, names) } : {}) }] : [];
+      }) };
+      const previous = contributions.get(seq);
+      if (JSON.stringify(previous) === JSON.stringify(next)) continue;
+      for (const topic of previous?.messages ?? []) {
+        const values = posting(topic).messages, at = lowerBound(values, seq, (a, b) => a - b);
+        if (values[at] === seq) values.splice(at, 1);
+      }
+      for (const part of previous?.sources ?? []) {
+        const key = sourceKey(part.owner), run = runs.get(key);
+        if (!run) continue;
+        run.sources.delete(sourceKey(part.source));
+        const count = (run.members.get(seq) ?? 1) - 1;
+        if (count) run.members.set(seq, count); else run.members.delete(seq);
+        if (run.first && sourceKey(run.first.source) === sourceKey(part.source)) relabel.add(key);
+        touched.add(key);
+      }
+      contributions.set(seq, next);
+      for (const topic of next.messages) {
+        const values = posting(topic).messages, at = lowerBound(values, seq, (a, b) => a - b);
+        if (values[at] !== seq) values.splice(at, 0, seq);
+      }
+      for (const part of next.sources) {
+        const key = sourceKey(part.owner);
+        let run = runs.get(key);
+        if (!run) { run = { owner: part.owner, sources: new Map(), members: new Map(), firstSeq: seq, lastSeq: seq }; runs.set(key, run); }
+        run.sources.set(sourceKey(part.source), part);
+        run.members.set(seq, (run.members.get(seq) ?? 0) + 1);
+        run.firstSeq = Math.min(run.firstSeq, seq); run.lastSeq = Math.max(run.lastSeq, seq);
+        run.first = firstTopicStep(run.first, part.source, part.topic);
+        touched.add(key);
+      }
+    }
+    for (const key of touched) {
+      const run = runs.get(key);
+      if (!run) continue;
+      if (relabel.has(key)) {
+        run.first = undefined;
+        for (const part of run.sources.values()) run.first = firstTopicStep(run.first, part.source, part.topic);
+      }
+      const topic = run.first?.topic;
+      if (run.topic !== topic || !run.sources.size) {
+        if (run.topic) {
+          const values = posting(run.topic).runs, at = lowerBound(values, run.owner, compareSource);
+          if (values[at] && sourceKey(values[at]) === key) values.splice(at, 1);
+        }
+        run.topic = topic;
+        if (topic && run.sources.size) {
+          const values = posting(topic).runs, at = lowerBound(values, run.owner, compareSource);
+          values.splice(at, 0, run.owner);
+        }
+      }
+      if (!run.sources.size) { runs.delete(key); continue; }
+      if (!run.members.has(run.firstSeq) || !run.members.has(run.lastSeq)) {
+        const members = run.members.keys(), first = members.next().value;
+        if (first !== undefined) {
+          run.firstSeq = first; run.lastSeq = first;
+          for (const seq of members) { run.firstSeq = Math.min(run.firstSeq, seq); run.lastSeq = Math.max(run.lastSeq, seq); }
+        }
+      }
+    }
   };
   let currentTopic: TopicName | undefined;
   let implicitUser: number | undefined;
@@ -247,30 +357,41 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
   };
   const flushRecord = (bytes: number, id: number): Extract<PageRecord, { type: "flush" }> => ({ type: "flush", id, t: Date.now(), bytes });
   const window = (before: number, topic?: TopicName): string => {
-    const { owner, project, output, id } = projection();
+    const { project, output } = projection();
     let start = Math.min(before, items.length), messages = 0;
-    const end = start;
-    while (start > 0 && messages < MAX_WEBVIEW_WINDOW_MESSAGES) {
-      start--;
-      const raw = items[start];
-      if (!countedMessage(raw)) continue;
-      const item = project(raw);
-      if (countedMessage(item, owner.overridden(id(raw.seq)) ? [] : labels.get(raw.seq)?.map(owner.resolve) ?? [], topic)) messages++;
+    const end = start, selected = new Map<number, Item>();
+    if (topic) {
+      const index = byTopic.get(topic);
+      if (!index) return '"items":[],"more":false';
+      const limit = lowerBound(index.messages, end, (a, b) => a - b);
+      const first = Math.max(0, limit - MAX_WEBVIEW_WINDOW_MESSAGES);
+      start = limit >= MAX_WEBVIEW_WINDOW_MESSAGES ? index.messages[first] : 0;
+      const pending: string[] = [], visited = new Set<string>();
+      const retain = (seq: number): void => {
+        if (selected.has(seq)) return;
+        const item = items[seq];
+        if (!item) return;
+        selected.set(seq, item);
+        if (item.kind === 'assistant') for (const part of contributions.get(seq)?.sources ?? []) pending.push(sourceKey(part.owner));
+      };
+      for (let at = first; at < limit; at++) retain(index.messages[at]);
+      const runStart = lowerBound(index.runs, { kind: 'block', seq: start, index: 0 }, compareSource);
+      const runEnd = lowerBound(index.runs, { kind: 'block', seq: end, index: 0 }, compareSource);
+      for (let at = runStart; at < runEnd; at++) pending.push(sourceKey(index.runs[at]));
+      while (pending.length) {
+        const key = pending.pop();
+        if (key === undefined || visited.has(key)) continue;
+        visited.add(key);
+        const run = runs.get(key);
+        if (!run) continue;
+        for (let seq = run.firstSeq; seq <= run.lastSeq && seq < end; seq++) retain(seq);
+      }
+      for (const seq of [...selected.keys()]) for (const item of dependencies.get(seq)?.values() ?? []) selected.set(item.seq, item);
+    } else {
+      while (start > 0 && messages < MAX_WEBVIEW_WINDOW_MESSAGES) { start--; if (countedMessage(items[start])) messages++; }
+      while (start > 0) { const shown = project(items[start]); if (runParts(shown, shown)[0]?.kind === 'boundary') break; start--; }
+      for (const item of items.slice(start, end)) selected.set(item.seq, item);
     }
-    while (start > 0) {
-      const shown = project(items[start]);
-      if (runParts(shown, shown)[0]?.kind === 'boundary') break;
-      start--;
-    }
-    const selected = new Map<number, Item>(items.slice(start, end).map(item => [item.seq, item]));
-    const dependencies = new Map<string, Item>();
-    if (topic) for (const item of items) {
-      if (item.kind !== 'topics' && item.kind !== 'annotations') continue;
-      const target = item.kind === 'topics' ? item.target : item.reply.seq;
-      if (target < start || target >= end) continue;
-      dependencies.set(item.kind === 'topics' ? 'topics:' + target : 'annotation:' + target + ':' + item.reply.block, item);
-    }
-    for (const item of dependencies.values()) selected.set(item.seq, item);
     const seen = new Map<string, boolean>();
     const strings = [...selected.values()].sort((a, b) => b.seq - a.seq).map(item => JSON.stringify(output(item, seen))).reverse();
     return '"items":[' + strings.join(',') + '],"more":' + (start > 0);
@@ -396,8 +517,11 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
         publish(found.item);
       } catch (error) { process.stderr.write(`koa: transcript: ${errorText(error)}\n`); }
     }
+    if (delivery.type === 'replay' && !notify) { dirty.clear(); return; }
+    const view = projection();
+    if (delivery.type !== 'replay') updateIndex(dirty, view);
     if (!notify) { dirty.clear(); return; }
-    const { project, output } = projection();
+    const { project, output } = view;
     for (const seq of dirty) {
       const item = items[seq];
       if (!item) continue;
@@ -500,14 +624,16 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
       const before = projection(index < 0 ? entries : entries.slice(0, index));
       const previous = items.map(item => JSON.stringify(before.output(item)));
       list = undefined;
-      const { output } = projection();
+      const { output } = projection(), updates: number[] = [];
       for (const item of items) {
         if (previous[item.seq] === JSON.stringify(output(item))) continue;
+        updates.push(item.seq);
         item.revision++;
         corrected.add(item.seq);
         broadcast({ type: 'item', item: output(item) });
         if (item.kind === 'assistant' && !item.final) sent.set(item.seq, { ...item, blocks: item.blocks.map(block => ({ ...block })) });
       }
+      updateIndex(updates);
       changed?.();
       return;
     }
@@ -562,6 +688,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     images.clear(); rmSync(imageDir, { recursive: true, force: true }); mkdirSync(imageDir, { mode: 0o700 });
     epoch = mintId();
     corrected.clear();
+    indexedItems.clear(); indexedRuns.owners.clear(); contributions.clear(); runs.clear(); byTopic.clear(); dependencies.clear();
     items = [];
     assistant = undefined;
     sent.clear();
@@ -601,9 +728,10 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
         }
       }
       flushLabels();
+      flush(false);
     } finally { delivery = { type: 'live' }; }
-    flush(false);
     for (const item of items) if (item.kind === "assistant") notRun(item);
+    updateIndex(items.map(item => item.seq));
     sent.clear();
     const record = reset();
     for (const req of [...subscribers]) body(req, record, true);
@@ -650,12 +778,12 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
   };
   const handle = (request: IncomingMessage, req: ServerResponse, address: ViewAddress = { type: "selected" }): boolean => {
     const url = new URL(request.url ?? "/", "http://ko");
-    const { owner, project, output } = projection();
     if (request.method === "GET" && url.pathname.startsWith("/images/")) {
       const image = images.get(url.pathname.slice(8));
       if (!image) { respond(req, 404, "{}"); return true; }
       void serveFile(req, image.path, image.ref.id + "." + (imageExtensions[image.ref.mimeType] ?? "bin"), 410);
     } else if (request.method === 'GET' && url.pathname === '/history') {
+      const { owner, project } = projection();
       const history: string[] = [], topic = parseTopicName(url.searchParams.get('topic'));
       for (let index = items.length - 1; index >= 0 && history.length < 100; index--) {
         const item = project(items[index]);
@@ -672,6 +800,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
       if (!Number.isSafeInteger(before) || before < 0 || rawTopic !== null && (kind !== 'root' || !topic)) respond(req, 400, "{}");
       else respond(req, 200, '{"epoch":' + JSON.stringify(epoch) + ',' + window(before, topic) + '}');
     } else if (request.method === "GET" && url.pathname === "/events") {
+      const { output } = projection();
       if (counters) counters.opens++;
       req.once("close", () => forget(req));
       flush();

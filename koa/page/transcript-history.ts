@@ -8,7 +8,7 @@ type Request = { before: number; topic?: TopicName; patches: Buffered[]; done: P
 export function createTranscriptHistory(deps: {
   epoch(): string; session(): string | undefined; view(): 'root' | 'job' | 'subagent'; filter(): TopicName | undefined; first(): number | undefined;
   viewport(): { scrollHeight: number; clientHeight: number; scrollTop: number };
-  has(seq: number): boolean; accept(item: WireItem): void; apply(record: Buffered): void;
+  has(seq: number): boolean; accept(items: readonly WireItem[]): void; apply(record: Buffered): void;
   history(): void; rendered(): Promise<void>; error(error: unknown): void;
 }) {
   let before: number | undefined, more = false, request: Request | undefined;
@@ -36,7 +36,7 @@ export function createTranscriptHistory(deps: {
       if (request === mine && result.epoch === deps.epoch()) {
         deps.history(); more = result.more;
         before = result.items.filter(item => !mine.topic || item.kind !== 'annotations' && item.kind !== 'topics').reduce((lowest, item) => Math.min(lowest, item.seq), mine.before);
-        for (const item of result.items) if (!deps.has(item.seq)) deps.accept(item);
+        deps.accept(result.items.filter(item => !deps.has(item.seq)));
         for (const patch of mine.patches) {
           if (patch.type === 'patch' || deps.has(patch.item.seq)) deps.apply(patch);
           if (request !== mine) return;

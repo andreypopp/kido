@@ -406,7 +406,7 @@ can only be of that state's view.
 A reconnect sends the epoch and the last final item, not
 Last-Event-ID. Patches change unfinished items, so an event id would
 be the wrong cursor. A current cursor gets the missing items; another
-epoch gets a reset window. A window, and each older page, holds the
+epoch gets a reset window. A window, and each unfiltered older page, holds the
 newest records back to and including the hundredth counted message,
 with every record between them, and back to the start of the run that
 holds the first of them, so a page does not cut a run. A user message and an assistant
@@ -421,7 +421,11 @@ not this cursor. Without a topic filter, the cursor for the next older
 page is the lowest seq of every record that it received, metadata
 included, so a page of only metadata still moves it; a filtered
 reload's cursor ignores annotation and topic records, which can lie
-outside its message range. The page asks for older history when its top comes into view. After
+outside its message range ("Reply annotations and topics" gives the
+filtered page). The page installs a page as one batch: it adds
+every row, then rebuilds run ownership, the topic index, the
+projections and the order once. A live record keeps its own
+incremental path. The page asks for older history when its top comes into view. After
 the first page (also when the initial state that follows the reset
 moves the scroll), each older page and a topic reload, it asks for the
 next older page while its top is still in view, so a window that the
@@ -822,12 +826,21 @@ The live feed is not filtered. A run's filter membership follows the
 topic of its first step that has a known topic; its notices and its
 steps of other topics follow the run. A filtered older-history read
 counts only text in the topic, so sparse topics can load useful
-history, but it returns every record of its range, with the topic and
-annotation records that they depend on. So the page filters history
-with the same rule as the live feed, and a run that the range holds
-is whole. The server and the page share that rule,
-`koa/topic-run.ts`: run ownership, topic membership and the counted
-message.
+history. It does not return the whole range: a sparse topic's range
+can hold thousands of records that the filter hides, and the page
+would parse and project each. The transcript keeps an index of each
+topic's counted messages and member runs, which it updates when a
+record appends or changes, when a label arrives and when a
+correction moves, renames or merges a topic, and which it builds
+again on a rebuild. A filtered page holds the topic's counted
+messages back to the quota, the runs in that range whose membership
+is the topic, the whole run of each assistant record that it holds,
+also a run of another topic that touches a matching message, until
+no new run joins, and the topic and annotation records that they
+depend on. A run is never cut, so the page filters history with the
+same rule as the live feed and gets the same rows. The server and
+the page share that rule, `koa/topic-run.ts`: run ownership, topic
+membership and the counted message.
 
 The page shows topics only in its own rendering: a header row on each
 user and agent message holds the message's time and its topic's

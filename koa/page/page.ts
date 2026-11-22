@@ -145,7 +145,7 @@ let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
 const transcriptHistory = createTranscriptHistory({
   epoch: () => epoch, session: () => state.sessionId, view: () => state.view.type, filter: () => topics.filter(), first: () => first,
-  viewport: () => element('scroll'), has: seq => items.has(seq), accept: item => accept(item),
+  viewport: () => element('scroll'), has: seq => items.has(seq), accept: rows => acceptHistory(rows),
   apply: record => { if (record.type === 'patch') applyPatch(record, false); else apply(record); },
   history: () => enqueue({ type: 'history' }), rendered: () => rendered(), error: reportError,
 });
@@ -902,13 +902,51 @@ function commandNotice(item: Pick<Extract<WireItem, { kind: 'command' }>, 'seq' 
     }
   }
 }
-function accept(item: WireItem) {
-  const old = items.get(item.seq), previous = visible(item.seq);
-  const priorInput = !old && topics.filter() && (item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') ? latestTopicInput() : undefined;
+function installItem(item: WireItem) {
+  const old = items.get(item.seq);
   const rawKey = runParts(item, item).map(part => part.kind === 'boundary' ? 'boundary' : part.kind + ':' + sourceKey(part.source) + ':' + (part.source.kind === 'block' && item.kind === 'assistant' ? item.blocks[part.source.index].topic ?? topicItems.get(item.seq)?.topics[0] ?? '' : item.kind === 'agent' || item.kind === 'job' ? item.topic ?? '' : '')).join('|') + ':' + (item.kind === 'assistant' ? item.blocks.filter(visibleText).map(block => block.topic ?? topicItems.get(item.seq)?.topics[0] ?? '').join('|') : item.kind === 'user' ? item.topic ?? topicItems.get(item.seq)?.topics.join('|') ?? '' : '');
   const changedRun = runKeys.get(item.seq) !== rawKey;
   runKeys.set(item.seq, rawKey);
   items.set(item.seq, item);
+  if (item.kind === 'assistant' && !item.final || item.kind === 'command' && item.result.type === 'compaction' && item.result.state.type === 'running') live.add(item.seq); else live.delete(item.seq);
+  first = first === undefined ? item.seq : Math.min(first, item.seq);
+  let related: number | undefined;
+  if (item.kind === 'topics') {
+    const previous = topicItems.get(item.target);
+    if (!previous || previous.seq < item.seq || previous.seq === item.seq && previous.revision < item.revision) {
+      topicItems.set(item.target, item);
+      if (!previous || previous.topics.length !== item.topics.length || previous.topics.some((name, index) => name !== item.topics[index])) related = item.target;
+    }
+  }
+  if (item.kind === 'annotations') {
+    let blocks = annotationItems.get(item.reply.seq);
+    if (!blocks) { blocks = new Map(); annotationItems.set(item.reply.seq, blocks); }
+    const previous = blocks.get(item.reply.block);
+    if (!previous || previous.seq < item.seq) { blocks.set(item.reply.block, item); related = item.reply.seq; annotated = true; }
+  }
+  return { old, changedRun, related };
+}
+function acceptHistory(rows: readonly WireItem[]) {
+  if (!rows.length) return;
+  const related = new Set<number>();
+  for (const item of rows) { const result = installItem(item); if (result.related !== undefined) related.add(result.related); }
+  for (const seq of related) { const item = items.get(seq); if (item) items.set(seq, { ...item }); }
+  allRuns.owners.clear(); topicContext.topics = undefined;
+  projections.clear(); segmentCache.clear(); owners.clear(); extents.clear(); table = undefined;
+  order.length = 0;
+  for (const seq of [...items.keys()].sort((a, b) => a - b)) { if (visible(seq)) order.push(seq); dirty.add(seq); }
+  for (const seq of views.keys()) if (!visible(seq)) unmountRow(seq);
+  for (const item of rows) changedItem(item.seq, false);
+  windowDirty = true;
+  after = Math.max(after, (first ?? 0) - 1);
+  while (items.get(after + 1)?.final) after++;
+  schedule();
+}
+function accept(item: WireItem) {
+  const previous = visible(item.seq);
+  const priorInput = !items.has(item.seq) && topics.filter() && (item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') ? latestTopicInput() : undefined;
+  if (item.kind === 'topics') projections.set(item.target, visible(item.target));
+  const { old, changedRun, related } = installItem(item);
   if (changedRun) { topicContext.topics = undefined; invalidateRuns(allRuns, item.seq); }
   if (old !== item || changedRun) projections.delete(item.seq);
   const shown = visible(item.seq);
@@ -924,29 +962,9 @@ function accept(item: WireItem) {
   else if (appended && table) appendRow(table, item.seq);
   else if (table) patched.add(item.seq);
   windowDirty = true;
-  if (item.kind === 'assistant' && !item.final || item.kind === 'command' && item.result.type === 'compaction' && item.result.state.type === 'running') live.add(item.seq); else live.delete(item.seq);
-  first = first === undefined ? item.seq : Math.min(first, item.seq);
-  if (item.kind === 'topics') {
-    const previous = topicItems.get(item.target);
-    if (!previous || previous.seq < item.seq || previous.seq === item.seq && previous.revision < item.revision) {
-      projections.set(item.target, visible(item.target));
-      topicItems.set(item.target, item);
-      const target = items.get(item.target);
-      if (target && (!previous || previous.topics.length !== item.topics.length || previous.topics.some((name, index) => name !== item.topics[index]))) {
-        accept({ ...target }); changedItem(target.seq, false);
-      }
-    }
-  }
-  if (item.kind === 'annotations') {
-    let blocks = annotationItems.get(item.reply.seq);
-    if (!blocks) { blocks = new Map(); annotationItems.set(item.reply.seq, blocks); }
-    const previous = blocks.get(item.reply.block);
-    if (!previous || previous.seq < item.seq) {
-      blocks.set(item.reply.block, item);
-      const reply = items.get(item.reply.seq);
-      if (reply) accept({ ...reply });
-      annotated = true;
-    }
+  if (related !== undefined) {
+    const target = items.get(related);
+    if (target) { accept({ ...target }); if (item.kind === 'topics') changedItem(target.seq, false); }
   }
   dirty.add(item.seq);
   for (const seq of views.keys()) {
@@ -972,7 +990,7 @@ function accept(item: WireItem) {
     }
     table = undefined;
   }
-  after = Math.max(after, first - 1);
+  after = Math.max(after, (first ?? 0) - 1);
   while (items.get(after + 1)?.final) after++;
   schedule();
 }
@@ -1585,7 +1603,7 @@ function apply(record: PageRecord) {
     enqueue({ type: 'reset' });
     lastMeasurement = undefined;
     resetting = true;
-    for (const item of record.items) { accept(item); changedItem(item.seq, false); }
+    acceptHistory(record.items);
     transcriptHistory.reset(record);
     if (topics.filter()) void transcriptHistory.reload();
     else void rendered().then(() => { if (epoch === record.epoch) transcriptHistory.fill(); });

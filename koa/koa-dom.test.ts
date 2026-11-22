@@ -336,7 +336,7 @@ test('filtered history renders the same mixed-topic run and notices as the live 
   assert.equal(String(loaded(runs)), JSON.stringify(steps));
 });
 
-test('quota history keeps the leading run and older history joins loaded runs like the live feed', async t => {
+test('quota history keeps the complete leading run like the live feed', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'koa-run-window-'));
   const view = transcript({ dir, flushMs: 1, kind: 'root', branch: () => [], sessionEntryToContextMessages });
   t.after(() => { view.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -365,18 +365,6 @@ test('quota history keeps the leading run and older history joins loaded runs li
   loaded(`apply(${JSON.stringify({ type: 'reset', ...newest })});renderDirty();`);
   const snapshot = "renderDirty();JSON.stringify(order.filter(seq=>visible(seq)?.kind!=='topics').map(seq=>({seq,item:visible(seq),rows:unitRows(seq)})))";
   assert.equal(String(loaded(snapshot)), String(live(snapshot)), 'quota page must keep the earlier run owner');
-  const mergedPage = await page(), merged = mergedPage.repl();
-  merged("state={...state,view:{id:'root',type:'root',path:[]}};topics.debug.scopeData(topics.scope()).filter='one';");
-  const raw = JSON.parse(request('/items?before=100000').join(''));
-  assert.equal(raw.items[0].seq, 0);
-  merged(`epoch=${JSON.stringify(raw.epoch)};transcriptHistory.debug.more=true;for(const item of ${JSON.stringify(raw.items.filter((item: { seq: number }) => item.seq >= 3))})accept(item);renderDirty();`);
-  mergedPage.context.fetch = async () => ({ ok: true, json: async () => JSON.parse(request('/items?before=3&topic=one').join('')) });
-  const pending = merged('transcriptHistory.earlier()');
-  await settle();
-  merged('tick()');
-  await pending;
-  assert.equal(merged('items.has(1)'), true, String(merged("element('error').textContent")));
-  assert.equal(String(merged(snapshot)), String(live(snapshot)), 'older history must invalidate the provisional run topic');
 });
 
 test('row identities keep block order and distinguish item sources', async () => {
@@ -5039,6 +5027,26 @@ test('item corrections keep loaded history and ignore unloaded older rows', asyn
   page.evaluate("apply({type:'item',item:{...items.get(25),revision:2,text:'corrected',topic:'renamed'}})");
   assert.deepEqual(page.evaluate("({ seqs: [...items.keys()], top: element('scroll').scrollTop, epoch })"), before);
   assert.equal(page.evaluate("items.get(25).topic"), 'renamed');
+});
+
+test('filtered history installs 400 summary rows with a linear topic index', async () => {
+  const page = await windowPage();
+  page.open([], false);
+  page.evaluate("topics.debug.scopeData(topics.scope()).filter='one'; globalThis.indexVisits=0; topicContext.items={get:seq=>items.get(seq),keys:function*(){for(const seq of items.keys()){globalThis.indexVisits++;yield seq}}}");
+  Object.assign(page.app.context, { fetch: async () => ({ ok: true, json: async () => ({ epoch: 'a', more: false, items: Array.from({ length: 400 }, (_, seq) => ({ seq, revision: 0, at: 1, final: true, kind: 'summary', source: 'compaction', text: 'Summary ' + seq })) }) }) });
+  const loaded = page.evaluate('transcriptHistory.reload()');
+  for (let turn = 0; turn < 4; turn++) { await page.settled(); page.settle(4); }
+  await loaded;
+  assert.equal(page.evaluate('items.size'), 400);
+  const visits = Number(page.evaluate('indexVisits'));
+  assert.ok(visits < 4000, 'topic index visited ' + visits + ' items');
+  page.evaluate("topics.debug.scopeData(topics.scope()).filter=undefined;refreshTopicItems();put({kind:'assistant',seq:500,revision:0,at:1,final:true,stop:'stop',error:'',blocks:[{type:'text',text:'Pick one?'}]})");
+  page.settle(4);
+  Object.assign(page.app.context, { fetch: async () => ({ ok: true, json: async () => ({ epoch: 'a', more: false, items: [{ kind: 'annotations', seq: 501, revision: 0, at: 2, final: true, reply: { seq: 500, block: 0 }, annotations: [{ type: 'question', range: [0, 9], kind: 'open' }] }] }) }) });
+  const annotated = page.evaluate('transcriptHistory.reload()');
+  for (let turn = 0; turn < 4; turn++) { await page.settled(); page.settle(4); }
+  await annotated;
+  assert.equal(page.evaluate("texts.get('500:0')?.annotationItem?.seq"), 501);
 });
 
 test('metadata-only history advances the cursor and stops requesting after the last page', async () => {

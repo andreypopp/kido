@@ -9,6 +9,8 @@ import { sessionEntryToContextMessages, type SessionEntry } from "@earendil-work
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { transcript, appendBashOutput } from "./koa-transcript.ts";
 import type { WireItem } from "./koa-records.ts";
+import { projectTopic, type TopicContext } from './topic-run.ts';
+import { parseTopicName } from './records.ts';
 
 function directory(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "koa-transcript-test-"));
@@ -50,6 +52,18 @@ test('message moves use persisted entry identity with equal timestamps', t => {
   assert.equal(after.epoch, before.epoch);
   view.rebuild(branch, 'session', 'move');
   assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items.map((item: WireItem) => ({ ...item, revision: 0 })), after.items.map((item: WireItem) => ({ ...item, revision: 0 })));
+});
+
+test('topic windows follow a message move', t => {
+  const branch: SessionEntry[] = [{ type: 'message', id: 'reply', parentId: null, timestamp: new Date(123).toISOString(), message: assistant('[topic: old]\nReply') }];
+  const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  view.rebuild(branch, 'session', 'reply');
+  const page = (topic: string): WireItem[] => JSON.parse(request(view, '/items?before=100&topic=' + topic).join('')).items;
+  assert.equal(page('old').filter(item => item.kind === 'assistant').length, 1);
+  const move: SessionEntry = { type: 'custom', id: 'move', parentId: 'reply', timestamp: new Date(124).toISOString(), customType: 'koa.message-topic', data: { entries: ['reply'], topic: 'new' } };
+  branch.push(move); view.annotation(move);
+  assert.equal(page('old').filter(item => item.kind === 'assistant').length, 0);
+  assert.equal(page('new').filter(item => item.kind === 'assistant').length, 1);
 });
 
 test('corrections preserve reconnect cursors and replay merges and whole reply turns', t => {
@@ -184,7 +198,7 @@ test('selecting a topic loads its items before compaction and outside the live w
   assert.equal(live.items.some((item: WireItem) => item.kind === 'assistant' && item.blocks.some(block => block.topic === 'old')), false);
   const olderTopic = selected();
   assert.deepEqual(olderTopic.items.slice(0, historical.items.length), historical.items);
-  assert.equal(olderTopic.items.filter((item: WireItem) => item.kind === 'assistant' && item.blocks.some(block => block.topic === 'recent')).length, 120);
+  assert.equal(olderTopic.items.filter((item: WireItem) => item.kind === 'assistant' && item.blocks.some(block => block.topic === 'recent')).length, 0);
   assert.equal(olderTopic.more, false);
 });
 
@@ -263,7 +277,7 @@ test('streaming markers do not leak and explicit users stay in one topic', t => 
   assert.deepEqual(items[1].blocks.map((block: { text: string }) => block.text), ['Body\n']);
   view.message(assistant('[topic: one]\nBody\n[topic: two]\nOther'), 'end');
   items = JSON.parse(request(view, '/items?before=100&topic=two').join('')).items;
-  assert.equal(items.find((item: WireItem) => item.kind === 'user').topic, 'selected');
+  assert.equal(items.some((item: WireItem) => item.kind === 'user'), false);
 });
 
 test('topic intervals follow inputs, tools inherit the turn topic and unmarked replies stay unlabelled', t => {
@@ -538,9 +552,14 @@ test('tool-heavy reset and older pages count messages, including with a topic fi
   }
 });
 
-test('sparse topic pages retain intervening records, boundary notices and progressing cursors', t => {
+test('sparse topic pages contain only selected messages and their run context', t => {
   const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
-  const messages: AgentMessage[] = [];
+  const messages: AgentMessage[] = [
+    { ...assistant(''), content: [{ type: 'toolCall', id: 'mixed-two', name: 'read', arguments: { path: 'two' } }] },
+    { role: 'toolResult', toolCallId: 'mixed-two', toolName: 'read', content: [], details: { topic: 'two' }, isError: false, timestamp: 123 },
+    { ...assistant(''), content: [{ type: 'toolCall', id: 'mixed-one', name: 'read', arguments: { path: 'one' } }, { type: 'text', text: '[topic: one]\nMixed reply' }] },
+    { role: 'toolResult', toolCallId: 'mixed-one', toolName: 'read', content: [], details: { topic: 'one' }, isError: false, timestamp: 123 },
+  ];
   for (let turn = 0; turn < 105; turn++) {
     messages.push({ role: 'user', content: '[topic: one]\nQuestion ' + turn, timestamp: turn });
     for (const topic of ['one', 'two']) {
@@ -557,17 +576,24 @@ test('sparse topic pages retain intervening records, boundary notices and progre
   assert.equal(newest.items.filter(item => item.kind === 'user').length, 100);
   assert.equal(newest.items[0].kind === 'user' && newest.items[0].text, 'Question 5');
   assert.equal(newest.items.filter(item => item.kind === 'assistant' && item.blocks.some(block => block.type === 'tool')).length, 200);
-  assert.equal(newest.items.at(-1)?.kind, 'notify');
+  assert.ok(newest.items.length < 450, 'sparse page returned ' + newest.items.length + ' rows');
+  assert.equal(newest.items.some(item => item.kind === 'assistant' && item.blocks.some(block => block.type === 'text' && block.text.startsWith('Other '))), false);
   assert.equal(newest.more, true);
   assert.equal(new Set(newest.items.map(item => item.seq)).size, newest.items.length);
   const cursor = Math.min(...newest.items.filter(item => item.kind !== 'topics' && item.kind !== 'annotations').map(item => item.seq));
   const older = get(cursor);
   assert.equal(older.items.filter(item => item.kind === 'user').length, 5);
+  assert.deepEqual(older.items.slice(0, 2).map(item => item.kind === 'assistant' ? item.blocks.map(block => block.topic) : []), [['two'], ['one', 'one']]);
+  const raw = new Map(older.items.map(item => [item.seq, item]));
+  const context: TopicContext = { items: raw, labels: () => [], runs: { raw: seq => raw.get(seq), shown: seq => raw.get(seq), owners: new Map() } };
+  assert.equal(projectTopic(context, 0, parseTopicName('one')), undefined);
+  const mixed = projectTopic(context, 1, parseTopicName('one'));
+  assert.deepEqual(mixed?.kind === 'assistant' ? mixed.blocks.map(block => block.type) : [], ['text', 'text']);
   assert.equal(older.more, false);
   assert.ok(older.items.every(item => item.kind === 'topics' || item.kind === 'annotations' || item.seq < cursor));
   const unmatched = get(cursor, 'missing');
   assert.equal(unmatched.more, false);
-  assert.ok(Math.min(...unmatched.items.map(item => item.seq)) < cursor);
+  assert.deepEqual(unmatched.items, []);
 });
 
 test("patches append only unchanged text prefixes and replace changed blocks", t => {
