@@ -170,17 +170,21 @@ test("a cancelled bash ends its exec process, and a timeout ends it with pi's ti
   try {
     const t = tree(fx);
     const s = await routed(fx, t);
+    const shell = await userBash(s, t.hostCwd);
+    await pollUntil(() => fx.running() === 0, 5000, "the runtime context exec process to end");
+    const before = fx.running();
     await run(s, "bash", { command: "true" });
+    await pollUntil(() => fx.running() === before, 5000, "the initial exec process to end");
     const baseline = fx.running();
     const controller = new AbortController();
     const running = run(s, "bash", { command: "echo started; exec sleep 30" }, controller.signal);
+    const rejected = assert.rejects(running, /aborted/);
     await pollUntil(() => fx.execLog().some((exec) => JSON.stringify(exec.request.argv).includes("sleep 30")), 5000, "the command to reach the runtime");
-    assert.equal(fx.running(), baseline + 1);
+    await pollUntil(() => fx.running() === baseline + 1, 5000, "the exec process to start");
     controller.abort();
-    await assert.rejects(running, /aborted/);
+    await rejected;
     await pollUntil(() => fx.running() === baseline, 5000, "the exec process to end");
 
-    const shell = await userBash(s, t.hostCwd);
     await assert.rejects(shell.exec("exec sleep 30", t.hostCwd, { onData: () => {}, timeout: 0.05 }), /timeout:0.05/);
     await pollUntil(() => fx.running() === baseline, 5000, "the timed out exec process to end");
   } finally {
