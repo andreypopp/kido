@@ -713,6 +713,43 @@ test('topic filters project blocks without changing their addresses and apply ne
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [true, ['visible one', ''], 'visible one', true, true, 'hidden two', 2, true]);
 });
 
+test('merge and message corrections fill gaps inside loaded filtered history', async () => {
+  for (const kind of ['assistant', 'user']) {
+    const app = await page();
+    const result = app.run(`
+      state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'A'},{name:'B'}]};
+      accept({kind:'user',seq:10,revision:1,at:1,final:true,text:'start',topic:'B'});
+      accept({kind:'user',seq:20,revision:1,at:1,final:true,text:'end',topic:'B'});
+      setTopic('B');historyRequest=undefined;historyBefore=10;after=20;
+      element('scroll').scrollTop=300;
+      const moved=${JSON.stringify(kind)}==='assistant'
+        ? {kind:'assistant',seq:15,revision:2,at:1,final:true,blocks:[{type:'text',text:'merged reply',topic:'B'}],stop:'stop',error:''}
+        : {kind:'user',seq:15,revision:2,at:1,final:true,text:'moved message',topic:'B'};
+      apply({type:'item',item:moved});
+      apply({type:'item',item:{kind:'topics',seq:16,revision:2,at:1,final:true,target:15,topics:['B']}});
+      const entered=!!visible(15),metadata=topicItems.get(15)?.topics[0];
+      apply({type:'item',item:${JSON.stringify(kind)}==='assistant'?{...moved,revision:3,blocks:[{type:'text',text:'merged reply',topic:'A'}]}:{...moved,revision:3,topic:'A'}});
+      apply({type:'item',item:{kind:'topics',seq:16,revision:3,at:1,final:true,target:15,topics:['A']}});
+      [entered,metadata,!visible(15),topicFilter(),element('scroll').scrollTop,historyBefore];
+    `);
+    assert.deepEqual(JSON.parse(JSON.stringify(result)), [true, 'B', true, 'B', 300, 10], kind);
+  }
+});
+
+test('same-seq topic corrections update inferred prompt visibility', async () => {
+  const app = await page();
+  const result = app.run(`
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'A'},{name:'B'}]};
+    accept({kind:'user',seq:10,revision:1,at:1,final:true,text:'inferred prompt'});
+    accept({kind:'topics',seq:12,revision:1,at:1,final:true,target:10,topics:['A']});
+    setTopic('B');historyRequest=undefined;historyBefore=10;
+    const hidden=!visible(10);
+    apply({type:'item',item:{kind:'topics',seq:12,revision:2,at:1,final:true,target:10,topics:['B']}});
+    [hidden,topicItems.get(10).topics,topicItems.get(10).revision,!!visible(10),order.includes(10)];
+  `);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [true, ['B'], 2, true, true]);
+});
+
 test('filtered run boundaries keep both tools reachable across hidden prose', async () => {
   const app = await page();
   const result = app.run(`
@@ -938,6 +975,13 @@ test('a pending topic move updates only its original scope and does not replace 
   evaluate(`setTopic('A');window.moving=moveTopic('A','B');setTopic('C');window.finishMove({});`);
   await evaluate('window.moving');
   assert.deepEqual(JSON.parse(JSON.stringify(evaluate('[topicFilter(),composerTopicName()]'))), ['C','C']);
+});
+
+test('a topic move follows its target when state arrives before the response', async () => {
+  const app = await page(), evaluate = app.repl();
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'A'},{name:'B'}]};setTopic('A');fetchJSON=()=>new Promise(resolve=>window.finishMove=resolve);window.moving=moveTopic('A','B');apply({...state,type:'state',topics:[{name:'B'}]});window.finishMove({});`);
+  await evaluate('window.moving');
+  assert.equal(evaluate('topicFilter()'), 'B');
 });
 
 test('moving a topic updates its composer chip without replacing an independent composer topic', async () => {
@@ -4695,6 +4739,17 @@ test('Select All is derived from the selection at copy time, in the menu and the
   assert.equal(page.copy().prevented, false, 'a keyboard adjustment that drops the first row is a native copy');
   page.collapse();
   assert.equal(page.copy().prevented, false);
+});
+
+test('item corrections keep loaded history and ignore unloaded older rows', async () => {
+  const page = await windowPage();
+  page.open(page.rows(20, 80), true);
+  page.evaluate("element('scroll').scrollTop=300");
+  const before = page.evaluate("({ seqs: [...items.keys()], top: element('scroll').scrollTop, epoch })");
+  page.evaluate("apply({type:'item',item:{kind:'user',seq:3,revision:2,at:1,final:true,text:'unloaded',topic:'renamed'}})");
+  page.evaluate("apply({type:'item',item:{...items.get(25),revision:2,text:'corrected',topic:'renamed'}})");
+  assert.deepEqual(page.evaluate("({ seqs: [...items.keys()], top: element('scroll').scrollTop, epoch })"), before);
+  assert.equal(page.evaluate("items.get(25).topic"), 'renamed');
 });
 
 test('metadata-only history advances the cursor and stops requesting after the last page', async () => {

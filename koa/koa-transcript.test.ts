@@ -47,12 +47,12 @@ test('message moves use persisted entry identity with equal timestamps', t => {
   branch.push(move); view.annotation(move);
   const after = JSON.parse(request(view, '/items?before=100').join(''));
   assert.deepEqual(after.items.filter((item: WireItem) => item.kind === 'user').map((item: { topic: string }) => item.topic), ['target', 'two']);
-  assert.notEqual(after.epoch, before.epoch);
+  assert.equal(after.epoch, before.epoch);
   view.rebuild(branch, 'session', 'move');
-  assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, after.items);
+  assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items.map((item: WireItem) => ({ ...item, revision: 0 })), after.items.map((item: WireItem) => ({ ...item, revision: 0 })));
 });
 
-test('corrections reset reconnect cursors and replay merges and whole reply turns', t => {
+test('corrections preserve reconnect cursors and replay merges and whole reply turns', t => {
   const branch: SessionEntry[] = [];
   const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
   const user: AgentMessage = { role: 'user', content: '[topic: one]\nWork', timestamp: 100 };
@@ -68,16 +68,43 @@ test('corrections reset reconnect cursors and replay merges and whole reply turn
   branch.push({ type: 'message', id: 'unsaved', parentId: 'later', timestamp: new Date(125).toISOString(), message: unpersisted });
   const before = JSON.parse(request(view, '/items?before=100').join(''));
   const custom = (id: string, customType: string, data: unknown) => { const entry: SessionEntry = { type: 'custom', id, parentId: branch.at(-1)?.id ?? null, timestamp: new Date(130).toISOString(), customType, data }; branch.push(entry); view.annotation(entry); };
+  const events = request(view, '/events?epoch=' + before.epoch + '&after=100');
+  events.length = 0;
   custom('move', 'koa.message-topic', { entries: ['user', 'reply', 'later', 'unsaved'], topic: 'target' });
   custom('merge', 'koa.topic-move', { from: 'target', to: 'renamed' });
   const live = JSON.parse(request(view, '/items?before=100').join(''));
   assert.ok(live.items.filter((item: WireItem) => item.kind === 'assistant').every((item: { blocks: { topic: string }[] }) => item.blocks.every(block => block.topic === 'renamed')));
   const reconnect = record(request(view, '/events?epoch=' + before.epoch + '&after=3')[0]);
-  assert.equal(reconnect.type, 'reset'); assert.equal(reconnect.epoch, live.epoch);
+  assert.equal(live.epoch, before.epoch);
+  assert.equal(reconnect.type, 'item');
+  assert.equal(reconnect.item.topic, 'renamed');
+  assert.ok(events.length > 0);
+  assert.ok(events.map(record).every(event => event.type === 'item'));
+  const updates = events.map(record).filter(event => event.item.seq === 0);
+  assert.deepEqual(updates.map(event => [event.item.topic, event.item.revision]), [['target', before.items[0].revision + 1], ['renamed', before.items[0].revision + 2]]);
   assert.equal(view.quotedTopic('> Reply with a sufficiently long quotation'), 'renamed');
   view.rebuild(branch, 'session', 'merge');
   const replay = JSON.parse(request(view, '/items?before=100').join(''));
   assert.deepEqual(replay.items.map((item: WireItem) => item.kind === 'assistant' ? item.blocks.map(block => block.topic) : item.kind === 'user' ? item.topic : item.kind), live.items.map((item: WireItem) => item.kind === 'assistant' ? item.blocks.map(block => block.topic) : item.kind === 'user' ? item.topic : item.kind));
+});
+
+test('a correction of an unfinished reply keeps the next patch revision', t => {
+  const branch: SessionEntry[] = [];
+  const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const reply = assistant('[topic: old]\nGrowing');
+  view.message(reply, 'update');
+  const events = request(view, '/events');
+  const initial = record(events[0]);
+  const move: SessionEntry = { type: 'custom', id: 'move', parentId: null, timestamp: new Date(124).toISOString(), customType: 'koa.topic-move', data: { from: 'old', to: 'new' } };
+  branch.push(move); view.annotation(move);
+  const correction = events.map(record).find(event => event.type === 'item');
+  assert.equal(correction.item.revision, initial.items[0].revision + 1);
+  assert.equal(correction.item.blocks[0].topic, 'new');
+  view.message(assistant('[topic: old]\nGrowing more'), 'update');
+  request(view, '/items?before=100');
+  const patch = events.map(record).find(event => event.type === 'patch');
+  assert.equal(patch.baseRevision, correction.item.revision);
+  assert.equal(patch.revision, correction.item.revision + 1);
 });
 
 test('moving the latest persisted reply removes its only old topic', t => {

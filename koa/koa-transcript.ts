@@ -172,6 +172,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
   const tools = new Map<string, { item: Assistant; block: Extract<Block, { type: "tool" }> }>();
   const dirty = new Set<number>();
   const sent = new Map<number, Assistant>();
+  const corrected = new Set<number>();
   const pending = new Map<number, { message: Extract<AgentMessage, { role: "assistant" }>; phase: "update" | "end" }>();
   const pendingTools = new Map<string, { type: "running"; content: Content } | { type: "done"; content: Content; error: boolean; at?: number; durationMs?: number; structuredContent?: unknown; details?: unknown }>();
   let flushTimer: NodeJS.Timeout | null = null;
@@ -190,8 +191,8 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     source.entryId ??= entries.find(entry => entry.type === 'message' && entry.message === source.message)?.id;
     return source.entryId;
   };
-  const projection = () => {
-    const entries = branch(), owner = topics(entries);
+  const projection = (entries = branch()) => {
+    const owner = topics(entries);
     const id = (seq: number) => entryId(seq, entries);
     const project = (item: Item): Item => {
       if (kind !== 'root') return item;
@@ -507,11 +508,18 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     if (kind === 'root' && topicArchive(entry)) { list = undefined; changed?.(); return; }
     if (kind === 'root' && (entry.type === 'custom' && entry.customType === 'koa.topic-move' || messageTopic(entry))) {
       flush();
+      const entries = branch(), index = entries.findIndex(candidate => candidate.id === entry.id);
+      const before = projection(index < 0 ? entries : entries.slice(0, index));
+      const previous = items.map(item => JSON.stringify(before.output(item)));
       list = undefined;
-      epoch = mintId();
-      sent.clear();
-      const record = reset();
-      for (const req of subscribers) body(req, record, true);
+      const { output } = projection();
+      for (const item of items) {
+        if (previous[item.seq] === JSON.stringify(output(item))) continue;
+        item.revision++;
+        corrected.add(item.seq);
+        broadcast({ type: 'item', item: output(item) });
+        if (item.kind === 'assistant' && !item.final) sent.set(item.seq, { ...item, blocks: item.blocks.map(block => ({ ...block })) });
+      }
       changed?.();
       return;
     }
@@ -565,6 +573,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     session = { type: 'bound', id: nextSession };
     images.clear(); rmSync(imageDir, { recursive: true, force: true }); mkdirSync(imageDir, { mode: 0o700 });
     epoch = mintId();
+    corrected.clear();
     items = [];
     assistant = undefined;
     sent.clear();
@@ -683,6 +692,11 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
         if (counters) counters.cursors++;
         const after = Number(url.searchParams.get("after") ?? -1);
         if (!Number.isSafeInteger(after) || after < -1) { body(req, ""); return true; }
+        for (const seq of corrected) {
+          if (seq > after) continue;
+          body(req, frame(JSON.stringify({ type: 'item', item: output(items[seq]) })), true);
+          if (req.writableEnded || req.destroyed) break;
+        }
         for (const item of items.slice(after + 1)) {
           body(req, frame(JSON.stringify({ type: "item", item: output(item) })), true);
           if (req.writableEnded || req.destroyed) break;

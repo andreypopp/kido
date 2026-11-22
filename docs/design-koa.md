@@ -772,9 +772,19 @@ entry, so the transcript keeps each item's message object and finds
 its entry id by identity when the user acts; an unpersisted message
 cannot move. The transcript keeps the original labels of its items
 and projects them through that derivation, so a live correction and a
-replay agree by construction. A correction changes items that a
-reconnect cursor may have passed, so it sends the reset record with a
-new epoch rather than a new wire variant.
+replay agree by construction. A correction keeps the epoch, so open
+pages keep their loaded history and position: the transcript compares
+each item's projection before and after the entry, and sends each
+changed item as a full item record with its next revision, then the
+new topic list in the state record. A correction can change items
+that a reconnect cursor has passed, so the transcript remembers the
+corrected items of the epoch, and a cursor reconnect gets them again
+before the missing items. The page ignores an item record below its
+loaded history, or holds it while a history request is pending; its
+later history page projects the current names. It takes an unloaded
+item inside its loaded history, so an item that a correction moves
+into the filtered topic appears in place. The page that renames a topic moves its own filter
+to the target; another page with a filter on the old name clears it.
 
 The root's prompt requires a marker and reuse of an existing topic
 for related work. Its branch stores a name index, not a second copy

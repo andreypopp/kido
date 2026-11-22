@@ -304,9 +304,11 @@ function dragTopic(event: PointerEvent, source: HTMLElement, from: TopicName) {
   document.addEventListener('keydown', cancel, true);
   document.addEventListener('pointermove', move); document.addEventListener('pointerup', end); document.addEventListener('pointercancel', end);
 }
+const topicMoves = new Map<string, { from: TopicName; to: TopicName }>();
 async function moveTopic(from: TopicName, to: TopicName) {
+  const scope = filterKey(), filter = topicFilter(), move = { from, to };
+  topicMoves.set(scope, move);
   try {
-    const scope = filterKey(), filter = topicFilter();
     await fetchJSON('/topics/move', { sessionId: state.sessionId, from, to });
     const choice = composerTopics.get(scope);
     if ((choice?.type === 'topic' ? choice.name : choice ? undefined : topicFilters.get(scope)) === from) composerTopics.set(scope, { type: 'topic', name: to });
@@ -315,6 +317,7 @@ async function moveTopic(from: TopicName, to: TopicName) {
       else topicFilters.set(scope, to);
     } else if (filterKey() === scope) refreshComposer();
   } catch (error) { reportError(error); }
+  finally { if (topicMoves.get(scope) === move) topicMoves.delete(scope); }
 }
 let renaming = false, topicClick: number | undefined;
 function clickTopic(event: MouseEvent, entry: HTMLElement, name: TopicName) {
@@ -456,7 +459,7 @@ let dockHeight = 0;
 let epoch = '', after = -1, first: number | undefined, more = false, delay = 200;
 let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
-let historyRequest: { before: number; topic?: TopicName; patches: Patch[]; done: Promise<void> } | undefined;
+let historyRequest: { before: number; topic?: TopicName; patches: (Patch | Extract<PageRecord, { type: 'item' }>)[]; done: Promise<void> } | undefined;
 let editorOpening = false;
 const draft = attach(element('attachments'), () => refreshComposer(), () => state.edit ? 'editing' : editor.bash() ? 'command' : undefined);
 const pendingBash = new Map<string, ReturnType<typeof commandRun>>();
@@ -1225,7 +1228,7 @@ function accept(item: WireItem) {
   first = first === undefined ? item.seq : Math.min(first, item.seq);
   if (item.kind === 'topics') {
     const previous = topicItems.get(item.target);
-    if (!previous || previous.seq < item.seq) {
+    if (!previous || previous.seq < item.seq || previous.seq === item.seq && previous.revision < item.revision) {
       projections.set(item.target, visible(item.target));
       topicItems.set(item.target, item);
       const target = items.get(item.target);
@@ -1901,7 +1904,8 @@ function apply(record: PageRecord) {
     schedule();
   } else if (record.type === 'item') {
     const current = items.get(record.item.seq);
-    if (!current || record.item.revision >= current.revision) { accept(record.item); changedItem(record.item.seq, !current); }
+    if (!current && historyBefore !== undefined && Number.isFinite(historyBefore) && record.item.seq < historyBefore) { historyRequest?.patches.push(record); return; }
+    if (!current || record.item.revision > current.revision) { accept(record.item); changedItem(record.item.seq, !current); }
   } else if (record.type === 'patch') applyPatch(record, true);
   else if (record.type === 'reload') location.reload();
   else if (record.type === 'job-reset') { enqueue({ type: 'reset' }); epoch = record.epoch; job.reset(record); after = job.cursor(); }
@@ -1921,7 +1925,11 @@ function apply(record: PageRecord) {
     state = record;
     reportComposer();
     if (scopeChanged) { clearTimeout(topicClick); topicClick = undefined; historyRequest = undefined; historyBefore = undefined; }
-    if ('topics' in record && !record.topics.some(topic => topic.name === topicFilter())) topicFilters.delete(filterKey());
+    if ('topics' in record && !record.topics.some(topic => topic.name === topicFilter())) {
+      const move = topicMoves.get(filterKey());
+      if (move && move.from === topicFilter() && record.topics.some(topic => topic.name === move.to)) topicFilters.set(filterKey(), move.to);
+      else topicFilters.delete(filterKey());
+    }
     renderTopics();
     if (previousFilter !== topicFilter() || scopeChanged && topicFilter() !== undefined) { historyRequest = undefined; historyBefore = undefined; refreshTopicItems(); if (epoch && record.view.type === 'root') void reloadTopic(); }
     if (workingChanged && previousFilter === topicFilter() && topicFilter() && priorInput?.kind === 'user') accept({ ...priorInput });
@@ -2272,7 +2280,11 @@ async function loadOlder(mine: NonNullable<typeof historyRequest>) {
       more = result.more;
       historyBefore = result.items.filter(item => !mine.topic || item.kind !== 'annotations' && item.kind !== 'topics').reduce((lowest, item) => Math.min(lowest, item.seq), mine.before);
       for (const item of result.items) if (!items.has(item.seq)) accept(item);
-      for (const patch of mine.patches) { applyPatch(patch, false); if (historyRequest !== mine) return; }
+      for (const patch of mine.patches) {
+        if (patch.type === 'patch') applyPatch(patch, false);
+        else if (items.has(patch.item.seq)) apply(patch);
+        if (historyRequest !== mine) return;
+      }
       await rendered();
       applied = true;
     }
