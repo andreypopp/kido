@@ -810,15 +810,12 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
         if (counters) counters.cursors++;
         const after = Number(url.searchParams.get("after") ?? -1);
         if (!Number.isSafeInteger(after) || after < -1) { body(req, ""); return true; }
+        let replay = "";
         for (const seq of corrected) {
-          if (seq > after) continue;
-          body(req, frame(JSON.stringify({ type: 'item', item: output(items[seq]) })), "live");
-          if (req.writableEnded || req.destroyed) break;
+          if (seq <= after) replay += frame(JSON.stringify({ type: "item", item: output(items[seq]) }));
         }
-        for (const item of items.slice(after + 1)) {
-          body(req, frame(JSON.stringify({ type: "item", item: output(item) })), "live");
-          if (req.writableEnded || req.destroyed) break;
-        }
+        for (const item of items.slice(after + 1)) replay += frame(JSON.stringify({ type: "item", item: output(item) }));
+        body(req, replay, "reset");
       } else { if (counters) counters.resets++; body(req, reset(), "reset"); }
       if (req.writableEnded || req.destroyed) return true;
       follow(subscribers, req, address, undefined, url.searchParams.has("koa"));

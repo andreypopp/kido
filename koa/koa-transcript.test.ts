@@ -24,7 +24,7 @@ function request(view: ReturnType<typeof transcript>, path: string, address: Par
   request.url = path;
   const response = new ServerResponse(request);
   const lines: string[] = [];
-  response.write = (chunk: string) => { lines.push(chunk); return true; };
+  response.write = (chunk: string) => { lines.push(...chunk.split(/(?<=\n\n)/).filter(Boolean)); return true; };
   response.end = (chunk?: unknown) => { if (typeof chunk === "string") lines.push(chunk); return response; };
   assert.equal(view.handle(request, response, address), true);
   return lines;
@@ -50,6 +50,22 @@ test('large resets keep a stalled stream open until live output exceeds the cap'
   assert.equal(response.writableEnded, false);
   for (let i = 0; i < 80; i++) child.message({ role: 'user', content: 'y'.repeat(16384), timestamp: 100 + i }, 'end');
   assert.equal(response.writableEnded, true);
+});
+
+test('large reconnect replays keep a stalled stream open', t => {
+  const view = transcript({ dir: directory(t), flushMs: 1, branch: () => [], sessionEntryToContextMessages });
+  t.after(() => view.close());
+  view.message({ role: 'user', content: 'initial', timestamp: 0 }, 'end');
+  const snapshot = JSON.parse(request(view, '/items?before=1').join(''));
+  const after = snapshot.items.at(-1).seq;
+  for (let i = 0; i < 80; i++) view.message({ role: 'user', content: 'x'.repeat(16384), timestamp: i + 1 }, 'end');
+  const incoming = new IncomingMessage(new Socket());
+  incoming.httpVersionMajor = 1; incoming.httpVersionMinor = 1;
+  incoming.method = 'GET'; incoming.url = `/events?epoch=${snapshot.epoch}&after=${after}`;
+  const response = new ServerResponse(incoming);
+  assert.equal(view.handle(incoming, response), true);
+  assert.ok(response.writableLength > 1 << 20);
+  assert.equal(response.writableEnded, false);
 });
 
 test('message moves use persisted entry identity with equal timestamps', t => {

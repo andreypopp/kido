@@ -433,8 +433,11 @@ rows do not fill fills itself; a failed page stops this until the next
 scroll. A slow page whose output queue exceeds the feed cap is
 disconnected and can catch up; it does not block other pages. A
 reset (a first connection, a view switch, a resync or a job's reset)
-is always written whole, because its window has no byte limit; the
-cap counts only the live records queued after the undrained reset.
+is always written whole, because its window has no byte limit. The
+catch-up of a reconnect with a matching epoch is written whole in the
+same way: its corrected items do not move the page's cursor, so a
+capped catch-up would reconnect in a loop. The cap counts only the
+live records queued after the undrained reset or catch-up.
 
 An exception while applying a record is different from a transport
 failure. The page closes the feed and asks for a reload. Automatic
