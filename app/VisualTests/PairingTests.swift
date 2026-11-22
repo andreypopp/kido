@@ -59,6 +59,9 @@ import SnapshotTesting
             defer { app.closePalette(); owner.close() }
             app.pairServer()
             let panel = try XCTUnwrap(app.palettePanel)
+            let scale = panel.backingScaleFactor
+            panel.setFrameOrigin(NSPoint(x: (panel.frame.minX * scale).rounded() / scale,
+                                         y: (panel.frame.minY * scale).rounded() / scale))
             let palette = panel.palette
             var result = EnrollmentResult.rejected(403)
             var pending: CheckedContinuation<EnrollmentResult, Never>?

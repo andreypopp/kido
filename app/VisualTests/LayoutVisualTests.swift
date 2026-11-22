@@ -457,6 +457,7 @@ import XCTest
     }
 
     func testAFloatDroppedOnATiledPaneEdgeDocksThere() async throws {
+        owner.window.orderFront(nil)
         try await put(floatWindow())
         try await placed("the float") { $0.floats.count == 1 }
         let terminal = try XCTUnwrap(terminal), float = PaneID(number: 3)
@@ -623,6 +624,7 @@ import XCTest
     }
 
     func testAFloatThatLeavesAndReturnsWithoutMovingSendsNothing() async throws {
+        owner.window.orderFront(nil)
         let new = String(sleep.dropFirst(8).dropLast())
         try await put(#"[{"name":"w","tree":{"split":"h","children":[\#(sleep),\#(sleep)]},"floats":[{"pane":\#(new),"x":20,"y":12,"cols":20,"rows":6}]}]"#)
         try await placed("the float") { $0.floats.count == 1 }

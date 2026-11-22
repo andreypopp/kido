@@ -170,6 +170,13 @@ import XCTest
         session.edit = { edit, key in editor.submit(edit, key: key) }
         session.editing = { editor.holding }
         session.floatState = { [weak self] pane in self?.koModel?.layout.layout.locate(pane)?.window.floatState(pane) }
+        session.floatDropView = { [weak self] point, _ in
+            guard let self, window.frame.contains(point), let shown = model.window,
+                  koModel?.layout.layout.window(shown)?.zoom == nil,
+                  let view = session.windows[shown], !view.isHidden else { return nil }
+            return view
+        }
+        session.dockFloat = { edit, _ in editor.submit(edit) }
         session.selectPane = { pane in try? client.select(KO_SELECT_PANE, pane) }
         session.sizeClient = { [weak self] viewport, windows in
             self?.sentSizes.append("\(viewport.cols)x\(viewport.rows)")
