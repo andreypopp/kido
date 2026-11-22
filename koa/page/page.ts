@@ -95,13 +95,13 @@ const growing: HTMLElement[] = [], observed = new Map<Element, Watch>(), measure
 const pathWarnings = new Map<number, string>();
 let pathWarningEpoch = 0;
 let state: State = { pathEditor: false, view: { id: '', path: [], type: 'root' }, topics: [], agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, dialogs: [] };
+let shownFilter: TopicName | undefined;
 const topics = createTopics({
   state: () => state, items, element, node, timestamp, refreshComposer, focus: () => editor.focus(),
-  filterChanged(name) {
-    transcriptHistory.cancel('scope'); topics.close(); refreshTopicItems(); topics.render(); refreshComposer();
-    enqueue({ type: 'filter', active: name !== undefined });
-    for (const seq of items.keys()) changedItem(seq, false);
-    if (epoch) void transcriptHistory.reload();
+  filterChanged() {
+    transcriptHistory.cancel('scope'); topics.close(); topics.render(); refreshComposer();
+    if (epoch) void transcriptHistory.reload('filter');
+    else finishTopicFilter();
   },
   async correct(correction) {
     const { kind, ...body } = correction;
@@ -109,6 +109,11 @@ const topics = createTopics({
     catch (error) { reportError(error); throw error; }
   },
 }, memory);
+function finishTopicFilter() {
+  refreshTopicItems();
+  enqueue({ type: 'filter', active: topics.filter() !== undefined });
+  for (const seq of items.keys()) changedItem(seq, false);
+}
 function latestTopicInput(): WireItem | undefined {
   let latest: WireItem | undefined;
   for (const item of items.values()) if ((item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') && (!latest || item.seq > latest.seq)) latest = item;
@@ -123,11 +128,12 @@ const topicContext: TopicContext = { items, labels: seq => topicItems.get(seq)?.
 function visible(seq: number): WireItem | undefined {
   const item = items.get(seq);
   if (projections.has(seq)) return projections.get(seq);
-  const projected = projectTopic(topicContext, seq, topics.filter()) ?? (item && waitingForTopic(item) ? item : undefined);
+  const projected = projectTopic(topicContext, seq, shownFilter) ?? (item && waitingForTopic(item) ? item : undefined);
   projections.set(seq, projected);
   return projected;
 }
 function refreshTopicItems() {
+  shownFilter = topics.filter();
   topicContext.topics = undefined;
   projections.clear(); segmentCache.clear(); owners.clear(); find = undefined; selected = undefined;
   order.length = 0; extents.clear(); table = undefined;
@@ -147,7 +153,7 @@ const transcriptHistory = createTranscriptHistory({
   epoch: () => epoch, session: () => state.sessionId, view: () => state.view.type, filter: () => topics.filter(), first: () => first,
   viewport: () => element('scroll'), has: seq => items.has(seq), accept: rows => acceptHistory(rows),
   apply: record => { if (record.type === 'patch') applyPatch(record, false); else apply(record); },
-  history: () => enqueue({ type: 'history' }), rendered: () => rendered(), error: reportError,
+  history: () => enqueue({ type: 'history' }), filtered: finishTopicFilter, rendered: () => rendered(), error: reportError,
 });
 let editorOpening = false;
 const draft = attach(element('attachments'), () => refreshComposer(), () => state.edit ? 'editing' : editor.bash() ? 'command' : undefined);
@@ -944,7 +950,7 @@ function acceptHistory(rows: readonly WireItem[]) {
 }
 function accept(item: WireItem) {
   const previous = visible(item.seq);
-  const priorInput = !items.has(item.seq) && topics.filter() && (item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') ? latestTopicInput() : undefined;
+  const priorInput = !items.has(item.seq) && shownFilter && (item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') ? latestTopicInput() : undefined;
   if (item.kind === 'topics') projections.set(item.target, visible(item.target));
   const { old, changedRun, related } = installItem(item);
   if (changedRun) { topicContext.topics = undefined; invalidateRuns(allRuns, item.seq); }
@@ -971,7 +977,7 @@ function accept(item: WireItem) {
     if (seq > item.seq) dirty.add(seq);
   }
   if (priorInput?.kind === 'user' && priorInput.seq !== item.seq) accept({ ...priorInput });
-  if (topics.filter() && changedRun) {
+  if (shownFilter && changedRun) {
     let from = item.seq, to = item.seq;
     while (from > 0) {
       const previous = items.get(from - 1); if (!previous) break;
@@ -999,7 +1005,7 @@ function syncChildren(parent: HTMLElement, children: HTMLElement[]) {
   while (parent.childNodes.length > children.length) { const extra = parent.lastChild; if (extra) unwatch(extra); extra?.remove(); }
 }
 function renderItem(item: WireItem) {
-  const previous = views.get(item.seq), warning = pathWarnings.get(item.seq), filter = topics.filter();
+  const previous = views.get(item.seq), warning = pathWarnings.get(item.seq), filter = shownFilter;
   const context = runContext(), runs = runParts(items.get(item.seq), item).map(part => part.kind === 'boundary' ? 'boundary' : part.kind + ':' + sourceKey(part.source) + ':' + (runOf(context, part.source) ? sourceKey(runOwner(context, part.source)) : '')).join('|');
   if (previous?.item === item && previous.warning === warning && previous.filter === filter && previous.runs === runs) return false;
   const view = previous?.view ?? node('div');
@@ -1567,7 +1573,7 @@ function statuses() {
   }));
 }
 function resync() {
-  transcriptHistory.cancel('request'); epoch = ''; after = -1;
+  transcriptHistory.cancel('request'); refreshTopicItems(); epoch = ''; after = -1;
   if (source) source.onmessage = source.onerror = source.onopen = null;
   source?.close(); clearTimeout(reconnect);
   connect();
@@ -1603,6 +1609,7 @@ function apply(record: PageRecord) {
     enqueue({ type: 'reset' });
     lastMeasurement = undefined;
     resetting = true;
+    refreshTopicItems();
     acceptHistory(record.items);
     transcriptHistory.reset(record);
     if (topics.filter()) void transcriptHistory.reload();
@@ -1635,8 +1642,8 @@ function apply(record: PageRecord) {
     if (scopeChanged) transcriptHistory.cancel('scope');
     if (scopeChanged) decide({ type: 'switch', scope: { view: record.view.id, sessionId: record.sessionId }, loaded, filtered: topics.filter() !== undefined });
     topics.render();
-    if (scopeChanged && (previousFilter !== topics.filter() || topics.filter() !== undefined)) { transcriptHistory.cancel('scope'); refreshTopicItems(); if (epoch && record.view.type === 'root') void transcriptHistory.reload(); }
-    if (workingChanged && previousFilter === topics.filter() && topics.filter() && priorInput?.kind === 'user') accept({ ...priorInput });
+    if (scopeChanged) { refreshTopicItems(); if (epoch && record.view.type === 'root' && (previousFilter !== topics.filter() || topics.filter() !== undefined)) void transcriptHistory.reload(); }
+    if (workingChanged && previousFilter === shownFilter && shownFilter && priorInput?.kind === 'user') accept({ ...priorInput });
     windowDirty = true; schedule(); if (agentsChanged || viewChanged) { for (const seq of views.keys()) dirty.add(seq); } document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
     showJobView();
     if (viewChanged) rescopeImages();

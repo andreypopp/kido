@@ -5029,6 +5029,25 @@ test('item corrections keep loaded history and ignore unloaded older rows', asyn
   assert.equal(page.evaluate("items.get(25).topic"), 'renamed');
 });
 
+test('a topic switch keeps its presentation until history arrives and lands once', async () => {
+  const page = await windowPage();
+  page.evaluate("element('scroll').clientHeight=500");
+  const initial = page.rows(300, 400).map(row => ({ ...row, topic: row.seq >= 398 ? 'one' : 'two' }));
+  const older = page.rows(100, 200).map(row => ({ ...row, topic: 'one' }));
+  page.evaluate("state={...state,sessionId:'s',topics:[{name:'one'},{name:'two'}]}");
+  page.open(initial); page.settle(12);
+  const release = page.gate([...older, ...initial.slice(-2)]);
+  const sample = () => { const first = page.seqs().find(seq => page.offset(seq) + 100 > 0); return { top: page.top(), first, offset: first === undefined ? undefined : page.offset(first), mode: page.evaluate('scrolling.kind'), glide: page.evaluate('scrollDecision.glideOffset') }; };
+  const initialPosition = sample();
+  page.evaluate("topics.debug.updateTopicFilter('one'); apply({type:'item',item:{...items.get(395),revision:1}})");
+  const before = []; for (let frame = 0; frame < 12; frame++) { page.step(16); before.push(sample()); }
+  assert.deepEqual(before.map(({ first, offset }) => ({ first, offset })), before.map(() => ({ first: initialPosition.first, offset: initialPosition.offset })));
+  assert.equal(page.evaluate('visible(395)?.seq'), 395);
+  release();
+  const after = []; for (let turn=0;turn<20;turn++) { await page.settled(); page.step(16); after.push(sample()); }
+  assert.deepEqual(after.map(({ first, offset, glide }) => ({ first, offset, glide })), after.map(() => ({ first: 192, offset: 0, glide: 0 })));
+});
+
 test('filtered history installs 400 summary rows with a linear topic index', async () => {
   const page = await windowPage();
   page.open([], false);

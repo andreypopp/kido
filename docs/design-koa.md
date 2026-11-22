@@ -534,7 +534,12 @@ makes an unfocused page a reader. So a reload or `/restart` of a
 following view opens at the bottom.
 
 A switch of the topic filter drops the previous filter's reader
-anchor. The view opens at the divider above the first unread row
+anchor. The composer's topic follows the filter at once, but the
+transcript keeps its shown filter, rows and position until the
+filter's history reload arrives. Then the page installs the rows,
+changes the projection and lands in one move, so the switch lands
+once. A response for a filter that a later switch replaced is
+dropped. The view opens at the divider above the first unread row
 that the filter shows, or follows the bottom when it shows none.
 Unread state belongs to the row, not to the filter: a row that the
 filter hides keeps it, so the row is still unread in a later view

@@ -4,12 +4,12 @@ import { scoped } from './http.ts';
 
 type Snapshot = Extract<PageRecord, { type: 'reset' }>;
 type Buffered = Patch | Extract<PageRecord, { type: 'item' }>;
-type Request = { before: number; topic?: TopicName; patches: Buffered[]; done: Promise<void> };
+type Request = { before: number; topic?: TopicName; patches: Buffered[]; done: Promise<void>; transition: 'history' | 'filter' };
 export function createTranscriptHistory(deps: {
   epoch(): string; session(): string | undefined; view(): 'root' | 'job' | 'subagent'; filter(): TopicName | undefined; first(): number | undefined;
   viewport(): { scrollHeight: number; clientHeight: number; scrollTop: number };
   has(seq: number): boolean; accept(items: readonly WireItem[]): void; apply(record: Buffered): void;
-  history(): void; rendered(): Promise<void>; error(error: unknown): void;
+  history(): void; filtered(): void; rendered(): Promise<void>; error(error: unknown): void;
 }) {
   let before: number | undefined, more = false, request: Request | undefined;
   function cancel(mode: 'request' | 'scope') { request = undefined; if (mode === 'scope') before = undefined; }
@@ -21,11 +21,11 @@ export function createTranscriptHistory(deps: {
   function earlier() {
     const first = deps.first();
     if (deps.view() === 'job' || !more || first === undefined) return;
-    if (!request) { const mine = request = { before: before ?? first, ...(deps.filter() ? { topic: deps.filter() } : {}), patches: [], done: Promise.resolve() }; mine.done = load(mine); }
+    if (!request) { const mine = request = { before: before ?? first, ...(deps.filter() ? { topic: deps.filter() } : {}), patches: [], done: Promise.resolve(), transition: 'history' }; mine.done = load(mine); }
     return request.done;
   }
-  async function reload() {
-    const mine = request = { before: Number.MAX_SAFE_INTEGER, ...(deps.filter() ? { topic: deps.filter() } : {}), patches: [], done: Promise.resolve() };
+  async function reload(transition: Request['transition'] = 'history') {
+    const mine = request = { before: Number.MAX_SAFE_INTEGER, ...(deps.filter() ? { topic: deps.filter() } : {}), patches: [], done: Promise.resolve(), transition };
     mine.done = load(mine); return mine.done;
   }
   async function load(mine: Request) {
@@ -41,9 +41,10 @@ export function createTranscriptHistory(deps: {
           if (patch.type === 'patch' || deps.has(patch.item.seq)) deps.apply(patch);
           if (request !== mine) return;
         }
+        if (mine.transition === 'filter') { mine.transition = 'history'; deps.filtered(); }
         await deps.rendered(); applied = true;
       }
-    } catch (error) { deps.error(error); } finally { if (request === mine) { request = undefined; if (applied && before !== mine.before) fill(); } }
+    } catch (error) { deps.error(error); } finally { if (request === mine) { if (mine.transition === 'filter') deps.filtered(); request = undefined; if (applied && before !== mine.before) fill(); } }
   }
   return { get more() { return more; }, get pending() { return request !== undefined; }, cancel, reset, earlier, reload, fill,
     buffer(record: Buffered) { request?.patches.push(record); },
