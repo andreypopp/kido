@@ -100,7 +100,7 @@ test('root spawn records its thread and resolves inbound reports in its namespac
     const child = entriesOf(s, 'koa.agent').find(entry => entry.name === 'worker'); assert.ok(child);
     assert.equal(child.thread, 'work'); assert.deepEqual(tasks, ['do it']);
     assert.deepEqual(entriesOf(s, 'koa.thread').map(entry => entry.name), ['first', 'work']);
-    channel.host.extension?.receiveReport({ session: String(child.session), name: 'worker' }, 'done');
+    channel.host.extension?.receiveReport({ session: String(child.session), name: 'worker' }, 'done', false);
     assert.equal(get(s.messages.at(-1)?.message.details, 'thread'), 'work');
   } finally { await fx.restore(); }
 });

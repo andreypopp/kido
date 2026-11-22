@@ -1414,7 +1414,6 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   type Marks = Map<string, { work: number; report: number; text?: string }>;
 
-  // Where in the branch each child last got work and last reported, in one pass.
   const childMarks = (all = entries()): Marks => {
     const marks: Marks = new Map();
     for (const entry of all) {
@@ -1423,7 +1422,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       const mark = marks.get(child) ?? { work: -1, report: -1 };
       if (entry.customType === ENTRY_WORK) mark.work = entry.index;
       else {
-        mark.report = entry.index;
+        mark.report = entry.data.interim ? -1 : entry.index;
         mark.text = str(entry.data.text);
       }
       marks.set(child, mark);
@@ -1431,7 +1430,6 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     return marks;
   };
 
-  // The parent's rule: the child's last report is later than the last work it was given, or it was given none.
   const childReported = (child: ChildData, marks = childMarks()): boolean => {
     const mark = marks.get(child.session);
     return !mark || mark.work === -1 || mark.report > mark.work;
@@ -1439,7 +1437,6 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   const markChildWork = (child: ChildData): void => append(ENTRY_WORK, { child: child.session });
 
-  // The child's rule, about itself, read from this parent's branch: the text is the report after its last work.
   const childState = (child: string): { reported: boolean; text?: string } => {
     const mark = childMarks().get(child);
     const reported = !mark || mark.work === -1 || mark.report > mark.work;
@@ -2798,7 +2795,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     const generation = workGeneration;
     if (ownLiveWork()) return;
     if (turnEndedByControl || generation !== workGeneration || parent.childState(ownSessionId).text !== prior.text) return;
-    parent.receiveReport({ session: ownSessionId, name: self.name }, text);
+    parent.receiveReport({ session: ownSessionId, name: self.name }, text, queuedInput.length > 0);
   };
 
   pi.on("agent_settled", async (event: { aborted?: boolean }, ctx: { isIdle(): boolean }) => {
@@ -2844,8 +2841,8 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     jobEnded: () => { if (settled) void reportIfPending().catch((error: unknown) => session?.ui?.notify(errorText(error), "error")); },
     completionContext, restartState, receive, childState, scope: async (maxAgeMs, ended = false) => (await discovery(maxAgeMs, !ended)).rows, jobNotice: deliverNotice, jobStream,
     markWork: (child) => { const known = children().find((c) => c.session === child); if (known) markChildWork(known); },
-    receiveReport: (child, text) => {
-      append(ENTRY_REPORT, { child: child.session, name: child.name, text });
+    receiveReport: (child, text, interim) => {
+      append(ENTRY_REPORT, { child: child.session, name: child.name, text, interim });
       deliverNotice(reportNotice(child, text), { inbound: { form: 'report', relation: 'child' }, agent: childRef(child), body: text });
     },
     markEnded: (child, cause) => append(ENTRY_ENDED, { child, cause }),

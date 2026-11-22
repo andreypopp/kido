@@ -67,7 +67,7 @@ export type Extension = JobSink & {
   scope(maxAgeMs: number, ended?: boolean): Promise<AgentRow[]>;
   markWork(child: string): void;
   childState(child: string): { reported: boolean; text?: string };
-  receiveReport(child: { session: string; name: string }, text: string): void;
+  receiveReport(child: { session: string; name: string }, text: string, interim: boolean): void;
   markEnded(child: string, cause: AgentEnd): void;
 };
 

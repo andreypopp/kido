@@ -10,7 +10,7 @@ function parentLedger() {
   const notes: string[] = [];
   const extension = {
     markWork: () => { work = ++counter; },
-    receiveReport: (_child: unknown, body: string) => { report = ++counter; text = body; reports.push(body); },
+    receiveReport: (_child: unknown, body: string, interim: boolean) => { report = interim ? -1 : ++counter; text = body; reports.push(body); },
     childState: () => {
       const reported = work === -1 || report > work;
       return { reported, ...(work !== -1 && reported && text !== undefined ? { text } : {}) };
@@ -124,6 +124,41 @@ test("a child that owes its own parent a report holds the report until it has re
       s.entries.push({ type: "custom", customType: "koa.report", data: { owner: "self-session", child: "kid-session", text: "ok", at: 2 } });
       await idleTurn(s, "all done");
       assert.deepEqual(ledger.reports, ["all done"]);
+    });
+  } finally { await fx.restore(); }
+});
+
+test("an interim child report holds the parent's report until the final report", async () => {
+  const fx = makeFixture();
+  try {
+    await child(fx, async (s, ledger, channel) => {
+      s.entries.push({ type: "custom", customType: "koa.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: "kid-session", model: "m", fork: false, cwd: "/tmp" } });
+      Object.assign(channel.host.self, { extension: channel.host.extension });
+      const kidChannel = createChannel();
+      Object.assign(kidChannel.host.self, { id: "kid-session", parent: channel.host.self, name: "kid" });
+      Object.assign(channel.host, { find: (id: string) => id === "kid-session" ? kidChannel.host.self : undefined });
+      const kid = await startSession(fx, { channel: kidChannel, sessionId: "kid-session", name: "kid" });
+      const parentExtension = channel.host.extension;
+      const kidExtension = kidChannel.host.extension;
+      assert.ok(parentExtension);
+      assert.ok(kidExtension);
+      for (const finalText of ["same result", ""]) {
+        await s.emit("message_start", { message: { role: "user", content: "manage child" } });
+        await kid.emit("message_start", { message: { role: "user", content: "task" } });
+        await kid.emit("agent_start");
+        await kidExtension.receive({ kind: "message", agent: { name: "worker", session: "self-session" }, relation: "parent", text: "follow up" });
+        await kid.emit("turn_end", { message: assistant("stop", "same result"), toolResults: [] });
+        assert.equal(entriesOf(s, "koa.report").at(-1)?.text, "same result");
+        const count = ledger.reports.length;
+        await idleTurn(s, "parent done");
+        assert.equal(ledger.reports.length, count, "the parent must wait while the child's queued work is pending");
+        assert.equal(parentExtension.childState("kid-session").reported, false);
+        await kid.emit("message_start", { message: { role: "custom", customType: "ko-message", details: { work: true, body: "follow up" } } });
+        await idleTurn(kid, finalText);
+        assert.equal(parentExtension.childState("kid-session").reported, true);
+        await idleTurn(s, "parent done");
+        assert.equal(ledger.reports.length, count + 1);
+      }
     });
   } finally { await fx.restore(); }
 });

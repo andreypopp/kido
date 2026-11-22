@@ -924,7 +924,7 @@ The child's edge is written before extensions bind. The repository's
 git-write guard reads that owned edge.
 
 Report state is derived from branch order: a child's last report must
-follow its last work, or it must have no work. The child reads this
+follow its last work and must not be interim, or it must have no work. The child reads this
 fact through its parent; there is no duplicate child-side store.
 Work includes text sent by the user in the child's page view.
 
@@ -936,7 +936,12 @@ from the parent, or a steer or follow-up that the user typed in the
 child's page. pi starts the next turn in the same run and settles
 only after that turn, so the earlier result would be lost. Each
 queued input is consumed only when that input starts. That turn's own
-final text is a further report. Input that the child queues for itself, such as
+final text is a further report. A report made while input is still
+queued is interim: the parent records and shows it, but it does not
+cover the work, so the child still owes a report and stays live work
+for its parent until a report made with no input queued. Otherwise
+the parent would end its own turn and report while the child still
+works on the queued input. Input that the child queues for itself, such as
 a job's notice or output, a child's report or a system notice,
 continues its own work: its turn's end waits for the settle. Aborted or
 interrupted turns do not report. Provider errors send an error notice
