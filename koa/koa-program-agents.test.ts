@@ -125,11 +125,11 @@ test("the pane's one queue reaches the agent that data.to names; a select switch
   const kid = viewOf(await app.until(listed("kid")), "kid");
   const rootId = state(app).view.id;
   const view = () => state(app).view.id;
+  await pollUntil(async () => (await statusRecords(app)).some(post => post.id === "agents/kid" && post.selection === "offered" && post.promptable === true), 5000, "the promptable child record before selection");
   await app.feed({ id: "select-user-1", kind: "select", text: "agents/kid" });
   await pollUntil(() => view() === kid, 5000, "the select of the kid");
-  await pollUntil(async () => (await statusRecords(app)).some(post => post.id === "agents/kid" && post.promptable === true), 5000, "the promptable child record");
+  await pollUntil(async () => (await statusRecords(app)).some(post => post.id === "agents/kid" && post.selection === "selected" && post.promptable === true), 5000, "the selected promptable child record");
   const posts = await statusRecords(app);
-  assert.equal(posts.findLast(post => post.id === "agents/kid")?.promptable, true);
   await app.feed({ id: "select-user-2", kind: "select", text: "" });
   await pollUntil(() => view() === rootId, 5000, "the select of the root");
   await pollUntil(async () => (await statusRecords(app)).slice(posts.length).some(post => post.id === "agents/kid" && post.selection === "offered"), 5000, "the former child record to be offered again");
