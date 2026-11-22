@@ -115,6 +115,7 @@ function captureTarget(name: string, scenario: Scenario): { selector: string; pa
       return { selector: ".newmsgs", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
     case "latest/latest-new":
       return { selector: "#latest", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
+    case "topics/topics-filter-composer":
     case "topics/topic-create-empty":
     case "topics/topic-create-typed":
       return { selector: '#field', padding: { top: 8, left: 8, bottom: 8, right: 8 } };
@@ -312,7 +313,7 @@ async function prepareCapture(name: string, scenario: Scenario, measured: boolea
         if (scenario == "topics") {
             let ready: string;
             switch (name) {
-            case "topics-filter": case "topics-filter-narrow": case "topics-filter-panel":
+            case "topics-filter": case "topics-filter-composer": case "topics-filter-narrow": case "topics-filter-panel":
                 ready = `document.querySelector('.topic-entry.current')?.dataset.topic==='sidebar'&&document.querySelector('#items').textContent.includes('Verification passed; I merge the unit next.')&&${koaIdle}`
             break;
             case "topics-marks": case "topics-marks-narrow": case "topics-drag-row": case "topics-drag-reply": case "topics-rename": case "topics-pending":
@@ -395,6 +396,30 @@ async function driveTopics(web: Page, phases: string[], capture: (name: string) 
             await webviewUntil(web, `document.querySelector('.composer-topic .topic-clear')!==null&&document.querySelector('.user')!==null&&document.querySelector('#items .topic-chip:not(.topic-new)')===null&&${koaIdle}`)
             const filtered = await webviewJS(web, "document.querySelector('#items .topic-chip:not(.topic-new)')===null&&document.querySelector('#topic-cell')===null&&document.querySelector('.composer-topic .topic-name').textContent==='#sidebar'&&document.querySelector('.topic-capsule .topic-clear')!==null")
             equal(filtered, true, "Filtered messages have time-only headers and the composer owns the chip")
+            if (name === 'topics-filter') {
+                const height = () => web.locator('#composer').evaluate(node => node.getBoundingClientRect().height)
+                const choose = async (topic: string) => {
+                    await web.locator('.composer-topic .topic-new').click()
+                    await web.locator('.composer-topic .topic-input').fill(topic)
+                    await web.locator('.composer-topic .topic-input').press('Enter')
+                }
+                await web.locator('.composer-topic .topic-clear').click()
+                const empty = await height()
+                await choose('short')
+                const short = await height()
+                await web.locator('.composer-topic .topic-clear').click()
+                await choose('A long topic name that must be ellipsized '.repeat(4))
+                const long = await height()
+                const ellipsized = await web.locator('.composer-topic .topic-name>span:last-child').evaluate(node => node.scrollWidth > node.clientWidth)
+                equal(ellipsized, true, 'The long composer topic is ellipsized')
+                await web.locator('.composer-topic .topic-clear').hover()
+                const hovered = await height()
+                console.log(`Composer heights: + topic=${empty}, short=${short}, long=${long}, clear hovered=${hovered}`)
+                equal([short, long, hovered], [empty, empty, empty], 'Topic controls do not change the composer height')
+                await web.locator('.composer-topic .topic-clear').click()
+                await choose('sidebar')
+                await web.mouse.move(0, 0)
+            }
         }
         if (name.includes("many") || name === 'topics-filter-panel') {
             await webviewJS(web, "(()=>{document.querySelector(document.querySelector('.topic-clear')?'.topic-open':'.topic-overflow').click();return true})()")
@@ -517,6 +542,7 @@ async function driveTopics(web: Page, phases: string[], capture: (name: string) 
             } else equal(await webviewJS(web, "document.querySelector('.topic-capsule').textContent"), '…', 'An all-archived capsule has only its panel opener')
         }
         await capture(name)
+        if (name === 'topics-filter') await capture('topics-filter-composer')
         if (name.startsWith("topics-drag") || name == "topics-rename") {
             await web.keyboard.press('Escape')
             await web.mouse.up()
