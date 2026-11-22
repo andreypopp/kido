@@ -840,7 +840,14 @@ labels.
 The topic panel shows for each topic the first line of its newest
 non-empty user or assistant message. The user drags a topic row onto
 another row to merge it, double-clicks a row to rename it, and drags a
-row onto a message to move its turn. Rename to an existing name is a
+row onto a message to move its turn. The page and the transcript
+select a turn's messages with one rule, `koa/topic-turn.ts`, in seq
+order. A message is a drop target when its turn has ended and, without
+a filter, when some message of the turn has another topic; under a
+filter the page does not hold whole turns, so the server decides. A
+rename, a naming or a drag acts on the session and view where it
+started; a change of view or session, or a reset, cancels it without
+a commit. Rename to an existing name is a
 merge, and a filter on a merged topic follows to its target. A
 single click filters only after the double-click interval, so a
 rename does not filter. Long names are cut on the page with the whole

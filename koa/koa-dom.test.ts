@@ -12,6 +12,7 @@ import { feedbackFixture, settle, shellReply } from "./testdata/completion-fixtu
 import { pathToken } from './path-token.ts';
 import { promptHistory } from './page/history.ts';
 import { ATTACHMENT_LIMITS, pathArg } from "./koa-records.ts";
+import { topicTurn } from './topic-turn.ts';
 import { jobEndText, parseTopicName } from "./records.ts";
 import type { PromptMode } from "./koa-records.ts";
 import { scrollInitial, scrollMemory, scrollStored, scrollUpdate, scrollWindow } from "./page/scroll.ts";
@@ -244,7 +245,7 @@ async function page() {
     };
   };
   const history: { state: unknown; replaceState(state: unknown): void } = { state: null, replaceState(state) { this.state = state; } };
-  const context = { history, parseTopicName, ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, pathToken, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { history, topicTurn, parseTopicName, ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, pathToken, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update,head,quote})', context));
@@ -680,9 +681,102 @@ test('topic rename selects the name and commits Enter and blur but cancels Escap
   controls.key('cancelled', 'Escape'); assert.equal(calls.length, 0);
   controls.key('two', 'Enter'); await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(calls.map(call => [call.path, call.body.from, call.body.to]), [['/topics/move', 'one', 'two']]);
-  controls.blur('x'.repeat(201)); await new Promise<void>(resolve => setImmediate(resolve));
-  assert.equal(calls.at(-1)?.body.to.length, 200);
+  const valid = calls.length; controls.blur('x'.repeat(201)); await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(calls.length, valid);
   const before = calls.length; controls.blur('one'); controls.blur(' '); assert.equal(calls.length, before);
+});
+
+test('topic interactions cancel on scope changes and resets without committing', async () => {
+  const app = await page(), calls: string[] = [];
+  app.context.fetch = async (path?: string) => { calls.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
+  for (const transition of ["apply({...state,type:'state',sessionId:'other'})", "apply({type:'reset',epoch:'new',items:[],more:false})"]) {
+    const result = app.run(`(()=>{
+      state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};renderTopics();
+      renameTopic(element('topics').querySelector('.topic-entry'),'one');
+      const input=element('topics').querySelector('.topic-rename');input.value='changed';
+      const plus=newTopicChip({kind:'composer'});element('field').append(plus);startTopicNaming(plus,{kind:'composer'});topicNaming.input.value='named';
+      const handlers=new Map();document.addEventListener=(key,handler)=>handlers.set(key,handler);document.removeEventListener=key=>handlers.delete(key);
+      const source=node('div'), target=node('div');target.dataset.topic='two';target.style.removeProperty=()=>{};
+      element('scroll').getBoundingClientRect=()=>({left:0,right:100,top:0,bottom:100});element('scroll').scrollBy=()=>{};
+      document.elementFromPoint=()=>({closest:selector=>selector.startsWith('.topic-entry')?target:null});
+      dragTopic({button:0,isPrimary:true,clientX:0,clientY:0},source,'one');handlers.get('pointermove')({clientX:10,clientY:50,preventDefault(){}});
+      const drop=handlers.get('pointerup');
+      ${transition};
+      const removed=!element('topics').querySelector('.topic-rename')&&!topicNaming&&!cancelTopicDrag&&!source.classList.contains('dragging');input.onblur();drop({type:'pointerup'});
+      return removed;
+    })()`);
+    assert.equal(result, true);
+  }
+  assert.deepEqual(calls, []);
+});
+
+test('topic drag selects the whole turn in sequence order after older history arrives', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};
+    const handlers=new Map();document.addEventListener=(key,handler)=>handlers.set(key,handler);document.removeEventListener=key=>handlers.delete(key);
+    element('scroll').getBoundingClientRect=()=>({left:0,right:100,top:0,bottom:100});element('scroll').scrollBy=()=>{};
+    const source=node('div'), message=node('div');message.dataset.seq='0';message.style.removeProperty=()=>{};
+    document.elementFromPoint=()=>({closest:selector=>selector.startsWith('#items')?message:null});
+    items.clear();
+    accept({kind:'user',seq:10,revision:1,at:1,final:true,text:'next',topic:'one'});
+    accept({kind:'user',seq:0,revision:1,at:1,final:true,text:'first',topic:'one'});
+    accept({kind:'assistant',seq:1,revision:1,at:1,final:true,blocks:[{type:'text',text:'reply',topic:'two'}],stop:'stop',error:''});
+    const eligible=seq=>{message.dataset.seq=String(seq);dragTopic({button:0,isPrimary:true,clientX:0,clientY:0},source,'one');handlers.get('pointermove')({clientX:10,clientY:50,preventDefault(){}});const marked=message.classList.contains('drop-target');handlers.get('pointercancel')();return marked;};
+    const user=eligible(0), reply=eligible(1);items.set(1,{...items.get(1),final:false});
+    const unfinished=eligible(0);items.delete(1);updateTopicFilter('one');
+    return [user,reply,unfinished,eligible(0)];
+  })()`);
+  assert.deepEqual(Array.from(result), [true, true, false, true]);
+});
+
+test('an unedited astral topic rename preserves the name and naming accepts the same length', async () => {
+  const app = await page(), calls: string[] = [];
+  app.context.fetch = async (path?: string) => { calls.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
+  const limit = app.run(`(()=>{
+    const name='😀'.repeat(101);state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name}]};renderTopics();
+    renameTopic(element('topics').querySelector('.topic-entry'),name);element('topics').querySelector('.topic-rename').onblur();
+    const plus=newTopicChip({kind:'composer'});element('field').append(plus);startTopicNaming(plus,{kind:'composer'});
+    const limit=topicNaming.input.maxLength;topicNaming.input.value=name;finishTopicNaming(true);
+    return [limit,composerTopicName()];
+  })()`);
+  assert.deepEqual(calls, []);
+  assert.notEqual(limit[0], 200);
+  assert.equal(limit[1], '😀'.repeat(101));
+});
+
+test('scope restoration and state reconciliation keep the scroll filter in agreement', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};
+    updateTopicFilter('one');apply({...state,type:'state',sessionId:'other'});scrollEvents.length=0;
+    apply({...state,type:'state',sessionId:'s'});
+    const restored=scrolling.filtered;
+    scrollEvents.length=0;apply({...state,type:'state',topics:[]});
+    return [restored,topicFilter(),scrollEvents.some(event=>event.type==='filter'&&!event.active)];
+  })()`);
+  assert.deepEqual(Array.from(result), [true, undefined, true]);
+});
+
+test('a stale destination filter does not erase the outgoing reader anchor', async () => {
+  const app = await page();
+  const saved = app.run(`(()=>{
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[]};
+    scrolling={...scrollInitial({view:'root',sessionId:'s'}),kind:'reader',anchor:{item:{kind:'message',seq:7},offset:13,edge:'row'}};
+    topicFilters.set('destination:s','stale');
+    apply({...state,type:'state',view:{id:'destination',path:[],type:'root'}});
+    return scrolling.saved.get('root')?.anchor;
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(saved ?? null)), { item: { kind: 'message', seq: 7 }, offset: 13, edge: 'row' });
+});
+
+test('a reconciled destination filter reloads history once per scope transition', async () => {
+  const app = await page(), calls: string[] = [];
+  app.context.fetch = async (path?: string) => { calls.push(path ?? ''); return new Promise(() => {}); };
+  app.run(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[]};epoch='loaded';
+    topicFilters.set('destination:s','stale');topicMoves.set('destination:s',{from:'stale',to:'one'});
+    apply({...state,type:'state',view:{id:'destination',path:[],type:'root'},topics:[{name:'one'}]});`);
+  assert.equal(calls.filter(path => path.startsWith('/items?')).length, 1);
 });
 
 test('pending prompts show mode and working dots without a remove control', async () => {
@@ -969,17 +1063,17 @@ test('a delayed topic click cannot select a filter after a scope switch or a new
 
 test('a pending topic move updates only its original scope and does not replace a newer filter', async () => {
   const app = await page(), evaluate = app.repl();
-  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'A'},{name:'B'},{name:'C'}]};setTopic('A');fetchJSON=()=>new Promise(resolve=>window.finishMove=resolve);window.moving=moveTopic('A','B');state={...state,sessionId:'other'};setTopic('C');window.finishMove({});`);
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'A'},{name:'B'},{name:'C'}]};setTopic('A');fetchJSON=()=>new Promise(resolve=>window.finishMove=resolve);window.moving=moveTopic('A','B',filterKey(),state.sessionId);state={...state,sessionId:'other'};setTopic('C');window.finishMove({});`);
   await evaluate('window.moving');
   assert.deepEqual(JSON.parse(JSON.stringify(evaluate(`[topicFilter(),composerTopicName(),topicFilters.get('root:s'),composerTopics.get('root:s')]`))), ['C','C','B',{type:'topic',name:'B'}]);
-  evaluate(`setTopic('A');window.moving=moveTopic('A','B');setTopic('C');window.finishMove({});`);
+  evaluate(`setTopic('A');window.moving=moveTopic('A','B',filterKey(),state.sessionId);setTopic('C');window.finishMove({});`);
   await evaluate('window.moving');
   assert.deepEqual(JSON.parse(JSON.stringify(evaluate('[topicFilter(),composerTopicName()]'))), ['C','C']);
 });
 
 test('a topic move follows its target when state arrives before the response', async () => {
   const app = await page(), evaluate = app.repl();
-  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'A'},{name:'B'}]};setTopic('A');fetchJSON=()=>new Promise(resolve=>window.finishMove=resolve);window.moving=moveTopic('A','B');apply({...state,type:'state',topics:[{name:'B'}]});window.finishMove({});`);
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'A'},{name:'B'}]};setTopic('A');fetchJSON=()=>new Promise(resolve=>window.finishMove=resolve);window.moving=moveTopic('A','B',filterKey(),state.sessionId);apply({...state,type:'state',topics:[{name:'B'}]});window.finishMove({});`);
   await evaluate('window.moving');
   assert.equal(evaluate('topicFilter()'), 'B');
 });
@@ -989,9 +1083,9 @@ test('moving a topic updates its composer chip without replacing an independent 
   const result = await app.run(`(async()=>{
     state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'A'},{name:'B'},{name:'C'}]};
     fetchJSON=async()=>({});
-    topicChip('A').onclick();await moveTopic('A','B');
+    topicChip('A').onclick();await moveTopic('A','B',filterKey(),state.sessionId);
     const renamed=[topicFilter(),composerTopicName(),element('field').querySelector('.topic-name').title];
-    setTopic('A');topicChip('C').onclick();await moveTopic('A','B');
+    setTopic('A');topicChip('C').onclick();await moveTopic('A','B',filterKey(),state.sessionId);
     return [renamed,[topicFilter(),composerTopicName(),element('field').querySelector('.topic-name').title]];
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [[null,'B','B'],['B','C','C']]);

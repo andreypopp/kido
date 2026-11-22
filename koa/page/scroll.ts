@@ -37,7 +37,7 @@ export type ScrollEvent =
   | { type: 'send-result'; result: PromptResult['disposition'] | 'failed' }
   | { type: 'item'; seq: number; kind: 'user' | 'assistant' | 'other'; visible: boolean; appended: boolean; rows?: { key: string; visible: boolean }[] }
   | { type: 'focus' | 'visibility' | 'frame' | 'resize' | 'latest' | 'history' }
-  | { type: 'switch'; scope: Scope; loaded: boolean }
+  | { type: 'switch'; scope: Scope; loaded: boolean; filtered: boolean }
   | { type: 'reset' }
   | { type: 'filter'; active: boolean }
   | { type: 'restore-result'; generation: number; found: boolean }
@@ -223,7 +223,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         filtering = true; instant = true; newInstant = true; force = false;
         break;
       case 'switch': {
-        state.filtered = false;
+        state.filtered = event.filtered;
         if (state.kind === 'reader' && state.travel) reader();
         state.saved = new Map(scrollMemory(state).map(saved => [saved.scope.view, saved]));
         const target = state.saved.get(event.scope.view);

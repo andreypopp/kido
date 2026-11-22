@@ -19,6 +19,7 @@ import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
 import type { State, WireJob, WireItem, QueuedPrompt, Block, Patch, PageRecord, MetricsSample, Stages, PromptMode, ImageRef, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
 import type { TopicName, AgentRef, Relation } from '../records.ts';
 import { parseTopicName } from '../records.ts';
+import { topicTurn } from '../topic-turn.ts';
 
 type Step = StepInput & { key: string; slots: Map<string, Slot> };
 type Slot = { type: 'image'; view: HTMLButtonElement } | { type: 'run'; view: HTMLDivElement };
@@ -102,7 +103,7 @@ const growing: HTMLElement[] = [], observed = new Map<Element, Watch>(), measure
 const pathWarnings = new Map<number, string>();
 let pathWarningEpoch = 0;
 let state: State = { pathEditor: false, view: { id: '', path: [], type: 'root' }, topics: [], agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, dialogs: [] };
-const filterKey = () => state.view.id + ':' + (state.sessionId ?? '');
+const filterKey = (record: { view: { id: string }; sessionId?: string } = state) => record.view.id + ':' + (record.sessionId ?? '');
 function latestTopicInput(): WireItem | undefined {
   let latest: WireItem | undefined;
   for (const item of items.values()) if ((item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') && (!latest || item.seq > latest.seq)) latest = item;
@@ -160,9 +161,10 @@ function setTopic(name: TopicName | undefined) {
   if (next) { composerTopics.set(filterKey(), { type: 'topic', name: next }); if (topicNaming?.target.kind === 'composer') topicNaming = undefined; }
   updateTopicFilter(next);
 }
-function updateTopicFilter(name: TopicName | undefined) {
+function updateTopicFilter(name: TopicName | undefined, scope = filterKey()) {
+  if (name) topicFilters.set(scope, name); else topicFilters.delete(scope);
+  if (scope !== filterKey()) return;
   clearTimeout(topicClick); topicClick = undefined;
-  if (name) topicFilters.set(filterKey(), name); else topicFilters.delete(filterKey());
   historyRequest = undefined; historyBefore = undefined;
   closeTopics(); refreshTopicItems(); renderTopics(); refreshComposer();
   enqueue({ type: 'filter', active: name !== undefined });
@@ -206,13 +208,13 @@ function finishTopicNaming(commit: boolean) {
   topicNaming = undefined;
   naming.chip.replaceWith(newTopicChip(naming.target));
   if (naming.scope !== filterKey()) return;
-  if (naming.target.kind === 'composer') { setComposerTopic(name); editor.focus(); }
+  if (naming.target.kind === 'composer') { if (commit) setComposerTopic(name); editor.focus(); }
   else if (name) void fetchJSON('/messages/topic', { sessionId: naming.sessionId, seq: naming.target.seq, topic: name }).catch(reportError);
 }
 function startTopicNaming(plus: HTMLElement, target: TopicNamingTarget) {
   finishTopicNaming(false);
   const chip = node('span', undefined, 'topic-chip topic-naming'), input = node('input', undefined, 'topic-input');
-  input.placeholder = 'topic name'; input.maxLength = 200; input.spellcheck = false; input.setAttribute('aria-label', 'Topic name');
+  input.placeholder = 'topic name'; input.spellcheck = false; input.setAttribute('aria-label', 'Topic name');
   const colour = () => {
     chip.style.setProperty('--topic-color', topicColour(parseTopicName(input.value)));
     input.style.width = Math.max(6, input.value.length || input.placeholder.length) + 'ch';
@@ -250,11 +252,12 @@ function messageHeader(name: TopicName | undefined, at?: number, target?: Extrac
   if (at !== undefined) { const time = node('time', timestamp(at)); time.dateTime = new Date(at).toISOString(); row.append(time); }
   return row;
 }
-let topicDragged = false;
+let topicDragged = false, cancelTopicDrag: (() => void) | undefined, cancelTopicRename: (() => void) | undefined;
 function dragTopic(event: PointerEvent, source: HTMLElement, from: TopicName) {
   if (event.button !== 0 || !event.isPrimary) return;
-  const startX = event.clientX, startY = event.clientY;
-  let dragging = false, target: HTMLElement | undefined, hovered: HTMLElement | undefined, eligible = false;
+  cancelTopicDrag?.();
+  const scope = filterKey(), sessionId = state.sessionId, startX = event.clientX, startY = event.clientY;
+  let dragging = false, ended = false, target: HTMLElement | undefined, hovered: HTMLElement | undefined, eligible = false;
   const mark = (next: HTMLElement | undefined) => {
     target?.classList.remove('drop-target'); target?.style.removeProperty('--drop-color');
     target = next;
@@ -271,50 +274,40 @@ function dragTopic(event: PointerEvent, source: HTMLElement, from: TopicName) {
     const message = row ? undefined : under?.closest<HTMLElement>('#items > [data-seq]') ?? undefined, item = message && items.get(Number(message.dataset.seq));
     if (message !== hovered) {
       hovered = message;
-      eligible = item?.kind === 'user' && item.topic !== from;
-      if (item?.kind === 'assistant' && item.final) {
-        let different = false, finished = true;
-        for (const other of items.values()) {
-          if (other.kind === 'user') {
-            if (other.seq > item.seq) break;
-            different = other.topic !== from; finished = true;
-          } else if (other.kind === 'assistant') {
-            different ||= other.blocks.some(block => block.topic !== from);
-            finished &&= other.final;
-          }
-        }
-        eligible = different && finished;
-      }
+      const targets = item && topicTurn(items.values(), item.seq);
+      eligible = !!targets?.every(target => target.final) && (topicFilter() !== undefined || targets.some(target => target.kind === 'user' ? target.topic !== from : target.blocks.some(block => block.topic !== from)));
     }
     mark(row ? row.dataset.topic !== from ? row : undefined : eligible ? message : undefined);
   };
   const cancel = (key: KeyboardEvent) => { if (key.key === 'Escape') { key.preventDefault(); key.stopImmediatePropagation(); end(); } };
-  const end = (ended?: PointerEvent) => {
+  const end = (event?: PointerEvent) => {
+    if (ended) return;
+    ended = true; cancelTopicDrag = undefined;
     document.removeEventListener('keydown', cancel, true);
     document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', end); document.removeEventListener('pointercancel', end);
     source.classList.remove('dragging'); document.body.classList.remove('topic-dragging');
-    const dropped = ended?.type === 'pointerup' ? target : undefined;
+    const dropped = event?.type === 'pointerup' && scope === filterKey() ? target : undefined;
     mark(undefined);
     if (!dragging) return;
     topicDragged = true; setTimeout(() => { topicDragged = false; });
     const into = parseTopicName(dropped?.dataset.topic);
-    if (into) void moveTopic(from, into);
-    else if (dropped?.dataset.seq !== undefined) fetchJSON('/messages/topic', { sessionId: state.sessionId, seq: Number(dropped.dataset.seq), topic: from }).catch(reportError);
+    if (into) void moveTopic(from, into, scope, sessionId);
+    else if (dropped?.dataset.seq !== undefined) fetchJSON('/messages/topic', { sessionId, seq: Number(dropped.dataset.seq), topic: from }).catch(reportError);
   };
+  cancelTopicDrag = () => end();
   document.addEventListener('keydown', cancel, true);
   document.addEventListener('pointermove', move); document.addEventListener('pointerup', end); document.addEventListener('pointercancel', end);
 }
 const topicMoves = new Map<string, { from: TopicName; to: TopicName }>();
-async function moveTopic(from: TopicName, to: TopicName) {
-  const scope = filterKey(), filter = topicFilter(), move = { from, to };
+async function moveTopic(from: TopicName, to: TopicName, scope: string, sessionId: string | undefined) {
+  const filter = topicFilters.get(scope), move = { from, to };
   topicMoves.set(scope, move);
   try {
-    await fetchJSON('/topics/move', { sessionId: state.sessionId, from, to });
+    await fetchJSON('/topics/move', { sessionId, from, to });
     const choice = composerTopics.get(scope);
     if ((choice?.type === 'topic' ? choice.name : choice ? undefined : topicFilters.get(scope)) === from) composerTopics.set(scope, { type: 'topic', name: to });
     if (filter === from && topicFilters.get(scope) === from) {
-      if (filterKey() === scope) updateTopicFilter(to);
-      else topicFilters.set(scope, to);
+      updateTopicFilter(to, scope);
     } else if (filterKey() === scope) refreshComposer();
   } catch (error) { reportError(error); }
   finally { if (topicMoves.get(scope) === move) topicMoves.delete(scope); }
@@ -330,17 +323,20 @@ function clickTopic(event: MouseEvent, entry: HTMLElement, name: TopicName) {
 function renameTopic(entry: HTMLElement, name: TopicName) {
   const label = entry.querySelector('.topic-name');
   if (!label) return;
+  cancelTopicRename?.();
+  const scope = filterKey(), sessionId = state.sessionId;
   renaming = true;
   const input = node('input', undefined, 'topic-rename');
   input.value = name; input.spellcheck = false; input.setAttribute('aria-label', 'Topic name');
   let done = false;
   const finish = (commit: boolean) => {
     if (done) return;
-    done = true; renaming = false;
-    const to = commit ? parseTopicName(input.value.slice(0, 200)) : undefined;
-    renderTopics();
-    if (to && to !== name) void moveTopic(name, to);
+    done = true; renaming = false; cancelTopicRename = undefined;
+    const to = commit && scope === filterKey() ? parseTopicName(input.value) : undefined;
+    row.remove(); renderTopics();
+    if (to && to !== name) void moveTopic(name, to, scope, sessionId);
   };
+  cancelTopicRename = () => finish(false);
   input.onkeydown = event => {
     event.stopPropagation();
     if (event.key === 'Enter') { event.preventDefault(); finish(true); }
@@ -1892,7 +1888,7 @@ function applyPatch(record: Patch, buffer: boolean) {
 }
 function apply(record: PageRecord) {
   if (record.type === 'reset') {
-    if (topicNaming?.target.kind === 'message') finishTopicNaming(false);
+    finishTopicNaming(false); cancelTopicRename?.(); cancelTopicDrag?.();
     pathWarnings.clear(); pathWarningEpoch++;
     editor.resetCompletion();
     find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); runKeys.clear(); runTopics = undefined; order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); topicItems.clear(); projections.clear(); folds.clear(); historyRequest = undefined; more = record.more;
@@ -1925,16 +1921,18 @@ function apply(record: PageRecord) {
     const scopeChanged = viewChanged || state.sessionId !== record.sessionId, previousFilter = topicFilter(), priorInput = latestTopicInput();
     if (previousFilter && priorInput?.kind === 'user') visible(priorInput.seq);
     const workingChanged = state.working !== record.working;
+    const scope = filterKey(record), filter = topicFilters.get(scope), move = topicMoves.get(scope);
+    const reconciled = filter && 'topics' in record && !record.topics.some(topic => topic.name === filter)
+      ? move?.from === filter && record.topics.some(topic => topic.name === move.to) ? move.to : undefined
+      : filter;
+    if (scopeChanged && reconciled !== filter) updateTopicFilter(reconciled, scope);
     state = record;
     reportComposer();
-    if (scopeChanged) { clearTimeout(topicClick); topicClick = undefined; historyRequest = undefined; historyBefore = undefined; decide({ type: 'switch', scope: { view: record.view.id, sessionId: record.sessionId }, loaded }); }
-    if ('topics' in record && !record.topics.some(topic => topic.name === topicFilter())) {
-      const move = topicMoves.get(filterKey());
-      if (move && move.from === topicFilter() && record.topics.some(topic => topic.name === move.to)) topicFilters.set(filterKey(), move.to);
-      else topicFilters.delete(filterKey());
-    }
+    if (scopeChanged) { finishTopicNaming(false); cancelTopicRename?.(); cancelTopicDrag?.(); clearTimeout(topicClick); topicClick = undefined; historyRequest = undefined; historyBefore = undefined; }
+    if (!scopeChanged && reconciled !== filter) updateTopicFilter(reconciled);
+    if (scopeChanged) decide({ type: 'switch', scope: { view: record.view.id, sessionId: record.sessionId }, loaded, filtered: topicFilter() !== undefined });
     renderTopics();
-    if (previousFilter !== topicFilter() || scopeChanged && topicFilter() !== undefined) { historyRequest = undefined; historyBefore = undefined; refreshTopicItems(); if (epoch && record.view.type === 'root') void reloadTopic(); }
+    if (scopeChanged && (previousFilter !== topicFilter() || topicFilter() !== undefined)) { historyRequest = undefined; historyBefore = undefined; refreshTopicItems(); if (epoch && record.view.type === 'root') void reloadTopic(); }
     if (workingChanged && previousFilter === topicFilter() && topicFilter() && priorInput?.kind === 'user') accept({ ...priorInput });
     windowDirty = true; schedule(); if (agentsChanged || viewChanged) { for (const seq of views.keys()) dirty.add(seq); } document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
     showJobView();

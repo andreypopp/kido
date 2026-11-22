@@ -1,3 +1,4 @@
+import { topicTurn } from './topic-turn.ts';
 import { topicContext, quotedTopic } from './koa-classify.ts';
 import type { QueuedPrompt } from './koa-records.ts';
 import { cleanLine } from './text.ts';
@@ -495,12 +496,9 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     if (!branch) { publish(item); flush(); }
   };
   const moveTargets = (seq: number): string[] | undefined => {
-    const item = items[seq];
-    if (kind !== 'root' || !item || item.kind !== 'user' && item.kind !== 'assistant') return;
-    const user = item.kind === 'user' ? item : items.findLast(other => other.kind === 'user' && other.seq < seq);
-    const next = items.find(other => other.kind === 'user' && other.seq > seq)?.seq ?? items.length;
-    const targets = [...(user ? [user] : []), ...items.filter(other => other.kind === 'assistant' && other.seq > (user?.seq ?? -1) && other.seq < next)];
-    if (targets.some(target => target.kind === 'assistant' && target.lifecycle !== 'ended')) return;
+    if (kind !== 'root') return;
+    const targets = topicTurn(items, seq);
+    if (!targets || targets.some(target => { const original = items[target.seq]; return original?.kind === 'assistant' && original.lifecycle !== 'ended'; })) return;
     const entries = branch(), ids = targets.map(target => entryId(target.seq, entries));
     return ids.every((id): id is string => id !== undefined) ? ids : undefined;
   };
