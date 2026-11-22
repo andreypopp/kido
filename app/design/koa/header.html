@@ -2,7 +2,7 @@
 <html lang="en" data-theme="light" data-width="wide" data-um="solid" data-al="plain" data-guides="on" data-rows="unified" data-cpad="v3" data-radius="r12" data-depth="border" data-nl="unified" data-qp="dock" data-qd="tint">
 <head>
 <meta charset="utf-8">
-<title>Header rows · koa — threads</title>
+<title>Header rows · koa — topics</title>
 <style>
 /* ---- copied from mockup.html's <style> (the approved design language); edit there first ---- */
 /* Fallback themes: kido-light and kido-dark (app/Resources/ghostty/themes).
@@ -566,7 +566,7 @@ html[data-theme=dark] .latest{border-color:color-mix(in srgb,var(--ko-fg) 14%,tr
 .pane .scroll{scrollbar-gutter:auto}
 </style>
 <style>
-/* ---- threads (this page) ---- */
+/* ---- topics (this page) ---- */
 /* per-pane dark, for the gallery */
 .pane[data-theme=dark]{
   --ko-bg:#171717;--ko-fg:#C9C9C9;--ko-cursor:#999999;
@@ -622,18 +622,18 @@ html[data-theme=dark] .cap{border-color:color-mix(in srgb,var(--ko-fg) 14%,trans
 .tpanel .all{border-top:1px solid var(--hair);margin-top:4px;padding-top:6px;color:var(--muted)}
 .tpanel .all .n{font-weight:400}
 .pane.withcaps .transcript{padding-top:44px}
-/* the thread palette: six hues, by the thread's index in the session's list (order of first use) modulo six; none is the status green/orange, the error red or the accent blue */
+/* the topic palette: six hues, by the topic's index in the session's list (order of first use) modulo six; none is the status green/orange, the error red or the accent blue */
 :root,.pane{--t0:#6a4fcf;--t1:#11827e;--t2:#b42d7f;--t3:#8c6a12;--t4:#4b6a8a;--t5:#5e7a1e}
 html[data-theme=dark],.pane[data-theme=dark]{--t0:#a99bff;--t1:#52d1c2;--t2:#f27bc0;--t3:#d8b85a;--t4:#94b0cc;--t5:#b3cf5a}
 .sec{position:relative;--tc:var(--muted)}
-/* no colour edge anywhere and no mark on a run, agent or job line (user, 2026-11-20, rendering only: the items keep their thread for the filter); the reply's pill is the one mark */
+/* no colour edge anywhere and no mark on a run, agent or job line (user, 2026-11-20, rendering only: the items keep their topic for the filter); the reply's pill is the one mark */
 .sec.has::before{display:none}
 .msg.assistant .sec.has::before{bottom:0}
 .msg.assistant .sec+.sec{margin-top:10px}
 .narrow .sec.has::before,html[data-width=narrow] .sec.has::before{left:-8px}
 .foot .thr{color:var(--tc)}
-/* no label line in the transcript: the reply's pill is the one mark (user, 2026-11-20; the pending line "waiting for its thread" was removed too) */
-/* the reply's pill (user, 2026-11-20): every assistant message carries a pill at its right, on its first line, its time ending on the text edge like every other time: "# name  HH:MM" in the thread's colour (the "#" at 55%, the name at 600, the time in the mono at tabular numerals), the fill the colour at 10%, 999pt radius, 1/8pt padding, .8em; a message with no thread shows the time alone in the faint colour; a reply about two threads has a pill on each section, each with the time; the pill is the mark's control (hand, hover underlines the name at 50%, pressed 100%) */
+/* no label line in the transcript: the reply's pill is the one mark (user, 2026-11-20; the pending line "waiting for its topic" was removed too) */
+/* the reply's pill (user, 2026-11-20): every assistant message carries a pill at its right, on its first line, its time ending on the text edge like every other time: "# name  HH:MM" in the topic's colour (the "#" at 55%, the name at 600, the time in the mono at tabular numerals), the fill the colour at 10%, 999pt radius, 1/8pt padding, .8em; a message with no topic shows the time alone in the faint colour; a reply about two topics has a pill on each section, each with the time; the pill is the mark's control (hand, hover underlines the name at 50%, pressed 100%) */
 .msg.assistant .pill{float:right;display:inline-flex;align-items:baseline;gap:6px;margin:0 -8px 4px 12px;padding:1px 8px;border-radius:999px;font:.8em/1.5 var(--prose);font-weight:600;color:var(--tc);background:color-mix(in srgb,var(--tc) 10%,transparent);white-space:nowrap;cursor:pointer;user-select:none}
 .msg.assistant .pill.plain{background:color-mix(in srgb,var(--ko-fg) 6%,transparent)}
 .msg.assistant .pill .h{opacity:.55;font-weight:400}
@@ -652,11 +652,11 @@ html[data-theme=dark],.pane[data-theme=dark]{--t0:#a99bff;--t1:#52d1c2;--t2:#f27
 html:not([data-dock=band]) .gallery .dock .field{-webkit-backdrop-filter:none;backdrop-filter:none;background:var(--ko-bg)}
 .gallery h3{grid-column:1/-1;margin:20px 0 0;font:600 12px/1.3 var(--prose);color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
 .gcell .cap2{font-size:11px;color:var(--muted);margin-top:6px}
-/* the header row (user, 2026-11-21): every message, user or agent, starts with one row that holds only the time at the right and, when the message has a thread, its chip at the left; .8em/1.5 (a 15.6px line at 13px), 2px to the body */
+/* the header row (user, 2026-11-21): every message, user or agent, starts with one row that holds only the time at the right and, when the message has a topic, its chip at the left; .8em/1.5 (a 15.6px line at 13px), 2px to the body */
 .hd{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0 0 2px;font:.8em/1.5 var(--prose);min-height:1.5em}
 .hd time{margin-left:auto;font:1em/1.5 var(--mono);font-variant-numeric:tabular-nums;color:var(--faint);white-space:nowrap}
 .msg.user .hd time{color:color-mix(in srgb,var(--ink,var(--fg)) 65%,transparent)}
-/* the chip: an outlined tag that works on the page, on the solid user block and in the field: text the thread's colour ("#" at 55%, the name at 600), the fill the page background, a 1px edge in the colour at 30%, 0/8px padding, 999px radius */
+/* the chip: an outlined tag that works on the page, on the solid user block and in the field: text the topic's colour ("#" at 55%, the name at 600), the fill the page background, a 1px edge in the colour at 30%, 0/8px padding, 999px radius */
 .chip{display:inline-flex;align-items:baseline;gap:6px;max-width:60%;padding:0 8px;border-radius:999px;border:1px solid color-mix(in srgb,var(--tc) 30%,transparent);background:var(--ko-bg);color:var(--tc);font-weight:600;white-space:nowrap;cursor:pointer;user-select:none;line-height:1.45}
 .chip .h{opacity:.55;font-weight:400}.chip .n{overflow:hidden;text-overflow:ellipsis}
 .chip .n:hover{text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--tc) 50%,transparent);text-decoration-thickness:1px;text-underline-offset:2px}.chip .n:active{text-decoration-color:var(--tc)}
@@ -671,11 +671,11 @@ html:not([data-dock=band]) .gallery .dock .field{-webkit-backdrop-filter:none;ba
 .tpanel .row.renaming{cursor:default}.tpanel .row.renaming .n{color:var(--tc)}.tpanel .row.renaming .n .h{opacity:.55;font-weight:400}
 .tpanel .row.renaming .input{flex:1;min-width:0;border:1px solid var(--hair);border-radius:4px;padding:2px 6px;background:var(--ko-bg);color:var(--fg);font-weight:400;line-height:1.3}
 .tpanel .row.renaming .sel{background:color-mix(in srgb,var(--accent) 28%,transparent)}
-/* naming a new thread in the composer (proposal 2026-11-21) */
+/* naming a new topic in the composer (proposal 2026-11-21) */
 .chip.naming{cursor:text}.chip.naming .in{min-width:6ch}.chip.naming .ph{color:var(--faint);font-weight:400}.chip.naming .caret{display:inline-block;width:1px;height:1em;background:var(--fg);vertical-align:-2px;margin-left:1px}
 .tpanel .row.new .n{color:var(--muted);font-weight:500}
 .field .text.has{color:var(--fg)}
-/* adding a thread to an existing message: the "+ thread" chip on hover of the header row */
+/* adding a topic to an existing message: the "+ topic" chip on hover of the header row */
 .chip.add{border:1px dashed color-mix(in srgb,var(--fg) 30%,transparent);background:none;color:var(--muted);font-weight:500;padding:0 8px}.chip.add .h{opacity:.8;font-weight:500}
 .msg.user .chip.add{border-color:color-mix(in srgb,var(--ink,var(--fg)) 45%,transparent);color:color-mix(in srgb,var(--ink,var(--fg)) 80%,transparent)}
 .msg.user .chip.naming{background:color-mix(in srgb,var(--ko-bg) 22%,transparent);color:var(--ink,var(--fg))}.msg.user .chip.naming .caret{background:var(--ink,var(--fg))}.msg.user .chip.naming .ph{color:color-mix(in srgb,var(--ink,var(--fg)) 55%,transparent)}
@@ -706,34 +706,34 @@ section h2 a{color:inherit;text-decoration:none}section h2 a:hover{text-decorati
 </style>
 </head>
 <body>
-<div class="controls"><h1>Threads: the header row and the chip</h1>
+<div class="controls"><h1>Topics: the header row and the chip</h1>
 <label>Theme <select id="theme"><option value="light">kido-light</option><option value="dark">kido-dark</option></select></label>
 <label>Chip <select id="chip"><option value="tint">tinted pill (chosen 2026-11-21)</option><option value="tag">outlined tag</option><option value="plain">plain #name in the colour</option><option value="dot">colour dot + name, muted</option><option value="muted">#name muted, no colour</option><option value="line">bar + name</option></select></label>
 <label>Width <select id="width"><option value="wide">wide</option><option value="narrow">60 columns</option></select></label>
-<span style="color:var(--muted)">approved 2026-11-21 · a header row on every message and a thread chip replace the reply's pill</span></div>
-<nav class="toc"><a href="#header">Header row &amp; chip</a><a href="#filter">Filter &amp; composer chip</a><a href="#new">Starting a thread</a><a href="#archive">Archiving</a><a href="#panel">Drag &amp; rename</a><a href="#block">Block mode</a><a href="#gallery">Gallery</a></nav>
-<p class="lede">A thread is a named workstream of one session; the agent labels its own text with <code>[thread: name]</code> lines, which the transcript turns into marks. The page shows the threads in a capsule at the top left (the view bar's family), lists them with their status and summary in a panel under it, and filters the transcript to one thread on a click. Nothing here is live.</p>
+<span style="color:var(--muted)">approved 2026-11-21 · a header row on every message and a topic chip replace the reply's pill</span></div>
+<nav class="toc"><a href="#header">Header row &amp; chip</a><a href="#filter">Filter &amp; composer chip</a><a href="#new">Starting a topic</a><a href="#archive">Archiving</a><a href="#panel">Drag &amp; rename</a><a href="#block">Block mode</a><a href="#gallery">Gallery</a></nav>
+<p class="lede">A topic is a named workstream of one session; the agent labels its own text with <code>[topic: name]</code> lines, which the transcript turns into marks. The page shows the topics in a capsule at the top left (the view bar's family), lists them with their status and summary in a panel under it, and filters the transcript to one topic on a click. Nothing here is live.</p>
 
 <section id="header"><h2><a href="#header">1 · The header row and the chip</a></h2>
-<p>Approved (user, 2026-11-21). Every message, user or agent, starts with a header row that holds only its time at the right (the time's design as today) and, when the message has a thread, the thread's chip at the left: "# name" in the thread's colour on a tinted pill (the colour at 10%; on the solid user block the page background at 22% with the ink), the user's choice of 2026-11-21 among the Chip picker's treatments. The reply's pill is gone. A reply about two threads has the chip of its first section in the header, and each later section starts with a row of its own chip, without a time. A user message whose thread is known (the classifier's label, a filter, a typed marker) has the chip too; the two multi-thread user messages here have none. Runs, steps, notices and job lines are unchanged: no header, no chip.</p>
+<p>Approved (user, 2026-11-21). Every message, user or agent, starts with a header row that holds only its time at the right (the time's design as today) and, when the message has a topic, the topic's chip at the left: "# name" in the topic's colour on a tinted pill (the colour at 10%; on the solid user block the page background at 22% with the ink), the user's choice of 2026-11-21 among the Chip picker's treatments. The reply's pill is gone. A reply about two topics has the chip of its first section in the header, and each later section starts with a row of its own chip, without a time. A user message whose topic is known (the classifier's label, a filter, a typed marker) has the chip too; the two multi-topic user messages here have none. Runs, steps, notices and job lines are unchanged: no header, no chip.</p>
 <div class="grid"><div class="pane aligned withcaps" data-state="marks"></div><div class="pane aligned withcaps narrow" data-state="marks-narrow"></div></div></section>
 
 <section id="filter"><h2><a href="#filter">2 · A filter active: the chip in the composer</a></h2>
-<p>Two things (user, 2026-11-21): the composer's thread and the transcript's filter. The composer's thread is its chip at the top left of the field, above the text, with an × that drops it; it is set by a click on a message's chip, by the "+ thread" chip (section 2b), and by the widget's filter. The filter is only the widget's: a name in the capsule, a panel row, a block row; the capsule's × (line mode) and "All threads" (panel, block mode) clear it. A filter sets the composer's thread too, as here; the chip's × then drops the composer's thread and leaves the filter; clearing the filter drops the composer's thread when it is the same thread (user, 2026-11-22), and leaves a different one. The placeholder is the plain "Steer @ko…" / "Message @ko…" and the foot's thread cell is gone. The messages of the filtered transcript show the time alone in their header.</p>
+<p>Two things (user, 2026-11-21): the composer's topic and the transcript's filter. The composer's topic is its chip at the top left of the field, above the text, with an × that drops it; it is set by a click on a message's chip, by the "+ topic" chip (section 2b), and by the widget's filter. The filter is only the widget's: a name in the capsule, a panel row, a block row; the capsule's × (line mode) and "All topics" (panel, block mode) clear it. A filter sets the composer's topic too, as here; the chip's × then drops the composer's topic and leaves the filter; clearing the filter drops the composer's topic when it is the same topic (user, 2026-11-22), and leaves a different one. The placeholder is the plain "Steer @ko…" / "Message @ko…" and the foot's topic cell is gone. The messages of the filtered transcript show the time alone in their header.</p>
 <div class="grid"><div class="pane aligned withcaps" data-state="filter"></div><div class="pane aligned withcaps narrow" data-state="filter-narrow"></div></div></section>
 
-<section id="new"><h2><a href="#new">2b · Starting a thread explicitly</a></h2>
-<p>The composer alone creates a thread (user, 2026-11-21): its header row always exists and holds either the composer's thread as a chip with an ×, or the same dashed "+ thread" chip as a message's header shows on hover (here it is always visible: it is the route). A click on it opens the naming chip in place (left: the placeholder "thread name", the caret in it); typing a name (a Zulip topic, with spaces and any text: there is no <code>#name</code> syntax, it would collide with Markdown headings) and Enter sets the composer's thread (right): an existing thread's name takes that thread's colour, a new one the next colour; Escape or the × goes back to "+ thread". There is no <code>/thread</code> command: "+ thread" is the only way to name the composer's thread (user, 2026-11-21). The chip is the composer's thread: the message goes to #name, a new thread or an existing one; the transcript is not filtered, on send either (user, 2026-11-21); the classifier is not asked; the chip stays after the send.</p>
-<div class="grid"><div class="pane aligned withcaps" data-state="new-thread"></div><div class="pane aligned withcaps" data-state="new-thread-named"></div></div>
-<p style="margin-top:14px">From an existing message (user, 2026-11-21): hovering an unthreaded message's header row shows a dashed "+ thread" chip (user, 2026-11-22: a threaded message shows none; its thread changes by dragging a thread row from the widget onto it; a multi-section reply with any threaded section shows none); a click opens it as the naming chip in that row; Enter creates the thread and moves the message's turn into it (the MVP's move), Escape or the × drops it. Left: the hover on the user message "Also look at the Linux flake…"; right: naming it.</p>
+<section id="new"><h2><a href="#new">2b · Starting a topic explicitly</a></h2>
+<p>The composer alone creates a topic (user, 2026-11-21): its header row always exists and holds either the composer's topic as a chip with an ×, or the same dashed "+ topic" chip as a message's header shows on hover (here it is always visible: it is the route). A click on it opens the naming chip in place (left: the placeholder "topic name", the caret in it); typing a name (a Zulip topic, with spaces and any text: there is no <code>#name</code> syntax, it would collide with Markdown headings) and Enter sets the composer's topic (right): an existing topic's name takes that topic's colour, a new one the next colour; Escape or the × goes back to "+ topic". There is no <code>/topic</code> command: "+ topic" is the only way to name the composer's topic (user, 2026-11-21). The chip is the composer's topic: the message goes to #name, a new topic or an existing one; the transcript is not filtered, on send either (user, 2026-11-21); the classifier is not asked; the chip stays after the send.</p>
+<div class="grid"><div class="pane aligned withcaps" data-state="new-topic"></div><div class="pane aligned withcaps" data-state="new-topic-named"></div></div>
+<p style="margin-top:14px">From an existing message (user, 2026-11-21): hovering an untopiced message's header row shows a dashed "+ topic" chip (user, 2026-11-22: a topiced message shows none; its topic changes by dragging a topic row from the widget onto it; a multi-section reply with any topiced section shows none); a click opens it as the naming chip in that row; Enter creates the topic and moves the message's turn into it (the MVP's move), Escape or the × drops it. Left: the hover on the user message "Also look at the Linux flake…"; right: naming it.</p>
 <div class="grid"><div class="pane aligned withcaps" data-state="tag-hover"></div><div class="pane aligned withcaps" data-state="tag-naming"></div></div></section>
 
-<section id="archive"><h2><a href="#archive">2c · Archiving a thread</a></h2>
-<p>User, 2026-11-21: every thread row in the widget (the panel, and block mode's rows) has an × at its right, shown on hover in the age's slot; a click archives the thread. An archived thread stays in the widget, dimmed to 45%, listed after the live threads (newest first within each group), and out of the line-mode capsule's names and "+N"; its hover control is ↺, which restores it. The classifier is not shown archived threads and cannot label into one; only ↺ restores: a message sent to an archived thread (its chip in the composer, a filter on it, a turn moved into it) leaves it archived. Filtering to, renaming and merging an archived thread work as for a live one. Left: the panel with the "release-0-32" row hovered and two archived threads; right: block mode.</p>
+<section id="archive"><h2><a href="#archive">2c · Archiving a topic</a></h2>
+<p>User, 2026-11-21: every topic row in the widget (the panel, and block mode's rows) has an × at its right, shown on hover in the age's slot; a click archives the topic. An archived topic stays in the widget, dimmed to 45%, listed after the live topics (newest first within each group), and out of the line-mode capsule's names and "+N"; its hover control is ↺, which restores it. The classifier is not shown archived topics and cannot label into one; only ↺ restores: a message sent to an archived topic (its chip in the composer, a filter on it, a turn moved into it) leaves it archived. Filtering to, renaming and merging an archived topic work as for a live one. Left: the panel with the "release-0-32" row hovered and two archived topics; right: block mode.</p>
 <div class="grid"><div class="pane aligned withcaps" data-state="archive"></div><div class="pane aligned withcaps xwide" style="width:1000px" data-state="archive-block"></div></div></section>
 
 <section id="panel"><h2><a href="#panel">3 · The panel: drag to merge, drag onto a reply, rename</a></h2>
-<p>From the classifier MVP, reviewed 2026-11-21 (NOTES, "The classifier MVP, reviewed"). A press on a row and 5px of travel start a drag: the row dims to 50%, the pointer is the grabbing hand, no ghost. The target carries the dragged thread's colour: a 2px outline at 50% and a fill at 6%, inset on a panel row (over the hover fill), 3px outside a transcript message. A drop on a row merges the dragged thread into it; a drop on a message moves its whole turn (user message and replies). A double-click on a row renames it in place: the field takes the row's width ("#" kept in the colour, the summary and the age hidden), the name selected; Enter or a click outside commits, Escape cancels. A single click filters after 250ms.</p>
+<p>From the classifier MVP, reviewed 2026-11-21 (NOTES, "The classifier MVP, reviewed"). A press on a row and 5px of travel start a drag: the row dims to 50%, the pointer is the grabbing hand, no ghost. The target carries the dragged topic's colour: a 2px outline at 50% and a fill at 6%, inset on a panel row (over the hover fill), 3px outside a transcript message. A drop on a row merges the dragged topic into it; a drop on a message moves its whole turn (user message and replies). A double-click on a row renames it in place: the field takes the row's width ("#" kept in the colour, the summary and the age hidden), the name selected; Enter or a click outside commits, Escape cancels. A single click filters after 250ms.</p>
 <div class="grid"><div class="pane aligned withcaps" data-state="drag-row"></div><div class="pane aligned withcaps" data-state="drag-reply"></div><div class="pane aligned withcaps" data-state="rename"></div></div>
 <div class="grid" style="margin-top:14px"><div class="pane aligned withcaps xwide" data-state="block-drag"></div></div></section>
 
@@ -757,21 +757,21 @@ const tool=(o)=>`<div class="step${o.open?' open':''}"><div class="line"><span c
 const astep=(o)=>`<div class="step${o.open?' open':''}"><div class="line"><span class="lead${o.err?' err':''}">${esc(o.kind)} ${o.dir} ${who(o.name,{err:o.err,gone:o.gone})}${o.rel?` <span class="rel">${esc(o.rel)}</span>`:''}</span><span class="tx">${esc(o.text.split('\n')[0])}</span>${o.working?dots:''}<span class="time">${o.time||''}</span></div>${o.body?`<div class="detail"><div class="body">${o.body}</div></div>`:''}</div>`;
 const jstep=(o)=>`<div class="step${o.open?' open':''}"><div class="line"><span class="lead${o.err?' err':''}">job <span class="who" style="cursor:default">${esc(o.name)}</span></span><span class="tx ev${o.err?' err':''}">${esc(o.ev)}</span><span class="time">${o.time||''}</span></div>${o.out?`<div class="detail"><div class="jh"><a href="#job:${esc(o.name)}">open</a><span class="log">~/.local/state/koa/jobs/${esc(o.name)}.log</span></div><div class="well">${esc(o.out)}</div></div>`:''}</div>`;
 const chip=(n,o={})=>`<span class="chip" style="${tc(n)}"><span class="h">#</span><span class="n">${esc(n)}</span>${o.x?'<span class="x">×</span>':''}</span>`;
-const naming=(v)=>`<span class="chip naming" style="--tc:var(--t${(T9.length)%6})"><span class="h">#</span><span class="in">${v===true?'<span class="ph">thread name</span>':esc(v)}</span><span class="x">×</span></span>`;
-const hd=(n,time,o={})=>`<div class="hd${o.hover?' hover':''}">${n?chip(n):''}${o.naming?naming(o.naming):o.hover?'<span class="chip add"><span class="h">+</span><span class="n">thread</span></span>':''}${time?`<time>${time}</time>`:''}</div>`;
+const naming=(v)=>`<span class="chip naming" style="--tc:var(--t${(T9.length)%6})"><span class="h">#</span><span class="in">${v===true?'<span class="ph">topic name</span>':esc(v)}</span><span class="x">×</span></span>`;
+const hd=(n,time,o={})=>`<div class="hd${o.hover?' hover':''}">${n?chip(n):''}${o.naming?naming(o.naming):o.hover?'<span class="chip add"><span class="h">+</span><span class="n">topic</span></span>':''}${time?`<time>${time}</time>`:''}</div>`;
 const userMsg=(html,t='09:12',n,o={})=>`<div class="msg user">${hd(n,t,o)}<div class="t">${html}</div></div>`;
 const assistant=(parts,o={})=>{let out='',cur=null,buf=[],first=true;const flush=()=>{if(buf.length){out+=sec(cur,buf.map(p=>`<p>${p}</p>`).join(''),{...o,pill:o.time||'13:52',first});first=false}buf=[]};for(const p of parts){if(typeof p==='string')buf.push(p);else{flush();cur=p.t}}flush();return `<div class="msg assistant${o.drop?' drop':''}"${o.drop?` style="--dc:var(--t${T9.findIndex(x=>x.n===o.drop)%6})"`:''}>${out}</div>`};
 const nrow=(o)=>`<div class="nrow"><div class="hd"><span class="tx">${o.text}</span><time>${o.time}</time></div></div>`;
-const composer=(o={})=>`<div class="composer"><div class="field focus"><div class="hd">${o.naming?naming(o.naming):o.thread?chip(o.thread,{x:true}):'<span class="chip add"><span class="h">+</span><span class="n">thread</span></span>'}</div><div class="text ph${o.text?' has':''}">${o.text?esc(o.text):'Steer @ko…'}</div>${foot()}</div></div>`;
+const composer=(o={})=>`<div class="composer"><div class="field focus"><div class="hd">${o.naming?naming(o.naming):o.topic?chip(o.topic,{x:true}):'<span class="chip add"><span class="h">+</span><span class="n">topic</span></span>'}</div><div class="text ph${o.text?' has':''}">${o.text?esc(o.text):'Steer @ko…'}</div>${foot()}</div></div>`;
 const T2=[{n:'sidebar',st:'on',s:'Recording the right-side indicator snapshots; the unit reports in a minute.',w:'2m'},{n:'palette',st:'wait',s:'Should the Theme mode keep the "This session only" row?',w:'14m'}];
-const T9=[{n:'sidebar',st:'on',s:'Recording the right-side indicator snapshots; the unit reports in a minute.',w:'2m'},{n:'palette',st:'wait',s:'Should the Theme mode keep the "This session only" row?',w:'14m'},{n:'remote-mtls-pairing-ios',st:'on',s:'The iOS unit builds the Pair sheet; the scan well is a stand-in without a camera.',w:'20m'},{n:'release-0-32',st:'',s:'Waiting on CI for the rebase; nothing to do until it is green.',w:'35m'},{n:'koa-virtual-transcript',st:'on',s:'Find over the model lands the match in the mounted row; the WebKit check is pending.',w:'1h'},{n:'float-win',st:'',s:'Merged. The child windows pass the full visual stage.',w:'2h'},{n:'threads',st:'wait',s:'Which capsule family for the widget: the view bar\'s, or a new one?',w:'3h'},{n:'docs-cleanup-after-the-sessions',st:'',s:'Deferred until the sessions plan moves into docs/.',w:'5h'},{n:'ci-linux-flake',st:'',s:'Reproduced once under --contend 4; the fix is in the sweep test\'s wait.',w:'1d'}];
+const T9=[{n:'sidebar',st:'on',s:'Recording the right-side indicator snapshots; the unit reports in a minute.',w:'2m'},{n:'palette',st:'wait',s:'Should the Theme mode keep the "This session only" row?',w:'14m'},{n:'remote-mtls-pairing-ios',st:'on',s:'The iOS unit builds the Pair sheet; the scan well is a stand-in without a camera.',w:'20m'},{n:'release-0-32',st:'',s:'Waiting on CI for the rebase; nothing to do until it is green.',w:'35m'},{n:'koa-virtual-transcript',st:'on',s:'Find over the model lands the match in the mounted row; the WebKit check is pending.',w:'1h'},{n:'float-win',st:'',s:'Merged. The child windows pass the full visual stage.',w:'2h'},{n:'topics',st:'wait',s:'Which capsule family for the widget: the view bar\'s, or a new one?',w:'3h'},{n:'docs-cleanup-after-the-sessions',st:'',s:'Deferred until the sessions plan moves into docs/.',w:'5h'},{n:'ci-linux-flake',st:'',s:'Reproduced once under --contend 4; the fix is in the sweep test\'s wait.',w:'1d'}];
 const hn=(n)=>`<span class="hn" style="${tc(n)}"><span class="h">#</span>${esc(n)}</span>`;
-const capAll=(ts,open,k)=>{ts=ts.filter(t=>!t.a);k=k??ts.length;const shown=ts.slice(0,k).map(t=>hn(t.n)).join('<span class="sp">·</span>');const rest=ts.length-k;return `<div class="cap tcap${open?' open':''}" data-k="${k}">${shown}${rest>0?`<span class="sp">·</span><span class="more">+${rest}</span>`:''}<span class="mb" title="All threads">…</span></div>`};
+const capAll=(ts,open,k)=>{ts=ts.filter(t=>!t.a);k=k??ts.length;const shown=ts.slice(0,k).map(t=>hn(t.n)).join('<span class="sp">·</span>');const rest=ts.length-k;return `<div class="cap tcap${open?' open':''}" data-k="${k}">${shown}${rest>0?`<span class="sp">·</span><span class="more">+${rest}</span>`:''}<span class="mb" title="All topics">…</span></div>`};
 /* as many names as fit, newest first: the capsule is at most the pane's width minus 16pt; a name is dropped from the end (and counted in +N) until the whole capsule with its tail fits; the first name always shows and ellipsizes alone */
 function fitCap(pane){const cap=pane.querySelector('.tcap[data-k]');if(!cap)return;const max=pane.clientWidth-16;let k=+cap.dataset.k;const ts=pane._ts;let cur=cap;while(k>1&&cur.scrollWidth>max){k--;cur.outerHTML=capAll(ts,cur.classList.contains('open'),k);cur=pane.querySelector('.tcap[data-k]')}const c=cur;c.style.maxWidth=max+'px';if(k===1)c.querySelector('.hn').style.cssText+=';overflow:hidden;text-overflow:ellipsis;min-width:0'}
 const capOne=(t)=>`<div class="cap tcap">${hn(t.n)}<span class="x"><svg viewBox="0 0 10 10"><path d="M2 2l6 6M8 2l-6 6"/></svg></span></div>`;
 const viewbar=`<div class="cap"><span class="bk">‹</span><span class="anc">@ko</span><span class="sp">›</span><b>@sidebar-right</b></div>`;
-const panel=(ts,cur,block,o={})=>`<div class="tpanel${block?' block':''}"${block?` style="--bl:${block.left}px;--bw:${block.width}px"`:''}>${ts.map(t=>t.n===o.rename?`<div class="row renaming" style="${tc(t.n)}"><span class="n"><span class="h">#</span></span><span class="input"><span class="sel">${esc(t.n)}</span></span></div>`:`<div class="row${t.n===cur?' cur':''}${t.n===o.drag?' dragging':''}${t.n===o.over?' drop':''}${t.a?' archived':''}${t.n===o.hover?' hov':''}" style="${tc(t.n)}${t.n===o.over?';--dc:var(--t'+(T9.findIndex(x=>x.n===o.drag)%6)+')':''}"><span class="n">${hn(t.n)}</span><span class="s">${esc(t.s)}</span><span class="w">${t.w}</span><span class="x" title="${t.a?'Restore':'Archive'}">${t.a?'↺':'×'}</span></div>`).join('')}${cur?`<div class="row all"><span class="n">All threads</span></div>`:''}</div>`;
+const panel=(ts,cur,block,o={})=>`<div class="tpanel${block?' block':''}"${block?` style="--bl:${block.left}px;--bw:${block.width}px"`:''}>${ts.map(t=>t.n===o.rename?`<div class="row renaming" style="${tc(t.n)}"><span class="n"><span class="h">#</span></span><span class="input"><span class="sel">${esc(t.n)}</span></span></div>`:`<div class="row${t.n===cur?' cur':''}${t.n===o.drag?' dragging':''}${t.n===o.over?' drop':''}${t.a?' archived':''}${t.n===o.hover?' hov':''}" style="${tc(t.n)}${t.n===o.over?';--dc:var(--t'+(T9.findIndex(x=>x.n===o.drag)%6)+')':''}"><span class="n">${hn(t.n)}</span><span class="s">${esc(t.s)}</span><span class="w">${t.w}</span><span class="x" title="${t.a?'Restore':'Archive'}">${t.a?'↺':'×'}</span></div>`).join('')}${cur?`<div class="row all"><span class="n">All topics</span></div>`:''}</div>`;
 /* the mode: block when a 240pt block, standing 8pt from the left, covers at most 10% of the transcript's width (the transcript is 720pt at most, centred); its width is then the gutter plus that 10%, at most 340pt */
 /* iteration 2: the transcript is left-aligned (720pt at most); the block stands at its right, 20pt from it, 8pt from the pane's edge, when at least 30 cells (30 × the cell width) are free there; it takes that room, at most 360pt */
 const CELL=7.8;
@@ -804,7 +804,7 @@ const dragReply=userMsg('Check both: is the sidebar unit done, and what did the 
   +run({sum:'job verify-sidebar, bash x2',time:'41s'})
   +assistant([{t:'sidebar'},'Verification passed; I merge the unit next.'],{time:'14:45'})
   +userMsg('Also look at the Linux flake in the sweep test when you have a minute.','14:46','ci-linux-flake')
-  +assistant([{t:'ci-linux-flake'},'I reproduced it once under contention; the test waits for the process, not for the row\'s exit. A fix is in the test\'s wait.'],{time:'14:47',drop:'threads'});
+  +assistant([{t:'ci-linux-flake'},'I reproduced it once under contention; the test waits for the process, not for the row\'s exit. A fix is in the test\'s wait.'],{time:'14:47',drop:'topics'});
 const tagging=userMsg('Check both: is the sidebar unit done, and what did the palette unit answer?','14:40')
   +assistant([{t:'sidebar'},'Done. The unit\'s twelve snapshots changed as expected and the reviewers found nothing to apply.',{t:'palette'},'It keeps the "This session only" row; the config file changes only for the other three choices.'],{time:'14:41'})
   +run({sum:'job verify-sidebar, bash x2',time:'41s'})
@@ -823,10 +823,10 @@ const states={
   'archive-block':(p)=>caps({ts:T9A,hover:'release-0-32'},p)+transcript(body1+marks)+composer(),
   'tag-hover':(p)=>caps({ts:T9},p)+transcript(body1+tagging)+composer(),
   'tag-naming':(p)=>caps({ts:T9},p)+transcript(body1+tagged)+composer(),
-  'new-thread':(p)=>caps({ts:T9},p)+transcript(body1+marks)+composer({naming:true}),
-  'new-thread-named':(p)=>caps({ts:T9},p)+transcript(body1+marks)+composer({thread:'CI macOS timeouts',text:'The macOS runner times out on the e2e stage twice a day; find the test.'}),
+  'new-topic':(p)=>caps({ts:T9},p)+transcript(body1+marks)+composer({naming:true}),
+  'new-topic-named':(p)=>caps({ts:T9},p)+transcript(body1+marks)+composer({topic:'CI macOS timeouts',text:'The macOS runner times out on the e2e stage twice a day; find the test.'}),
   'drag-row':(p)=>caps({ts:T9,open:true,drag:'palette',over:'sidebar'},p)+transcript(body1)+composer(),
-  'drag-reply':(p)=>caps({ts:T9,open:true,drag:'threads'},p)+transcript(dragReply)+composer(),
+  'drag-reply':(p)=>caps({ts:T9,open:true,drag:'topics'},p)+transcript(dragReply)+composer(),
   rename:(p)=>caps({ts:T9,open:true,rename:'palette'},p)+transcript(body1)+composer(),
   'block-drag':(p)=>caps({ts:T9,drag:'palette',over:'sidebar'},p)+transcript(body1+marks)+composer(),
   two:(p)=>caps({ts:T2,open:true},p)+transcript(body1)+composer(),
@@ -834,11 +834,11 @@ const states={
   'many-narrow':(p)=>caps({ts:T9,open:true},p)+transcript(body1)+composer(),
   marks:(p)=>caps({ts:T9},p)+transcript(body1+marks)+composer(),
   'marks-narrow':(p)=>caps({ts:T9},p)+transcript(marks)+composer(),
-  filter:(p)=>caps({ts:T9,cur:p._cur||'sidebar'},p)+transcript(filtered)+composer({thread:p._cur||'sidebar'}),
-  'filter-panel':(p)=>caps({ts:T9,cur:'sidebar',open:true},p)+transcript(filtered)+composer({thread:'sidebar'}),
-  'filter-narrow':(p)=>caps({ts:T9,cur:p._cur||'sidebar'},p)+transcript(filtered)+composer({thread:p._cur||'sidebar'}),
+  filter:(p)=>caps({ts:T9,cur:p._cur||'sidebar'},p)+transcript(filtered)+composer({topic:p._cur||'sidebar'}),
+  'filter-panel':(p)=>caps({ts:T9,cur:'sidebar',open:true},p)+transcript(filtered)+composer({topic:'sidebar'}),
+  'filter-narrow':(p)=>caps({ts:T9,cur:p._cur||'sidebar'},p)+transcript(filtered)+composer({topic:p._cur||'sidebar'}),
   block:(p)=>caps({ts:T9},p)+transcript(body1+marks)+composer(),
-  'block-filter':(p)=>caps({ts:T9,cur:p._cur||'sidebar'},p)+transcript(filtered)+composer({thread:p._cur||'sidebar'}),
+  'block-filter':(p)=>caps({ts:T9,cur:p._cur||'sidebar'},p)+transcript(filtered)+composer({topic:p._cur||'sidebar'}),
 };
 function fill(pane){pane._ts=/two/.test(pane.dataset.state)?T2:T9;pane.innerHTML=states[pane.dataset.state](pane);const dock=document.createElement('div');dock.className='dock';for(const k of [...pane.children].filter(c=>c.classList.contains('composer')))dock.appendChild(k);pane.appendChild(dock);pane.style.setProperty('--dock-h',dock.offsetHeight+'px');const sc=pane.querySelector('.scroll');if(/marks|filter|block|tag|drag/.test(pane.dataset.state))sc.scrollTop=sc.scrollHeight;fitCap(pane);}
 for(const pane of document.querySelectorAll('.pane[data-state]'))fill(pane);

@@ -822,7 +822,7 @@ merge, and a filter on a merged topic follows to its target. A
 single click filters only after the double-click interval, so a
 rename does not filter. Long names are cut on the page with the whole
 name in the title. The visual rules of these interactions are in
-`app/design/koa/NOTES.md`, "Threads".
+`app/design/koa/NOTES.md`, "Topics".
 
 The user names a topic with the "+ topic" chip. In the composer it
 sets the composer's topic and writes nothing to the session. A new

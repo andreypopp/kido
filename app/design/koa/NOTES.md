@@ -1904,11 +1904,11 @@ link to the editor float that Control-G already has.
   row; the editor float with the path title (the existing editor
   float snapshot with a new title).
 
-## Threads: the widget, the marks and the filter (threads.html; approved 2026-11-18)
+## Topics: the widget, the marks and the filter (threads.html; approved 2026-11-18)
 
-docs/design-koa.md, "Threads". The agent labels its sections with `[thread:
+docs/design-koa.md, "Reply annotations and topics". The agent labels its sections with `[topic:
 name]` lines; the transcript turns them into marks; the page lists
-the threads and filters to one. States `two`, `many`, `many-narrow`,
+the topics and filters to one. States `two`, `many`, `many-narrow`,
 `marks`, `marks-narrow`, `filter`, `filter-panel`, `filter-narrow`,
 light and dark in the gallery.
 
@@ -1916,17 +1916,17 @@ light and dark in the gallery.
   background mixed 8% toward the foreground, a 0.5pt edge at 16% /
   14% dark, the contact shadow, 22pt high, 8pt radius, 8pt side
   padding, .85em prose) at the top left of the pane, outside the
-  scroll, at 8pt from the top and the left. Threads exist only in
+  scroll, at 8pt from the top and the left. Topics exist only in
   the root agent's view (user, 2026-11-18): a subagent's view has no
   widget, no marks and no filter, and the view bar shows only there,
   so the two never share the corner. While the capsule shows, the
   transcript's top padding is 44pt (the view bar's rule). It does
-  not show for a session with no thread. Threads have no status and
+  not show for a session with no topic. Topics have no status and
   no dot or circle anywhere (user, 2026-11-18): koa sends a name, a
   position, a summary and the time of the last section, and "#
-  name" in the thread's colour is the lead, in the widget as in the
+  name" in the topic's colour is the lead, in the widget as in the
   transcript. Content (user, 2026-11-18: show more while the width
-  allows, collapse only on overflow): as many threads as fit, newest
+  allows, collapse only on overflow): as many topics as fit, newest
   first, each as "# name" ("#" at 55% of the colour, the name at 600
   in it), "·" at 35% between, then "+N" muted for the ones that do
   not fit, then a "▾" in
@@ -1956,12 +1956,12 @@ light and dark in the gallery.
   before: 8pt), directly on the
   pane's background with no card, no edge, no shadow, no capsule
   and no popup; the block takes the free room, at most 360pt. For
-  each thread, newest first: "# name" in the colour (ellipsized at
+  each topic, newest first: "# name" in the colour (ellipsized at
   45% of the block), the first line of the last message muted and
   ellipsized, the age at the right; the panel's 28pt rows and 6pt
   radius, hover the well. A click on a row applies the filter; the
   current row has the well2 fill; a click on it or on the "All
-  threads" row under a hairline clears it. The transcript keeps its
+  topics" row under a hairline clears it. The transcript keeps its
   normal top padding in block mode and the 44pt only in line mode.
   *Line mode*: the capsule as before, with two changes: a click on
   a name applies the filter at once (hover underlines the name in
@@ -1976,104 +1976,104 @@ light and dark in the gallery.
   300pt to 420pt wide, never wider than the pane minus 16pt, its
   bottom at most at 60% of the pane's height (so its height is at
   most 60% minus its 36pt top) and then scrolling. One row for each
-  thread, newest first by the last section's time, a thread with no
+  topic, newest first by the last section's time, a topic with no
   section yet before them, 28pt, 4/8pt padding, 6pt radius, hover the
-  well: "# name" in the thread's colour (the name at 600, ellipsized
+  well: "# name" in the topic's colour (the name at 600, ellipsized
   at 160pt), the summary
   muted and ellipsized to the row's end, the age of the last section
   at the right in the faint colour at .9em: "now" under a minute,
   then "Nm" to 59m, "Nh" to 23h, then "Nd"; computed when the panel
   opens and at each state update, no timer. A click on
   a row sets the filter and closes the panel. With a filter active,
-  the current row has the well2 fill and a last row "All threads",
+  the current row has the well2 fill and a last row "All topics",
   separated by a hairline, clears the filter.
 - **The mark** (superseded 2026-11-20 by the reply's pill, next
   bullet: a run, agent or job line carries no mark and no colour
-  edge. Rendering only: the transcript keeps every item's thread,
-  the filter still uses it; the page shows the thread on a reply
+  edge. Rendering only: the transcript keeps every item's topic,
+  the filter still uses it; the page shows the topic on a reply
   only). The earlier label line, kept for the record:
   .8em prose at line-height 1.35 (a 14pt line box at the 13px base;
-  no fixed height), "#" at 55% of the thread's colour, a 6px gap, then the name
+  no fixed height), "#" at 55% of the topic's colour, a 6px gap, then the name
   in the colour at 600, 12pt above and 3pt below (10pt above inside
   a reply; none above a reply's first section). The mark is a
-  control (user, 2026-11-18): a click sets the filter to its thread,
+  control (user, 2026-11-18): a click sets the filter to its topic,
   like a panel row; the pointer a hand over the label's own box
   (`width: fit-content`, not the whole line); hover underlines the
   name 1px in the colour at 50%, 2pt under the baseline, pressed at
   100%; nothing at rest, so the transcript keeps its quiet labels;
   the pending line is not a control. A mark shows only where the
-  thread differs from the last mark above; a line with no thread shows no
-  mark and does not reset the last one. A reply about two threads
+  topic differs from the last mark above; a line with no topic shows no
+  mark and does not reset the last one. A reply about two topics
   has a mark above each section; a run, its steps and a notice get
   none (user, 2026-11-20; see "Runs split only at prose"). A user message never carries a mark: its
-  threads are the ones its reply names, and the reply's marks stand
-  right under it. Nothing says "new" for a thread's first mark.
+  topics are the ones its reply names, and the reply's marks stand
+  right under it. Nothing says "new" for a topic's first mark.
 - **The reply's pill** (user, 2026-11-20; threads.html `marks`,
   steps.html, lines.html). Inside a reply the mark line is replaced
   by a pill at the right of the message, floated on its first line
   with the text flowing beside it, its time ending on the same
   vertical as the user message's time, the text edge (the pill's
   right margin is minus its own 8pt padding): "# name  HH:MM", "#" at 55% of the
-  thread's colour, the name at 600 in it, a 6px gap, the time in
+  topic's colour, the name at 600 in it, a 6px gap, the time in
   the mono at tabular numerals, the text .8em at line-height 1.5,
   1pt/8pt padding, 999pt radius, the fill the colour at 10%. The
   time is the message's time, the same clock as the user message's.
-  A reply with no thread shows the time alone in the faint colour on
+  A reply with no topic shows the time alone in the faint colour on
   the foreground at 6%: every assistant message has a pill, in a
-  session with no thread too. A reply about two threads has a pill
+  session with no topic too. A reply about two topics has a pill
   on each section, each with the message's time (user, 2026-11-20:
   the same message still needs its time on every pill). The pill is the
   mark's control: the hand over the pill, hover underlines the name
   at 50%, pressed 100%; the time-only pill is no control. With it
   no colour edge remains anywhere (user, 2026-11-20: "remove left
   border everywhere, from tool calls as well"), and a run, agent or
-  job line shows no mark (rendering only: the item keeps its thread
-  for the filter; the page shows the thread on the reply, whose
+  job line shows no mark (rendering only: the item keeps its topic
+  for the filter; the page shows the topic on the reply, whose
   pill stands for the lines of its turn). The user message keeps
-  its plain time (chips with its threads were tried and removed,
-  user, 2026-11-20). The pending line "waiting for its thread"
+  its plain time (chips with its topics were tried and removed,
+  user, 2026-11-20). The pending line "waiting for its topic"
   above a pending user message in a filtered view is removed too
   (user, 2026-11-20): the message shows with nothing above it until
   its label arrives.
-- **The filter.** In line mode the capsule becomes the thread: "#
+- **The filter.** In line mode the capsule becomes the topic: "#
   name" in its colour and an × (14pt, the muted colour, hover the
   well2) that clears it; a click on the name opens the panel, and
   the "…" is gone. In block mode the current row is marked and the
-  "All threads" row appears. A switch of the filter (to a thread,
-  between threads, back to all) lands the newly shown transcript at
+  "All topics" row appears. A switch of the filter (to a topic,
+  between topics, back to all) lands the newly shown transcript at
   its bottom, following, or, when it has unread items, at the "new
   messages" divider above the first of them with "↓ N new" (user,
   2026-11-22; the auto-scroll rules of "Auto-scroll, the 'new
   messages' divider and '↓ Latest'" apply from there). Under a
   filter the unread count and the divider cover only the items the
-  filtered transcript shows; the all-threads view keeps the whole
+  filtered transcript shows; the all-topics view keeps the whole
   count; an item unread in one view stays unread in the other until
   it is seen. The transcript
-  shows the thread's items only; every reply keeps its pill, but
-  with the time alone, in the faint style of an unthreaded reply
+  shows the topic's items only; every reply keeps its pill, but
+  with the time alone, in the faint style of an untopiced reply
   (the name would say the same on every row; the filter names the
-  thread), plus a pending user
+  topic), plus a pending user
   message, one whose reply the agent is still working on and that
   has no label yet, shown as any user message, with nothing above
-  it (an old unlabelled message has no thread and shows only
+  it (an old unlabelled message has no topic and shows only
   unfiltered). The composer's placeholder keeps the page's verb rule
-  with the thread added: "Steer @ko in #sidebar…" while the agent
+  with the topic added: "Steer @ko in #sidebar…" while the agent
   works, "Message @ko in #sidebar…" when it is idle (the view's
-  agent, the thread; the three filter states have a working agent,
+  agent, the topic; the three filter states have a working agent,
   so they show "Steer"), and the foot gets a
   first cell before the model: "#" faint, the name at 600 in the
   foreground, then the separator; at the narrow breakpoints the cell
-  stays and the model goes first. The prompt carries the thread and
+  stays and the model goes first. The prompt carries the topic and
   koa writes the marker; the queue and steers the same.
 - **The header row and the chip** (user, 2026-11-21, approved;
   header.html). Replaces the reply's
   pill and the composer's foot cell. *The header row*: every
   message, user or agent, starts with one row that holds only its
-  time at the right and, when the message has a thread, the thread's
+  time at the right and, when the message has a topic, the topic's
   chip at the left: a flex row at .8em/1.5 prose (a 15.6px line at
   the 13px base), baseline-aligned, 2px to the body (4px in the
   field), the body's first block with no top margin; the row is
-  reserved also when the message has no thread, with the time
+  reserved also when the message has no topic, with the time
   alone. The time's design stays: the mono at tabular numerals, the
   faint colour on a reply, the ink at 65% on a user block, its right
   edge on the text edge like every other time. Inside a user block
@@ -2081,51 +2081,51 @@ light and dark in the gallery.
   text; a reply's row is its first line. *The chip*: "# name" on a
   tinted pill (the user's choice, 2026-11-21, over an outlined tag,
   plain text, a dot, a muted label and a bar: header.html's Chip
-  picker keeps them), .8em prose, "#" at 55% of the thread's
+  picker keeps them), .8em prose, "#" at 55% of the topic's
   colour, the name at 600 in it, a 6px gap, 0/8px padding, 999px
   radius, no edge, the fill the colour at 10% on the page and in
   the field; on the solid user block the fill is the page
   background at 22% and the text the block's ink ("#" at 60%), so
   the pill reads on the accent; the name ellipsizes at 60% of the row, the full name
   in its `title`. The chip is a control (user, 2026-11-21: it sets
-  the composer's thread, it does not filter; the filter is only the
+  the composer's topic, it does not filter; the filter is only the
   widget's): the hand over the chip only, hover underlines the name
-  at 50%, pressed 100%, a click puts that thread's chip in the
-  composer's header as the composer's thread. *Multi-section
+  at 50%, pressed 100%, a click puts that topic's chip in the
+  composer's header as the composer's topic. *Multi-section
   replies*: the first section's chip is in the header with the
   time; each later section starts with a row of its own chip and
   no time, 10px above (the time belongs to the message, and it is
-  on the first row). *User messages*: the chip when the thread is
+  on the first row). *User messages*: the chip when the topic is
   known (the classifier's label, a filter, a typed marker); none
-  for a message that has none or whose reply spans two threads.
+  for a message that has none or whose reply spans two topics.
   *Runs, steps, notices, job lines, the queue dock's rows and the
   pending prompt*: unchanged, no header and no chip (the queue's
-  row is one line; the composer's chip already names the thread of
+  row is one line; the composer's chip already names the topic of
   what the dock holds under a filter). *Narrow*: the row keeps its
-  two ends; the chip ellipsizes first. *The composer's thread*
-  (user, 2026-11-21: two things, the composer's thread and the
-  transcript's filter): the composer has at most one thread, shown
+  two ends; the chip ellipsizes first. *The composer's topic*
+  (user, 2026-11-21: two things, the composer's topic and the
+  transcript's filter): the composer has at most one topic, shown
   as its chip at the top left of the field, above the text, in a
   row of the same metrics, with an × after the name (14px, the
   muted colour, 0/3px padding, 4px radius, hover the well2) that
-  drops it; without a thread the row holds the "+ thread" chip
-  ("Starting a thread explicitly"), so the row always exists. It is set by a click on a message's chip, by a typed
-  the "+ thread" chip ("Starting a thread explicitly"), and by the widget: a
-  filter sets the composer's thread to the filtered thread. The
-  message goes to that thread (the marker is written, the
+  drops it; without a topic the row holds the "+ topic" chip
+  ("Starting a topic explicitly"), so the row always exists. It is set by a click on a message's chip, by a typed
+  the "+ topic" chip ("Starting a topic explicitly"), and by the widget: a
+  filter sets the composer's topic to the filtered topic. The
+  message goes to that topic (the marker is written, the
   classifier is not asked); the chip stays after a send, so the
   next message goes there too, until the × or another chip. The
-  × drops the composer's thread only: the filter, if any, stays,
+  × drops the composer's topic only: the filter, if any, stays,
   and the next message is classified. The filter is only the
   widget's: a name in the line-mode capsule, a panel row, a block
   row; clearing it is the widget's too: the capsule's × in line
-  mode, "All threads" in the panel and in block mode, a click on
+  mode, "All topics" in the panel and in block mode, a click on
   the current row (the × of the composer's chip never clears the
-  filter). Clearing the filter also drops the composer's thread
-  when it is the filtered thread (user, 2026-11-22: the filter set
-  it, the clear takes it back); a different composer thread, set
+  filter). Clearing the filter also drops the composer's topic
+  when it is the filtered topic (user, 2026-11-22: the filter set
+  it, the clear takes it back); a different composer topic, set
   after the filter, stays. The placeholder is the
-  plain "Steer @ko…" / "Message @ko…" and the foot's thread cell is
+  plain "Steer @ko…" / "Message @ko…" and the foot's topic cell is
   removed; under a filter the transcript's messages show the time
   alone in their header (the name would say the same on every
   row). Decided by the user (2026-11-21): the foot cell and the "in
@@ -2133,92 +2133,92 @@ light and dark in the gallery.
   reply's pill, the foot cell and the "in #name" placeholder in the
   bullets above are history, and so is the move of the capsule's ×
   to the composer (2026-11-21, earlier the same day).
-- **Starting a thread explicitly** (user, 2026-11-21, approved;
+- **Starting a topic explicitly** (user, 2026-11-21, approved;
   header.html section 2b). (1) From the composer alone (user: no panel row;
-  the same "+ thread" as on a message, user, 2026-11-21): the
+  the same "+ topic" as on a message, user, 2026-11-21): the
   composer's header row always exists (so the field is one row
-  taller than before) and holds either the composer's thread as
-  its chip with the ×, or the "+ thread" chip of (2) below, always
+  taller than before) and holds either the composer's topic as
+  its chip with the ×, or the "+ topic" chip of (2) below, always
   visible here, not on hover: it is the route. A click on it turns
   it into the naming chip in place (the tinted pill in the next
   colour, "#", a text field of at least 6ch with the placeholder
-  "thread name" in the faint colour, the ×, the caret in the
-  field); typing a name and Enter sets the composer's thread (an
-  existing thread's name takes that thread's colour; Tab and Enter
+  "topic name" in the faint colour, the ×, the caret in the
+  field); typing a name and Enter sets the composer's topic (an
+  existing topic's name takes that topic's colour; Tab and Enter
   move the caret to the text), Escape or the × returns to "+
-  thread". A thread's name is a Zulip topic, with spaces and any
+  topic". A topic's name is a Zulip topic, with spaces and any
   text, so there is no `#name` syntax (it would collide with
-  Markdown headings; user, 2026-11-21), and no `/thread` command
-  (user, 2026-11-21: "+ thread" is the only way to name the
-  composer's thread). The chip is the composer's thread ("The composer's
-  thread" above): the message goes to #name, the transcript is not
+  Markdown headings; user, 2026-11-21), and no `/topic` command
+  (user, 2026-11-21: "+ topic" is the only way to name the
+  composer's topic). The chip is the composer's topic ("The composer's
+  topic" above): the message goes to #name, the transcript is not
   filtered (user, 2026-11-21: the filter is only the widget's), the
   × drops it and nothing returns to the text. On send the message
   carries the marker and the classifier is not asked (plan decision
   6); the transcript stays unfiltered and the chip stays. (2) From
   an existing message: hovering a message's
-  header row shows a "+ thread" chip only when the message has no
-  thread (user, 2026-11-22; for a multi-section reply: none when
-  any section has a thread); a threaded message shows no "+
-  thread", and its thread changes by a drag of a thread row from
+  header row shows a "+ topic" chip only when the message has no
+  topic (user, 2026-11-22; for a multi-section reply: none when
+  any section has a topic); a topiced message shows no "+
+  topic", and its topic changes by a drag of a topic row from
   the widget onto the message ("The classifier MVP, reviewed"). The
   chip's metrics with a 1px dashed edge at 30% of
-  the foreground (45% of the ink on a user block), "+" and "thread"
+  the foreground (45% of the ink on a user block), "+" and "topic"
   in the muted colour at 500, no fill, the hand cursor; it takes no
   room when hidden (the row's time keeps its place). A click turns
   it into a naming chip in that row (the tinted pill in the next
   colour, "#", then a text field of at least 6ch with the
-  placeholder "thread name" in the faint colour, and the ×); Enter
-  creates the thread and moves the message's turn into it (the
+  placeholder "topic name" in the faint colour, and the ×); Enter
+  creates the topic and moves the message's turn into it (the
   MVP's move of a turn, so a reply takes its user message along), a
-  name of an existing thread moves the turn there instead; Escape,
+  name of an existing topic moves the turn there instead; Escape,
   the × or a click outside drops it. The row's existing chip stays
   until the move lands; then it is replaced. No slash command.
-- **Archiving a thread** (user, 2026-11-21, approved; header.html
-  section 2c). Every thread row of the widget
+- **Archiving a topic** (user, 2026-11-21, approved; header.html
+  section 2c). Every topic row of the widget
   (the panel's rows and block mode's rows) has an × at its right,
   in the age's slot: shown on hover of the row in place of the age,
   16px square, 4px radius, the muted colour, hover the well2 and the
-  foreground, the hand; a click archives the thread, no
-  confirmation. An archived thread stays in the widget: its row
-  dimmed to 45% (70% on hover), listed after the live threads,
+  foreground, the hand; a click archives the topic, no
+  confirmation. An archived topic stays in the widget: its row
+  dimmed to 45% (70% on hover), listed after the live topics,
   each group newest first; its hover control is ↺ ("Restore"),
-  which unarchives it. The line-mode capsule shows live threads
+  which unarchives it. The line-mode capsule shows live topics
   only, and "+N" counts live ones; the panel lists both. The
-  classifier is not shown archived threads (they leave
-  `threadContext`) and cannot label into one: an answer that names
-  an archived thread counts as a failure (plan decision 3: the
+  classifier is not shown archived topics (they leave
+  `topicContext`) and cannot label into one: an answer that names
+  an archived topic counts as a failure (plan decision 3: the
   message goes without a marker). Only ↺ restores (user,
   2026-11-21: not an explicit message): a message sent to an
-  archived thread by its chip in the composer (a click on a
+  archived topic by its chip in the composer (a click on a
   message's chip, the naming chip), a filter on it (a
   click on its dimmed row filters as on a live row), a turn moved
-  or a thread merged into it all leave it archived. Rename works as
-  on a live thread and keeps the archived state; a merge takes the
+  or a topic merged into it all leave it archived. Rename works as
+  on a live topic and keeps the archived state; a merge takes the
   target's state. The quote match (a quoted line of an archived
-  thread's reply) ignores archived threads, as the classifier does,
+  topic's reply) ignores archived topics, as the classifier does,
   and the message goes to the classifier. The line-mode capsule
-  under a filter on an archived thread shows "# name ×" as for any
+  under a filter on an archived topic shows "# name ×" as for any
   filter, the name dimmed to 45% and the × at full strength; with
-  every thread archived the capsule stays with the "…" alone, no
+  every topic archived the capsule stays with the "…" alone, no
   names and no "+N", so the panel stays reachable (unit B,
-  2026-11-21). The state is koa's, per session, in the session's thread
+  2026-11-21). The state is koa's, per session, in the session's topic
   list (`archived: true`), so it survives a reload and a resume.
 - **The classifier MVP, reviewed** (2026-11-21; the user promoted
-  the MVP of plans/koa-thread-classifier.md; the page's panel
+  the MVP of plans/koa-topic-classifier.md; the page's panel
   gained drag, rename and a pending prompt; header.html section 3
   shows the drag over a row, the drag over a reply and the rename). What agrees with the
   design and stays: the panel's rows (28pt, "# name" ellipsized at
   220pt in line mode and 45% in block mode, the summary muted and
   ellipsized, the age at the right), a click filters, the current
-  row's well2 fill, "All threads", both modes. Accepted from the
-  MVP, now the rule: a thread name is a topic, 1 to 200 characters
+  row's well2 fill, "All topics", both modes. Accepted from the
+  MVP, now the rule: a topic name is a topic, 1 to 200 characters
   of any text (the model is asked for 60 at most), no longer the
   32-character slug; the name is never cut except by the ellipsis
   of its box, and every ellipsized name (panel, pill, capsule, the
   foot's cell) carries the full name in its `title`. The summary is
   the newest non-empty first line of a user or assistant message of
-  the thread (the "last section" wording above is superseded). The
+  the topic (the "last section" wording above is superseded). The
   unit of a move is the turn: a drop on a user message or on any
   section of its reply moves the message and its replies. The rules
   the MVP lacked:
@@ -2230,25 +2230,25 @@ light and dark in the gallery.
     as the MVP has it. At rest a row keeps the hand cursor; there is
     no grab cursor at rest and no handle.
   - *Drop target.* One highlight for both targets, in the dragged
-    thread's colour (not `--thread-0`): a 2px outline at 50% of the
+    topic's colour (not `--topic-0`): a 2px outline at 50% of the
     colour and a fill at 6%, with 6pt radius; on a panel row the
     outline is inset (offset −2px, inside the row's radius, over the
     hover fill), on a transcript message it is 3px outside the
-    message's box. A row is a target only for another thread; a
+    message's box. A row is a target only for another topic; a
     message only when its turn is not already in the dragged
-    thread. Nothing else highlights; the pointer stays the grabbing
+    topic. Nothing else highlights; the pointer stays the grabbing
     hand over a non-target.
-  - *Merge.* A drop on a row merges the dragged thread into it
-    (from → to), no confirmation; the dragged thread leaves the
+  - *Merge.* A drop on a row merges the dragged topic into it
+    (from → to), no confirmation; the dragged topic leaves the
     panel in the next state, and a filter on it becomes a filter on
-    the target. A rename to the name of an existing thread is the
+    the target. A rename to the name of an existing topic is the
     same merge.
   - *Rename.* A double-click on a row; a single click filters after
     250ms, so a double-click does not filter first (needed in line
     mode, where the click closes the panel; one rule for both
     modes). The field replaces the name in place and takes the
     row's whole width (the summary and the age hide while renaming):
-    the row's font (.88em prose) in the foreground, the thread's "#"
+    the row's font (.88em prose) in the foreground, the topic's "#"
     kept before it in the colour, a 1px edge at the hairline, 4pt
     radius, 2pt/6pt padding, the row's 28pt height unchanged, the
     name selected on open. Enter and a click outside commit, Escape
@@ -2261,7 +2261,7 @@ light and dark in the gallery.
     kind label is the mode word as for a queued row ("sending",
     "steer", "follow-up") followed by the page's working dots, and
     it has no remove control; it becomes a transcript item when the
-    label arrives. A prompt whose thread is decided without the
+    label arrives. A prompt whose topic is decided without the
     classifier (a filter, a typed marker) shows no pending row.
 - **Narrow pane**: the page's existing narrow breakpoint (the
   transcript's narrow padding rule), not a new one: the panel is the
@@ -2269,7 +2269,7 @@ light and dark in the gallery.
   the text; the capsule follows its fit rule, which needs no rule of
   its own; the mark and the foot cell unchanged.
 - **Colour** (user, 2026-11-18: "color code the different
-  threads"). A thread's colour is its index in the session's thread
+  topics"). A topic's colour is its index in the session's topic
   list (order of first use, stable for the session's life; koa sends
   the index) modulo six, in a palette of six hues that are none of
   the sidebar's status green and orange, the error red or the accent
@@ -2291,8 +2291,8 @@ light and dark in the gallery.
   12pt left of the text (8pt in a narrow pane), 1pt radius, the
   colour at 45%, one continuous line spanning the section (a reply
   section, or a run, agent or job line and what follows it in the
-  same thread) to its last line. The summary stays muted; nothing fills, so the user
-  block's accent stays the one filled thing. A seventh thread shares
+  same topic) to its last line. The summary stays muted; nothing fills, so the user
+  block's accent stays the one filled thing. A seventh topic shares
   the first's hue: the name tells them apart, the colour is a scan
   aid, not an identity.
 - **Snapshots** (KoaWebviewTests, light and dark): the eight states
@@ -2461,7 +2461,7 @@ run).
   once when it appears; a step that joins an existing run adds no
   count and moves no divider. So a report while idle is one new
   item (its new run), and a report inside a working run is none.
-- **Threads**: superseded by "Runs split only at prose" below.
+- **Topics**: superseded by "Runs split only at prose" below.
 - **Find and copy**: a step's body is in the model like a tool's
   details: counted when folded, opened when current, selected and
   copied with the transcript.
@@ -2472,13 +2472,13 @@ run).
 ## Runs split only at prose (user, 2026-11-20)
 
 The user saw one turn as three adjacent run rows: its tools carried
-no thread, its `async_bash` job carried one, and the run split at
-each change. The decision: a step's thread never splits a run, and
+no topic, its `async_bash` job carried one, and the run split at
+each change. The decision: a step's topic never splits a run, and
 koa's notices join runs too.
 
 - **A run splits** only at a user message, assistant text with
   visible content, a `!` command row (the user's input) and a gap of
-  unloaded history. Agent, job and tool steps of any threads stay
+  unloaded history. Agent, job and tool steps of any topics stay
   one run.
 - **A notice in a run.** A notice (a notification, a command
   outcome, koa's note, the reply's error, a history summary) that
@@ -2488,11 +2488,11 @@ koa's notices join runs too.
   "notify", "command", "error", "compacted", "branch". A notice with
   no open run (after prose, after the user's message, at the start)
   stays a row, and a later step starts a new run below it.
-- **Thread marks** stand only on prose: a run, its steps and a
+- **Topic marks** stand only on prose: a run, its steps and a
   notice carry none.
-- **The filter** keeps the unfiltered runs: prose of another thread
+- **The filter** keeps the unfiltered runs: prose of another topic
   still ends a run, and two runs never merge because the prose
-  between them is hidden. A run's thread is the first known thread
+  between them is hidden. A run's topic is the first known topic
   of its steps (a notice has none); the run shows whole under that
-  thread's filter and hides under the others. A run with no known
-  thread shows only unfiltered.
+  topic's filter and hides under the others. A run with no known
+  topic shows only unfiltered.
