@@ -5,13 +5,6 @@ import { messageTopic, topicMove, topicArchive, parseTopicName, type TopicName }
 
 const resolveTopic = (moves: ReadonlyMap<TopicName, TopicName>, name: TopicName): TopicName => moves.get(name) ?? name;
 const movable = (moves: ReadonlyMap<TopicName, TopicName>, from: TopicName, to: TopicName): boolean => from !== to && !moves.has(from) && (!moves.has(to) || moves.get(to) === from);
-const noteTopicMove = (moves: Map<TopicName, TopicName>, move: { from: TopicName; to: TopicName }): void => {
-  if (!movable(moves, move.from, move.to)) return;
-  for (const [alias, target] of moves) if (target === move.from) moves.set(alias, move.to);
-  moves.set(move.from, move.to);
-  moves.delete(move.to);
-};
-
 
 export type TopicList = { names: TopicName[]; indexed: TopicName[]; resolve(name: TopicName): TopicName; movable(from: TopicName, to: TopicName): boolean; archived(name: TopicName): boolean; assignment(entryId: string | undefined, original: TopicName | undefined): TopicName | undefined; overridden(entryId: string | undefined): boolean };
 
@@ -48,7 +41,9 @@ export function topicList(branch: readonly SessionEntry[]): TopicList {
         const keep = archived.has(usedNames().has(move.to) ? move.to : move.from);
         archived.delete(move.from);
         if (keep) archived.add(move.to); else archived.delete(move.to);
-        noteTopicMove(moves, move);
+        for (const [alias, target] of moves) if (target === move.from) moves.set(alias, move.to);
+        moves.set(move.from, move.to);
+        moves.delete(move.to);
       }
       continue;
     }

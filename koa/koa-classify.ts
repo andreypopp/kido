@@ -25,7 +25,7 @@ export function topicContext(items: readonly Item[], indexed: readonly TopicName
 
 const quoteText = (text: string): string => text.replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
 
-export function quotedTopic(items: readonly Item[], text: string, archived: ReadonlySet<TopicName>): TopicName | undefined {
+export function topicQuotes(text: string): string[] {
   const quotes: string[] = [];
   let open = false;
   for (const line of text.split(/\r?\n/)) {
@@ -34,9 +34,12 @@ export function quotedTopic(items: readonly Item[], text: string, archived: Read
     else if (quoted) quotes.push(quoted[1]);
     open = !!quoted;
   }
-  const wanted = quotes.map(quoteText).filter(quote => quote.length >= 12);
+  return quotes.map(quoteText).filter(quote => quote.length >= 12);
+}
+
+export function quotedTopic(items: readonly Item[], wanted: readonly string[], archived: ReadonlySet<TopicName>, project: (item: Item) => Item = item => item): TopicName | undefined {
   if (!wanted.length) return;
-  const sections = items.filter(item => item.kind === 'assistant').slice(-20).flatMap(item => item.blocks.flatMap(block => block.type === 'text' && block.topic && !archived.has(block.topic) ? [{ topic: block.topic, text: quoteText(block.text) }] : []));
+  const sections = items.filter(item => item.kind === 'assistant').slice(-20).map(project).flatMap(item => item.kind === 'assistant' ? item.blocks.flatMap(block => block.type === 'text' && block.topic && !archived.has(block.topic) ? [{ topic: block.topic, text: quoteText(block.text) }] : []) : []);
   const found = new Set<TopicName>();
   for (const quote of wanted) {
     const topics = new Set(sections.filter(section => section.text.includes(quote)).map(section => section.topic));

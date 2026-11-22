@@ -5,7 +5,7 @@ import { pathToken } from '../path-token.ts';
 import { markdown, type Tail } from './markdown.ts';
 import { markdownLine } from '../markdown-line.ts';
 import { revealHeight, unitsOf, type Unit } from './reveal.ts';
-import { visibleText, estimateExtent, groupAt, runParts, runOwner, runOf, invalidateRuns, sourceKey, windowOf, type SeqRange, type RunContext } from './extent.ts';
+import { visibleText, estimateExtent, groupAt, runParts, runOwner, runOf, invalidateRuns, sourceKey, windowOf, rowKey, sameRow, type RowId, type SeqRange, type RunContext } from './extent.ts';
 import { composer } from './composer.ts';
 import { stepInfo, stepParts, toolArgs, noticeOf, noticeText, sessionFields, type NoticeData, type StepInput } from './steps.ts';
 import { exportText, findSegments, lowered, matchesIn, type Segment } from './find.ts';
@@ -54,7 +54,7 @@ const stored: unknown = history.state;
 const pageMemory = (stored: unknown): stored is PageMemory => isRecord(stored) && Array.isArray(stored.scroll) && stored.scroll.every(saved => {
   if (!isRecord(saved) || !isRecord(saved.scope) || typeof saved.scope.view !== 'string' || saved.scope.sessionId !== undefined && typeof saved.scope.sessionId !== 'string' || !Number.isInteger(saved.last) || !isRecord(saved.anchor) || saved.anchor.edge !== 'row' && saved.anchor.edge !== 'divider' || typeof saved.anchor.offset !== 'number' || !Number.isFinite(saved.anchor.offset) || !isRecord(saved.anchor.item)) return false;
   const item = saved.anchor.item;
-  return item.kind === 'message' && Number.isInteger(item.seq) && (item.row === undefined || typeof item.row === 'string') || item.kind === 'job' && Number.isInteger(item.byte);
+  return item.kind === 'message' && Number.isInteger(item.seq) && (item.row === undefined || isRecord(item.row) && isRecord(item.row.source) && Number.isInteger(item.row.source.seq) && (item.row.kind === 'text' && item.row.source.kind === 'block' && Number.isInteger(item.row.source.index) || item.row.kind === 'run' && (item.row.source.kind === 'item' || item.row.source.kind === 'block' && Number.isInteger(item.row.source.index)))) || item.kind === 'job' && Number.isInteger(item.byte);
 }) && Array.isArray(stored.drafts) && stored.drafts.every(entry => Array.isArray(entry) && entry.length === 2 && entry.every(value => typeof value === 'string')) && ['filters', 'composerTopics'].every(key => { const entries = stored[key]; return Array.isArray(entries) && entries.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && (key === 'composerTopics' ? isRecord(entry[1]) && (entry[1].type === 'dropped' || entry[1].type === 'topic' && parseTopicName(entry[1].name) !== undefined) : parseTopicName(entry[1]) !== undefined)); });
 const memory = pageMemory(stored) ? stored : undefined;
 const topicItems = new Map<number, Extract<WireItem, { kind: 'topics' }>>();
@@ -75,7 +75,7 @@ const views = new Map<number, { view: HTMLElement; item: WireItem; warning?: str
 const openers = new Map<string, { view: HTMLElement; open: () => void }>(), fenceOpeners = new Map<string, { view: HTMLElement; open: () => void }>(), patched = new Set<number>(), live = new Set<number>(), order: number[] = [], extents = new Map<number, Extent>(), openFences = new Set<string>(), animating = new Map<HTMLElement, number>();
 type Extent = { kind: 'measured'; width: number; lh: number; px: number } | { kind: 'estimated'; px: number };
 type Group = SeqRange;
-type Table = { followers: Set<number>; index: Map<number, number>; starts: number[]; total: number; groups: Group[]; divider: { before: number; px: number } | undefined };
+type Table = { index: Map<number, number>; starts: number[]; groups: Group[]; divider: { before: number; px: number } | undefined };
 let table: Table | undefined, windowDirty = true, mountedSpans: { start: number; end: number }[] = [], gaps: HTMLElement[] = [], measured = { width: 0, lh: 0 }, dividerPx: number | undefined;
 const template = document.createElement('template');
 const folds = new Map<string, boolean>();
@@ -113,19 +113,20 @@ function waitingForTopic(item: WireItem): boolean {
   return state.view.type === 'root' && state.working && item.kind === 'user' && !item.topic && !topicItems.has(item.seq) && latestTopicInput()?.seq === item.seq;
 }
 const runKeys = new Map<number, string>();
-let runTopics: { owners: RunContext['owners']; names: Map<string, TopicName> } | undefined;
+const allRuns: RunContext = { raw: seq => items.get(seq), shown: seq => items.get(seq), owners: new Map() };
+let runTopics: Map<string, TopicName> | undefined;
 function runTopic(source: Parameters<typeof runOwner>[1]): TopicName | undefined {
   if (!runTopics) {
-    const context: RunContext = { raw: seq => items.get(seq), shown: seq => items.get(seq), owners: new Map() }, names = new Map<string, TopicName>();
+    const context = allRuns, names = new Map<string, TopicName>();
     for (const seq of [...items.keys()].sort((a, b) => a - b)) for (const part of runParts(items.get(seq), items.get(seq))) {
       if (part.kind !== 'step') continue;
       const key = sourceKey(runOwner(context, part.source));
       const topic = part.step.kind === 'block' ? part.step.block.topic ?? topicItems.get(seq)?.topics[0] : part.step.kind === 'agent' || part.step.kind === 'job' ? part.step.item.topic : undefined;
       if (topic && !names.has(key)) names.set(key, topic);
     }
-    runTopics = { owners: context.owners, names };
+    runTopics = names;
   }
-  return runTopics.names.get(sourceKey(runOwner({ raw: seq => items.get(seq), shown: seq => items.get(seq), owners: runTopics.owners }, source)));
+  return runTopics.get(sourceKey(runOwner(allRuns, source)));
 }
 function visible(seq: number): WireItem | undefined {
   const item = items.get(seq), filter = topicFilter();
@@ -375,21 +376,33 @@ function fitTopics(width = document.documentElement.clientWidth) {
   const button = capsule.view.querySelector<HTMLElement>('.topic-open');
   if (!button) return;
   button.classList.remove('single');
-  for (let count = Math.max(1, capsule.names.length); count >= 1; count--) {
-    const children: HTMLElement[] = [];
-    for (const name of capsule.names.slice(0, count)) {
-      if (children.length) children.push(node('span', '·', 'topic-separator'));
-      const label = topicName(name); label.setAttribute('role', 'button'); label.tabIndex = -1;
-      label.onclick = () => setTopic(name);
-      label.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setTopic(name); } };
-      children.push(label);
-    }
-    if (count < capsule.names.length) children.push(node('span', '·', 'topic-separator'), node('span', '+' + (capsule.names.length - count), 'topic-more'));
-    const more = node('button', '…', 'topic-overflow'); more.type = 'button'; more.setAttribute('aria-label', 'Choose topic'); more.setAttribute('aria-expanded', String(element('topics').querySelector<HTMLElement>('.topic-panel')?.hidden === false)); more.onclick = toggleTopics;
-    children.push(more); button.replaceChildren(...children);
-    const measured = button.scrollWidth + capsule.view.getBoundingClientRect().width - button.getBoundingClientRect().width;
-    if (measured <= Math.max(0, width - 16) || count === 1) { button.classList.toggle('single', count === 1); break; }
-  }
+  const children: HTMLElement[] = [], labels = capsule.names.map(name => {
+    const label = topicName(name); label.setAttribute('role', 'button'); label.tabIndex = -1;
+    label.onclick = () => setTopic(name);
+    label.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setTopic(name); } };
+    if (children.length) children.push(node('span', '·', 'topic-separator'));
+    children.push(label);
+    return label;
+  });
+  const more = node('button', '…', 'topic-overflow'); more.type = 'button'; more.setAttribute('aria-label', 'Choose topic'); more.setAttribute('aria-expanded', String(element('topics').querySelector<HTMLElement>('.topic-panel')?.hidden === false)); more.onclick = toggleTopics;
+  button.replaceChildren(...children, more);
+  const measured = button.scrollWidth + capsule.view.getBoundingClientRect().width - button.getBoundingClientRect().width;
+  if (measured > Math.max(0, width - 16) && labels.length > 1) {
+    const ends = labels.map(label => label.getBoundingClientRect().right), separator = children[1].getBoundingClientRect().width, gap = parseFloat(getComputedStyle(button).columnGap);
+    const counts = labels.slice(1).map((_, index) => node('span', '+' + (labels.length - index - 1), 'topic-more'));
+    button.append(...counts);
+    const widths = counts.map(label => label.getBoundingClientRect().width);
+    let count = labels.length - 1;
+    while (count > 1 && measured - (ends[ends.length - 1] - ends[count - 1]) + separator + widths[count - 1] + 2 * gap > Math.max(0, width - 16)) count--;
+    const separatorNode = node('span', '·', 'topic-separator');
+    const fits = (count: number) => {
+      button.replaceChildren(...children.slice(0, 2 * count - 1), separatorNode, counts[count - 1], more);
+      return button.scrollWidth + capsule.view.getBoundingClientRect().width - button.getBoundingClientRect().width <= Math.max(0, width - 16);
+    };
+    while (count < labels.length - 1 && fits(count + 1)) count++;
+    while (!fits(count) && count > 1) count--;
+    button.classList.toggle('single', count === 1);
+  } else button.classList.toggle('single', labels.length <= 1);
   capsule.width = width;
 }
 function renderTopics() {
@@ -687,10 +700,10 @@ type Geo = { top: number; max: number; viewport: number; width: number; origin: 
 const geometry = (): Geo => scrolling.last ?? lastMeasurement ?? measure();
 const messageRows = (): ArrayLike<Element> => state.view.type === 'job' ? job.rows() : element('items').children;
 const itemOf = (row: Element | undefined): ItemId | undefined => row instanceof HTMLElement ? row.dataset.seq !== undefined ? { kind: 'message', seq: Number(row.dataset.seq) } : row.dataset.byte !== undefined ? { kind: 'job', byte: Number(row.dataset.byte) } : undefined : undefined;
-const unitView = (key: string) => key.startsWith('run:') ? openers.get(key)?.view : texts.get(key)?.view;
+const unitView = (row: RowId) => row.kind === 'run' ? openers.get(rowKey(row))?.view : texts.get(rowKey(row))?.view;
 const rowOf = (item: ItemId): HTMLElement | undefined => {
   if (item.kind === 'job') return job.row(item.byte);
-  if (item.row) return unitKeys(item.seq)[0] === item.row ? views.get(item.seq)?.view : unitView(item.row);
+  if (item.row) return sameRow(unitRows(item.seq)[0], item.row) ? views.get(item.seq)?.view : unitView(item.row);
   const parts = runParts(items.get(item.seq), visible(item.seq)), first = parts[0];
   const seq = first && first.kind !== 'boundary' ? runOf(runContext(), first.source)?.seq ?? item.seq : item.seq;
   return views.get(seq)?.view;
@@ -702,10 +715,10 @@ function measure(): Measure {
   const viewport = scroll.clientHeight;
   const rect = scroll.getBoundingClientRect();
   const offset = scrollDecision.glideOffset;
-  const mounted = new Map<number, { row: Row; element: Element }>(), projected = new Map<string, { row: Row; element: Element }>(), units = new Map<number, string[]>();
+  const mounted = new Map<number, { row: Row; element: Element }>(), projected = new Map<string, { row: Row; element: Element }>(), units = new Map<number, RowId[]>();
   const jobView = state.view.type === 'job';
   const leading = (row: Row): Row => {
-    if (row.item.kind !== 'message' || row.item.seq !== scrollDecision.dividerBefore || !divider?.isConnected || (row.item.row ?? unitKeys(row.item.seq)[0]) !== scrollDecision.dividerRow) return row;
+    if (row.item.kind !== 'message' || row.item.seq !== scrollDecision.divider?.seq || !divider?.isConnected || !sameRow(row.item.row ?? unitRows(row.item.seq)[0], scrollDecision.divider?.row)) return row;
     const start = top + divider.getBoundingClientRect().top - rect.top - offset - parseFloat(getComputedStyle(divider).marginTop);
     return { ...row, leading: Math.min(row.top, start) };
   };
@@ -720,12 +733,12 @@ function measure(): Measure {
     });
     mounted.set(item.kind === 'message' ? item.seq : item.byte, { row, element: view });
     if (item.kind === 'message') {
-      const keys = unitKeys(item.seq); units.set(item.seq, keys);
+      const keys = unitRows(item.seq); units.set(item.seq, keys);
       for (const key of keys) {
         const address: ItemId = { ...item, row: key }, target = key === keys[0] ? view : unitView(key);
         if (!target) continue;
         const bounds = target === view ? box : target.getBoundingClientRect();
-        projected.set(key, { element: target, row: leading({ item: address, top: top + bounds.top - rect.top - offset, bottom: top + bounds.bottom - rect.top - offset }) });
+        projected.set(rowKey(key), { element: target, row: leading({ item: address, top: top + bounds.top - rect.top - offset, bottom: top + bounds.bottom - rect.top - offset }) });
       }
     }
   }
@@ -757,11 +770,11 @@ function measure(): Measure {
     focused: window.koaFocused ?? document.hasFocus(),
     visible: window.koaFocused ?? document.visibilityState === 'visible',
     reducedMotion: reducedMotion(),
-    windowMax: jobView ? undefined : Math.max(0, ensureTable().total - viewport),
+    windowMax: jobView ? undefined : Math.max(0, ensureTable().starts[order.length] - viewport),
     anchor: anchorRow && { item: anchorRow.item, offset: anchorRow.top - top, edge: 'row' },
     lookup(item): Lookup {
       const key = item.kind === 'message' ? item.seq : item.byte;
-      const target = item.kind === 'message' && item.row ? units.get(item.seq)?.[0] === item.row ? views.get(item.seq)?.view : unitView(item.row) : rowOf(item), unit = item.kind === 'message' && item.row ? projected.get(item.row) : undefined;
+      const target = item.kind === 'message' && item.row ? sameRow(units.get(item.seq)?.[0], item.row) ? views.get(item.seq)?.view : unitView(item.row) : rowOf(item), unit = item.kind === 'message' && item.row ? projected.get(rowKey(item.row)) : undefined;
       if (unit && target === unit.element) return { kind: 'mounted', row: unit.row };
       const found = mounted.get(item.kind === 'message' && target ? rowSeq(target) ?? key : key);
       if (found && target === found.element) return { kind: 'mounted', row: { ...found.row, item } };
@@ -803,8 +816,8 @@ function applyScroll(decision: Decision) {
   const latest = element('latest'), label = decision.latest.count ? '↓ ' + decision.latest.count + ' new' : '↓ Latest';
   if (latest.textContent !== label) latest.textContent = label;
   latest.classList.toggle('show', decision.latest.show);
-  const before = decision.dividerBefore, inside = before !== undefined && decision.dividerRow && unitKeys(before)[0] !== decision.dividerRow;
-  const view = before === undefined ? undefined : inside ? rowOf({ kind: 'message', seq: before, row: decision.dividerRow }) : views.get(before)?.view;
+  const before = decision.divider?.seq, inside = before !== undefined && decision.divider?.row && !sameRow(unitRows(before)[0], decision.divider?.row);
+  const view = before === undefined ? undefined : inside ? rowOf({ kind: 'message', seq: before, row: decision.divider?.row }) : views.get(before)?.view;
   const changed: Element[] = [];
   const remember = () => {
     if (!divider) return;
@@ -825,25 +838,25 @@ function applyScroll(decision: Decision) {
 function decide(event?: ScrollEvent, measurement = measure()) {
   if (event) scrollEvents.push(event);
   const result = scrollUpdate(scrolling, scrollEvents.splice(0), measurement);
-  const previousTop = scrollDecision.windowTop, previousDivider = scrollDecision.dividerBefore, previousRow = scrollDecision.dividerRow;
+  const previousTop = scrollDecision.windowTop, previousDivider = scrollDecision.divider?.seq, previousRow = scrollDecision.divider?.row;
   scrolling = result.state; scrollDecision = result.decision;
   if (previousTop !== scrollDecision.windowTop) windowDirty = true;
-  if (previousDivider !== scrollDecision.dividerBefore || previousRow !== scrollDecision.dividerRow) { if (previousDivider !== undefined) extents.delete(previousDivider); if (scrollDecision.dividerBefore !== undefined) extents.delete(scrollDecision.dividerBefore); table = undefined; dividerPx = undefined; windowDirty = true; }
+  if (previousDivider !== scrollDecision.divider?.seq || !sameRow(previousRow, scrollDecision.divider?.row)) { if (previousDivider !== undefined) extents.delete(previousDivider); if (scrollDecision.divider?.seq !== undefined) extents.delete(scrollDecision.divider?.seq); table = undefined; dividerPx = undefined; windowDirty = true; }
   const stored = applyScroll(scrollDecision);
   if (stored !== undefined) scrolling = scrollStored(scrolling, stored);
 }
 function enqueue(event: ScrollEvent) { scrollEvents.push(event); schedule(); }
-function unitKeys(seq: number, source: 'visible' | 'all' = 'visible'): string[] {
+function unitRows(seq: number, source: 'visible' | 'all' = 'visible'): RowId[] {
   const shown = source === 'all' ? (seq: number) => items.get(seq) : visible;
-  const item = shown(seq), context: RunContext = source === 'all' ? { raw: shown, shown, owners: new Map() } : runContext(), keys: string[] = [];
+  const item = shown(seq), context: RunContext = source === 'all' ? allRuns : runContext(), keys: RowId[] = [];
   if (!item) return keys;
-  if (item.kind === 'assistant') item.blocks.forEach((block, index) => { if (visibleText(block)) keys.push(seq + ':' + index); });
-  for (const part of runParts(items.get(seq), item)) if (part.kind === 'step' && sourceKey(part.source) === sourceKey(runOwner(context, part.source))) keys.push('run:' + sourceKey(part.source));
-  return keys.sort((a, b) => Number(a.replace('run:', '').split(':')[1]) - Number(b.replace('run:', '').split(':')[1]));
+  if (item.kind === 'assistant') item.blocks.forEach((block, index) => { if (visibleText(block)) keys.push({ kind: 'text', source: { kind: 'block', seq, index } }); });
+  for (const part of runParts(items.get(seq), item)) if (part.kind === 'step' && sourceKey(part.source) === sourceKey(runOwner(context, part.source))) keys.push({ kind: 'run', source: part.source });
+  return keys.sort((a, b) => (a.source.kind === 'block' ? a.source.index : 0) - (b.source.kind === 'block' ? b.source.index : 0));
 }
 function changedItem(seq: number, appended: boolean) {
-  const item = items.get(seq), shown = new Set(unitKeys(seq));
-  if (item) enqueue({ type: 'item', seq, kind: item.kind === 'user' ? 'user' : item.kind === 'assistant' || item.kind === 'agent' || item.kind === 'job' ? 'assistant' : 'other', visible: shown.size > 0, rows: unitKeys(seq, 'all').map(key => ({ key, visible: shown.has(key) })), appended });
+  const item = items.get(seq), shown = new Set(unitRows(seq).map(rowKey));
+  if (item) enqueue({ type: 'item', seq, kind: item.kind === 'user' ? 'user' : item.kind === 'assistant' || item.kind === 'agent' || item.kind === 'job' ? 'assistant' : 'other', visible: shown.size > 0, rows: unitRows(seq, 'all').map(row => ({ row, visible: shown.has(rowKey(row)) })), appended });
 }
 let resets = 0, loadingAnchor: string | undefined;
 async function loadAnchor(item: ItemId, generation: number) {
@@ -1067,14 +1080,15 @@ function bareRun(): Extract<WorkingPlace, { kind: 'bare' }> {
 function trailingOwner() {
   for (const seq of [...order].reverse()) {
     const part = runParts(items.get(seq), visible(seq)).at(-1);
-    if (part) { const owner = part.kind !== 'boundary' ? runOf(runContext(), part.source) : undefined; return owner ? sourceKey(owner) : undefined; }
+    if (part) { const owner = part.kind !== 'boundary' ? runOf(runContext(), part.source) : undefined; return owner; }
   }
 }
 function run(input: Step[]) {
-  const adopt = working?.place.kind === 'bare' && input[0].key === trailingOwner() ? working.place : undefined;
+  const tail = trailingOwner(), first = input[0];
+  const adopt = working?.place.kind === 'bare' && tail && first.key === sourceKey(tail) ? working.place : undefined;
   const { row: view, line, sum: summary } = adopt ?? bareRun(), names = node('span', undefined, 'names'), time = node('span', undefined, 'time'), children = node('div', undefined, 'steps');
   view.classList.remove('working'); summary.insertBefore(names, summary.firstChild); line.append(time);
-  const marks: RunMarks = { key: 'run:' + input[0].key, links: '', cwd: '', summary, names, namesKey: '', time, children, steps: [] };
+  const marks: RunMarks = { key: rowKey({ kind: 'run', source: first.kind === 'block' ? { kind: 'block', seq: first.item.seq, index: first.index } : { kind: 'item', seq: first.item.seq } }), links: '', cwd: '', summary, names, namesKey: '', time, children, steps: [] };
   fold(view, marks.key, line, children, undefined, 'open', reconcileWorking);
   runMarks.set(view, marks); if (adopt && working) working.place = { kind: 'run', owner: view };
   patchRun(marks, input); return view;
@@ -1088,7 +1102,7 @@ function clearWorking() {
   if (working?.place.kind === 'bare') removeRow(working.place.row);
   working?.primary.remove(); working?.extra.forEach(mark => mark.remove()); working = undefined;
 }
-function lastRun() { const key = trailingOwner(); return key ? openers.get('run:' + key)?.view : undefined; }
+function lastRun() { const source = trailingOwner(); return source ? openers.get(rowKey({ kind: 'run', source }))?.view : undefined; }
 function reconcileWorking() {
   const since = state.working && state.view.type !== 'job' && state.compaction !== 'running' ? state.since : undefined;
   if (since === undefined) { clearWorking(); return; }
@@ -1207,7 +1221,7 @@ function accept(item: WireItem) {
   const changedRun = runKeys.get(item.seq) !== rawKey;
   runKeys.set(item.seq, rawKey);
   items.set(item.seq, item);
-  if (changedRun) runTopics = undefined;
+  if (changedRun) { runTopics = undefined; invalidateRuns(allRuns, item.seq); }
   if (old !== item || changedRun) projections.delete(item.seq);
   const shown = visible(item.seq);
   if (shown && !previous) order.splice(orderIndex(item.seq), 0, item.seq);
@@ -1380,10 +1394,9 @@ function orderIndex(seq: number) {
 }
 const lineHeight = () => parseFloat(getComputedStyle(element('items')).lineHeight);
 function readMetrics() { measured = { width: element('items').clientWidth, lh: lineHeight() }; }
-const estimatedPx = (seq: number, followers: Set<number>) => { const item = visible(seq); return followers.has(seq) || !item ? 0 : estimateExtent(item, measured.lh, runContext()) + (scrollDecision.dividerBefore === seq && scrollDecision.dividerRow && unitKeys(seq)[0] !== scrollDecision.dividerRow ? measured.lh + 28 : 0); };
 function extentOf(t: Table, seq: number) {
   let extent = extents.get(seq);
-  if (!extent) { extent = { kind: 'estimated', px: estimatedPx(seq, t.followers) }; extents.set(seq, extent); }
+  if (!extent) { const item = visible(seq); extent = { kind: 'estimated', px: !item ? 0 : estimateExtent(item, measured.lh, runContext()) + (scrollDecision.divider?.seq === seq && scrollDecision.divider?.row && !sameRow(unitRows(seq)[0], scrollDecision.divider?.row) ? measured.lh + 28 : 0) }; extents.set(seq, extent); }
   return extent.px + (t.divider?.before === seq ? t.divider.px : 0);
 }
 function groupsAfter(t: Table, seq: number) {
@@ -1402,20 +1415,18 @@ function refreshTable(t: Table) {
   for (const seq of patched) { const at = t.index.get(seq); if (at !== undefined) { extentOf(t, seq); low = Math.min(low, at); } }
   patched.clear();
   for (let at = low; at < order.length; at++) t.starts[at + 1] = t.starts[at] + extentOf(t, order[at]);
-  t.total = t.starts[order.length];
 }
 function ensureTable(): Table {
   if (table) { if (patched.size) refreshTable(table); return table; }
   patched.clear();
   if (!measured.lh) readMetrics();
-  const t: Table = { followers: new Set(), index: new Map(), starts: [0], total: 0, groups: [], divider: scrollDecision.dividerBefore === undefined || scrollDecision.dividerRow && unitKeys(scrollDecision.dividerBefore)[0] !== scrollDecision.dividerRow ? undefined : { before: scrollDecision.dividerBefore, px: dividerPx ?? measured.lh + 28 } };
+  const t: Table = { index: new Map(), starts: [0], groups: [], divider: scrollDecision.divider?.seq === undefined || scrollDecision.divider?.row && !sameRow(unitRows(scrollDecision.divider.seq)[0], scrollDecision.divider.row) ? undefined : { before: scrollDecision.divider?.seq, px: dividerPx ?? measured.lh + 28 } };
   for (const seq of order) { groupsAfter(t, seq); t.index.set(seq, t.index.size); t.starts.push(t.starts[t.starts.length - 1] + extentOf(t, seq)); }
-  t.total = t.starts[order.length];
   return table = t;
 }
 function appendRow(t: Table, seq: number) {
   groupsAfter(t, seq); t.index.set(seq, t.index.size);
-  t.starts.push(t.starts[t.starts.length - 1] + extentOf(t, seq)); t.total = t.starts[order.length];
+  t.starts.push(t.starts[t.starts.length - 1] + extentOf(t, seq));
 }
 const rowTop = (seq: number) => { const t = ensureTable(); return (t.starts[t.index.get(seq) ?? 0] ?? 0) + (t.divider?.before === seq ? t.divider.px : 0); };
 function measureExtents(targets: readonly Element[]) {
@@ -1465,7 +1476,7 @@ function unmountRow(seq: number) {
   for (const [key, marks] of [...liveMarks]) if (entry.view.contains(marks.summary)) liveMarks.delete(key);
 }
 function windowStep(geo: Geo, rendered: number[]) {
-  const t = ensureTable(), top = scrollWindow(scrolling, item => item.kind === 'message' && t.index.has(item.seq) ? rowTop(item.seq) : undefined, geo.top - geo.origin, Math.max(0, t.total - geo.viewport));
+  const t = ensureTable(), top = scrollWindow(scrolling, item => item.kind === 'message' && t.index.has(item.seq) ? rowTop(item.seq) : undefined, geo.top - geo.origin, Math.max(0, t.starts[order.length] - geo.viewport));
   windowDirty = false;
   const want = windowOf(order, t.starts, top, geo.viewport, geo.viewport, t.groups), tail = liveRange(t), chosen = selected && { lo: t.index.get(selected.from), hi: t.index.get(selected.to) };
   const pins = [tail, chosen && chosen.lo !== undefined && chosen.hi !== undefined ? { lo: chosen.lo, hi: chosen.hi } : undefined].filter(range => range !== undefined);
@@ -1509,7 +1520,7 @@ function layoutWindow(t: Table) {
   for (const index of indexes) { const last = ranges.at(-1); if (last && last.hi === index - 1) last.hi = index; else ranges.push({ lo: index, hi: index }); }
   const first = ranges[0], last = ranges.at(-1);
   list.style.paddingTop = (first ? t.starts[first.lo] : 0) + 'px';
-  list.style.paddingBottom = (last ? t.total - t.starts[last.hi + 1] : 0) + 'px';
+  list.style.paddingBottom = (last ? t.starts[order.length] - t.starts[last.hi + 1] : 0) + 'px';
   gaps.splice(Math.max(0, ranges.length - 1)).forEach(extra => extra.remove());
   ranges.slice(1).forEach((range, index) => {
     const next = views.get(order[range.lo])?.view, between = gaps[index] ??= node('div', undefined, 'gap');
@@ -1891,7 +1902,7 @@ function apply(record: PageRecord) {
     finishTopicNaming(false); cancelTopicRename?.(); cancelTopicDrag?.();
     pathWarnings.clear(); pathWarningEpoch++;
     editor.resetCompletion();
-    find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); runKeys.clear(); runTopics = undefined; order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); topicItems.clear(); projections.clear(); folds.clear(); historyRequest = undefined; more = record.more;
+    find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); allRuns.owners.clear(); runKeys.clear(); runTopics = undefined; order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); topicItems.clear(); projections.clear(); folds.clear(); historyRequest = undefined; more = record.more;
     resets++;
     enqueue({ type: 'reset' });
     lastMeasurement = undefined;
@@ -2533,7 +2544,7 @@ element('model').onclick = () => picker('model'); element('thinking').onclick = 
 document.addEventListener('pointerdown', event => { if (topicNaming?.target.kind === 'message' && !topicNaming.chip.contains(event.target instanceof Node ? event.target : null)) finishTopicNaming(false); if (!element('topics').contains(event.target instanceof Node ? event.target : null)) closeTopics(); if (!barMenu.hidden && !barMenu.contains(event.target instanceof Node ? event.target : null) && !(event.target instanceof Element && event.target.closest('.ellipsis'))) closeBarMenu(); if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
 element('scroll').onscroll = () => {
   decide({ type: 'scroll' });
-  const geo = geometry(), top = geo.top - geo.origin, half = geo.viewport / 2, { total } = ensureTable();
+  const geo = geometry(), top = geo.top - geo.origin, half = geo.viewport / 2, total = ensureTable().starts[order.length];
   if (!mountedSpans.some(span => span.start <= Math.max(0, top - half) && span.end >= Math.min(total, top + geo.viewport + half))) { windowDirty = true; schedule(); }
   fillHistory();
 };

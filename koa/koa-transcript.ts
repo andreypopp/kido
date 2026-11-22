@@ -1,5 +1,5 @@
 import { topicTurn } from './topic-turn.ts';
-import { topicContext, quotedTopic } from './koa-classify.ts';
+import { topicContext, topicQuotes, quotedTopic } from './koa-classify.ts';
 import type { QueuedPrompt } from './koa-records.ts';
 import { cleanLine } from './text.ts';
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -267,9 +267,10 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
         const item = items[index];
         if (!matches(item)) continue;
         if (messages >= MAX_WEBVIEW_WINDOW_MESSAGES) { more = true; break; }
-        const bundle = [item, ...(dependencies.get(item.seq)?.values() ?? [])].map(entry => ({ seq: entry.seq, json: JSON.stringify(output(entry)) }));
+        const projected = output(item);
+        const bundle = [{ seq: item.seq, json: JSON.stringify(projected) }, ...[...(dependencies.get(item.seq)?.values() ?? [])].map(entry => ({ seq: entry.seq, json: JSON.stringify(output(entry)) }))];
         selected.push(...bundle);
-        if (counted(output(item), owner.overridden(id(item.seq)) ? undefined : labels.get(item.seq)?.map(owner.resolve)[0])) messages++;
+        if (counted(projected, owner.overridden(id(item.seq)) ? undefined : labels.get(item.seq)?.map(owner.resolve)[0])) messages++;
       }
       return '"items":[' + selected.sort((a, b) => a.seq - b.seq).map(entry => entry.json).join(',') + '],"more":' + more;
     }
@@ -414,11 +415,12 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
       if (!item) continue;
       const previous = sent.get(seq);
       if (item.kind === "assistant" && previous && item.blocks.length === previous.blocks.length) {
+        let projected: Item | undefined;
         const blocks = item.blocks.flatMap<{ index: number; suffix: string } | { index: number; block: Block }>((block, index) => {
           const old = previous.blocks[index];
           if (sameBlock(block, old)) return [];
           if (block.type !== "tool" && old.type === block.type && block.topic === old.topic && block.redacted === old.redacted && (block.type !== "thinking" || sameTiming(block, old)) && block.text.startsWith(old.text)) return [{ index, suffix: block.text.slice(old.text.length) }];
-          const projected = project(item);
+          projected ??= project(item);
           return [{ index, block: projected.kind === 'assistant' ? projected.blocks[index] : block }];
         });
         if (blocks.length || item.final !== previous.final || item.stop !== previous.stop || item.error !== previous.error || item.ended !== previous.ended) {
@@ -728,8 +730,10 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     const { project, names, owner } = projection();
     return topicContext(items.map(project), names, queued.map(prompt => prompt.topic ? { ...prompt, topic: owner.resolve(prompt.topic) } : prompt), new Set(names.filter(owner.archived)));
   }, resolveTopic: (name: TopicName) => topics().resolve(name), isTopicArchived: (name: TopicName) => topics().archived(name), movable: (from: TopicName, to: TopicName) => topics().movable(from, to), moveTargets, quotedTopic: (text: string) => {
+    const quotes = topicQuotes(text);
+    if (!quotes.length) return;
     const { project, names, owner } = projection();
-    return quotedTopic(items.map(project), text, new Set(names.filter(owner.archived)));
+    return quotedTopic(items, quotes, new Set(names.filter(owner.archived)), project);
   }, topics: (): Topic[] => {
     const { project, names, owner } = projection(), remaining = new Set(names);
     const summaries = new Map<TopicName, NonNullable<Topic['last']>>();

@@ -2,6 +2,9 @@ import type { Block, WireItem } from '../koa-records.ts';
 import { noticeOf, type StepInput } from './steps.ts';
 
 type Source = { kind: 'item'; seq: number } | { kind: 'block'; seq: number; index: number };
+export type RowId = { kind: 'text'; source: Extract<Source, { kind: 'block' }> } | { kind: 'run'; source: Source };
+export const rowKey = (row: RowId) => (row.kind === 'run' ? 'run:' : '') + sourceKey(row.source);
+export const sameRow = (a: RowId | undefined, b: RowId | undefined) => a === b || !!a && !!b && a.kind === b.kind && a.source.seq === b.source.seq && (a.source.kind === 'item' ? b.source.kind === 'item' : b.source.kind === 'block' && a.source.index === b.source.index);
 type RunPart = { kind: 'step' | 'notice'; source: Source; step: StepInput } | { kind: 'boundary' };
 type RunTail = { owner: Source };
 type OwnerItem = { sources: Map<string, Source>; tail?: RunTail };

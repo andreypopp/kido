@@ -262,7 +262,7 @@ async function page() {
   const revealSource = stripTypeScriptTypes(readFileSync(new URL('page/reveal.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(revealSource + '\n({revealHeight,unitsOf})', context));
   const extentSource = stripTypeScriptTypes(readFileSync(new URL('page/extent.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
-  Object.assign(context, runInNewContext(extentSource + '\n({estimateExtent,windowOf,groupAt,runParts,runOwner,runOf,invalidateRuns,sourceKey,visibleText})', context));
+  Object.assign(context, runInNewContext(extentSource + '\n({estimateExtent,windowOf,groupAt,runParts,runOwner,runOf,invalidateRuns,sourceKey,visibleText,rowKey,sameRow})', context));
   const stepsSource = stripTypeScriptTypes(readFileSync(new URL('page/steps.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(stepsSource + '\n({stepInfo,stepParts,toolArgs,agentBody,noticeOf,noticeText,sessionFields})', context));
   const findSource = stripTypeScriptTypes(readFileSync(new URL('page/find.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
@@ -273,6 +273,33 @@ async function page() {
   const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\nfunction put(item) { accept(item); renderDirty(); return views.get(item.seq)?.view; }\nlet agentTestSeq=10000;function agentStep(card,at,key,slots=new Map()){let seq=slots.get(key);if(seq===undefined){seq=agentTestSeq++;slots.set(key,seq)}const base={seq,revision:0,at,final:true};put(card.direction==='in'?{...base,kind:'agent',...card}:{...base,kind:'assistant',stop:'stop',error:'',blocks:[{type:'tool',id:key,name:'spawn_agent',args:{text:'{}'},state:{type:'done',error:false,result:{text:'',images:[]}},agent:card}]});const owner=runOwner(runContext(),card.direction==='in'?{kind:'item',seq}:{kind:'block',seq,index:0});return openers.get(sourceKey(card.direction==='in'?{kind:'item',seq}:{kind:'block',seq,index:0})).view;}";
   return { observers, repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
 }
+
+test('row identities keep block order and distinguish item sources', async () => {
+  const app = await page(), evaluate = app.repl();
+  evaluate(`items.set(0,{kind:'assistant',seq:0,blocks:[{type:'thinking',text:'work'},{type:'text',text:'answer'},{type:'thinking',text:'more'}]});
+    items.set(1,{kind:'agent',seq:1});`);
+  assert.equal(evaluate(`JSON.stringify(unitRows(0,'all'))`), JSON.stringify([
+    { kind: 'run', source: { kind: 'block', seq: 0, index: 0 } },
+    { kind: 'text', source: { kind: 'block', seq: 0, index: 1 } },
+    { kind: 'run', source: { kind: 'block', seq: 0, index: 2 } },
+  ]));
+  assert.equal(evaluate(`JSON.stringify(unitRows(1,'all'))`), '[]');
+  evaluate(`items.set(2,{kind:'user',seq:2});items.set(3,{kind:'agent',seq:3});`);
+  assert.equal(evaluate(`JSON.stringify(unitRows(3,'all'))`), JSON.stringify([{ kind: 'run', source: { kind: 'item', seq: 3 } }]));
+  assert.equal(evaluate(`sameRow(unitRows(3,'all')[0], JSON.parse(JSON.stringify(unitRows(3,'all')[0])))`), true);
+});
+
+test('unfiltered row ownership reads grow linearly across a tool-only run', async () => {
+  const app = await page(), evaluate = app.repl();
+  const reads = evaluate(`
+    for(let seq=0;seq<200;seq++) items.set(seq,{kind:'assistant',seq,revision:0,at:0,final:true,stop:'stop',error:'',blocks:[{type:'thinking',text:'work'}]});
+    let reads=0; const get=items.get.bind(items); items.get=seq=>{reads++;return get(seq)};
+    for(let seq=0;seq<200;seq++) unitRows(seq,'all');
+    reads;
+  `);
+  assert.equal(typeof reads, 'number');
+  assert.ok(typeof reads === 'number' && reads <= 200 * 8, `expected at most 1600 item reads, got ${reads}`);
+});
 
 test('quoteSelection appends transcript quotes, preserves composer selections and follows the view', async () => {
   const app = await page(), evaluate = app.repl();
@@ -1188,7 +1215,7 @@ test('block topic updates preserve the scrolled panel position', async () => {
 
 test('divider insertion movement and removal update rhythm across rows and reply sections', async () => {
   const app=await page();
-  const result=app.run(`(()=>{const list=element('items');list.hidden=false;const previous=node('div'),outside=node('div',undefined,'nrow'),root=node('div'),section=node('div',undefined,'reply-section'),a=node('div'),b=node('div'),first=node('div',undefined,'run'),second=node('div',undefined,'run');previous.dataset.seq='0';root.dataset.seq='1';previous.append(outside);a.append(first);b.append(second);section.append(a,b);root.append(section);list.replaceChildren(previous,root);views.set(0,{view:previous});views.set(1,{view:root});unitKeys=seq=>{if(seq===0)return ['run:0:0'];if(seq===1)return ['run:1:0','run:1:2'];throw Error('Unexpected row')};openers.set('run:1:2',{view:second});rhythm([previous,root]);const flags=()=>[outside.dataset.rhythm,first.dataset.rhythm],states=[flags()];applyScroll({...scrollDecision,dividerBefore:1,dividerRow:'run:1:2'});states.push(flags());applyScroll({...scrollDecision,dividerBefore:1,dividerRow:'run:1:0'});states.push(flags());applyScroll({...scrollDecision,dividerBefore:undefined,dividerRow:undefined});states.push(flags());return states})()`);
+  const result=app.run(`(()=>{const list=element('items');list.hidden=false;const previous=node('div'),outside=node('div',undefined,'nrow'),root=node('div'),section=node('div',undefined,'reply-section'),a=node('div'),b=node('div'),first=node('div',undefined,'run'),second=node('div',undefined,'run');previous.dataset.seq='0';root.dataset.seq='1';previous.append(outside);a.append(first);b.append(second);section.append(a,b);root.append(section);list.replaceChildren(previous,root);views.set(0,{view:previous});views.set(1,{view:root});unitRows=seq=>{if(seq===0)return [{kind:'run',source:{kind:'block',seq:0,index:0}}];if(seq===1)return [0,2].map(index=>({kind:'run',source:{kind:'block',seq:1,index}}));throw Error('Unexpected row')};openers.set('run:1:2',{view:second});rhythm([previous,root]);const flags=()=>[outside.dataset.rhythm,first.dataset.rhythm],states=[flags()];applyScroll({...scrollDecision,divider:{seq:1,row:{kind:'run',source:{kind:'block',seq:1,index:2}}}});states.push(flags());applyScroll({...scrollDecision,divider:{seq:1,row:{kind:'run',source:{kind:'block',seq:1,index:0}}}});states.push(flags());applyScroll({...scrollDecision,divider:undefined});states.push(flags());return states})()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)),[['compact','compact'],['compact','block'],['block','compact'],['compact','compact']]);
 });
 
@@ -1241,8 +1268,13 @@ test('measured capsule overflow and resize keep whole names and skip unchanged s
     state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:['one','two','three'].map((name,index)=>({name,last:{summary:name,at:3-index}}))};renderTopics();
     const capsule=element('topics').querySelector('.topic-capsule'),button=capsule.querySelector('.topic-open');
     capsule.getBoundingClientRect=()=>({width:100});button.getBoundingClientRect=()=>({width:80});
+    const nameWidths={one:80,two:90,three:100};
+    const widthOf=child=>{if(child.classList.contains('topic-name'))return nameWidths[child.dataset.topic];if(child.classList.contains('topic-separator'))return 10;if(child.classList.contains('topic-more'))return 25;if(child.classList.contains('topic-overflow'))return 10;throw Error('Unexpected capsule child')};
+    const rect=Node.prototype.getBoundingClientRect,style=getComputedStyle;
+    Node.prototype.getBoundingClientRect=function(){if(this.parent!==button)return rect.call(this);const before=button.children.slice(0,button.children.indexOf(this));return {width:widthOf(this),right:before.reduce((sum,child)=>sum+widthOf(child)+5,0)+widthOf(this)}};
+    getComputedStyle=node=>({...style(node),columnGap:'5px'});
     let reads=0;
-    Object.defineProperty(button,'scrollWidth',{get(){reads++;return button.children.reduce((sum,child)=>{let width;if(child.classList.contains('topic-name'))width={one:80,two:90,three:100}[child.dataset.topic];else if(child.classList.contains('topic-separator'))width=10;else if(child.classList.contains('topic-more'))width=25;else if(child.classList.contains('topic-overflow'))width=10;else throw Error('Unexpected capsule child');return sum+width;},5*(button.children.length-1))}});
+    Object.defineProperty(button,'scrollWidth',{get(){reads++;return Math.round(button.children.reduce((sum,child)=>sum+widthOf(child),5*(button.children.length-1)))}});
     const snapshot=()=>[button.children.filter(child=>child.classList.contains('topic-name')).map(child=>child.dataset.topic),button.querySelector('.topic-more')?.textContent??''];
     fitTopics(500);const all=snapshot();
     document.documentElement.clientWidth=300;resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);const overflow=snapshot();
@@ -1250,9 +1282,12 @@ test('measured capsule overflow and resize keep whole names and skip unchanged s
     document.documentElement.clientWidth=400;resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);const larger=snapshot();
     const before=reads;apply({...state,type:'state',topics:state.topics.map(topic=>({...topic,last:{...topic.last,summary:'Streaming'}}))});const unchanged=reads===before;
     document.documentElement.clientWidth=120;resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);
-    return [all,overflow,smaller,larger,unchanged,snapshot(),button.classList.contains('single')];
+    const smallest=snapshot(),single=button.classList.contains('single');
+    Object.assign(nameWidths,{one:80.2,two:90.2,three:100.2});fitTopics(286);const fractionalFit=snapshot();
+    Object.assign(nameWidths,{one:80.1,two:90.2,three:100.1});fitTopics(285.95);const fractionalOverflow=snapshot();
+    return [all,overflow,smaller,larger,unchanged,smallest,single,fractionalFit,fractionalOverflow];
   })()`);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)),[[['one','two','three'],''],[['one','two'],'+1'],[['one'],'+2'],[['one','two','three'],''],true,[['one'],'+2'],true]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)),[[['one','two','three'],''],[['one','two'],'+1'],[['one'],'+2'],[['one','two','three'],''],true,[['one'],'+2'],true,[['one','two'],'+1'],[['one'],'+2']]);
   assert.equal(app.observers.length,1);
 });
 
@@ -3253,12 +3288,12 @@ test('every transcript fold holds the clicked header in following and reader win
     assert.equal(page.evaluate('toggleHeader.getBoundingClientRect().top'), before, card + ' ' + mode + ' expand');
     assert.equal(page.evaluate('scrollDecision.glideOffset'), 0);
     assert.equal(page.evaluate('scrolling.kind'), 'reader');
-    assert.equal(page.evaluate('scrollDecision.dividerBefore'), undefined);
+    assert.equal(page.evaluate('scrollDecision.divider?.seq'), undefined);
     page.evaluate('toggleHeader.onclick({})');
     page.layout.flush(); page.step(0);
     assert.equal(page.evaluate('toggleHeader.getBoundingClientRect().top'), before, card + ' ' + mode + ' collapse');
     assert.equal(page.evaluate('scrolling.kind'), mode === 'following' || mode === 'keyboard' ? 'following' : 'reader');
-    assert.equal(page.evaluate('scrollDecision.dividerBefore'), undefined);
+    assert.equal(page.evaluate('scrollDecision.divider?.seq'), undefined);
   }
 });
 
@@ -3281,7 +3316,7 @@ test('a folded fence expands at its clicked bar without following or a divider',
     assert.equal(page.evaluate("element('items').contains(fenceBar)"), false);
     assert.equal(page.evaluate('scrolling.kind'), 'reader');
     assert.equal(page.evaluate('scrollDecision.glideOffset'), 0);
-    assert.equal(page.evaluate('scrollDecision.dividerBefore'), undefined);
+    assert.equal(page.evaluate('scrollDecision.divider?.seq'), undefined);
   }
 });
 
@@ -4559,11 +4594,11 @@ test('a patch of one item updates its table entry in place', async () => {
   page.open(page.rows(0, 300));
   page.deliver(page.reveal(300, 'Intro.'));
   page.settle(8);
-  const before = page.evaluate('table'), total = Number(page.evaluate('table.total'));
+  const before = page.evaluate('table'), total = Number(page.evaluate('table.starts[order.length]'));
   page.deliver(page.suffix(300, 1, '\n\nmore\n\nlines\n\nhere'));
   page.settle(4);
   assert.equal(page.evaluate('table'), before, 'the table is not rebuilt');
-  assert.deepEqual([page.evaluate('table.total') !== total, page.evaluate('table.total === table.starts[order.length]'), page.evaluate('table.starts.length')], [true, true, 302]);
+  assert.deepEqual([page.evaluate('table.starts[order.length]') !== total, page.evaluate('table.starts.length')], [true, 302]);
 });
 
 test('a reconcile across an unmounted text item keeps the two runs apart', async () => {
@@ -4591,7 +4626,7 @@ test('the table total includes row margins with a divider and a reader window', 
   page.origin.value = 30;
   page.open(page.rows(0, 300));
   page.settle(8);
-  const total = () => [page.evaluate("element('scroll').scrollHeight"), page.evaluate('table.total + geometry().origin')];
+  const total = () => [page.evaluate("element('scroll').scrollHeight"), page.evaluate('table.starts[order.length] + geometry().origin')];
   page.reader(3000);
   page.settle(8);
   assert.ok(page.padding() > 0 && page.seqs().length < 40);
@@ -4840,7 +4875,7 @@ test('a pinned selection, the window and the live tail are three ranges with a g
   page.settle(8);
   assert.equal(page.evaluate("element('items').children.filter(child => child.className.includes('gap')).length"), 2);
   assert.ok(page.seqs().includes(300) && page.seqs().includes(0) && page.seqs().includes(near[1]));
-  assert.equal(page.evaluate('table.total + geometry().origin + 38'), page.evaluate("element('scroll').scrollHeight"), 'the table and the layout agree, the working row apart');
+  assert.equal(page.evaluate('table.starts[order.length] + geometry().origin + 38'), page.evaluate("element('scroll').scrollHeight"), 'the table and the layout agree, the working row apart');
 });
 
 test('Select All never pins the rows between the window and a distant tail', async () => {

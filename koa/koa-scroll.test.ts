@@ -40,14 +40,14 @@ test('filter switches follow the new bottom without keeping the previous reader 
   const f = fixture();
   f.step([intent], { top: 400, anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: -300 } });
   const result = f.step([{ type: 'filter', active: true }, item(20, true, false)], { max: 1200, rows: [row(20, 1100)], loaded: [{ kind: 'message', seq: 20 }] });
-  assert.deepEqual([result.state.kind,result.decision.scrollTop,result.decision.dividerBefore], ['following',1200,undefined]);
+  assert.deepEqual([result.state.kind,result.decision.scrollTop,result.decision.divider?.seq], ['following',1200,undefined]);
 });
 
 test('filter switches position at the first visible unread row and show its divider', () => {
   const f = fixture();
   f.step([intent,item(10)], { top: 100, rows: [row(1,100),row(10,700)], loaded: [{kind:'message',seq:1},{kind:'message',seq:10}], anchor: {item:{kind:'message',seq:1},edge: 'row', offset:0} });
   const result = f.step([{type:'filter',active:true},item(10,true,false)], { rows: [{...row(10,700),leading:650}] });
-  assert.deepEqual([result.state.kind,result.decision.scrollTop,result.decision.dividerBefore,result.decision.latest], ['reader',650,10,{show:true,count:0}]);
+  assert.deepEqual([result.state.kind,result.decision.scrollTop,result.decision.divider?.seq,result.decision.latest], ['reader',650,10,{show:true,count:0}]);
 });
 
 test('seeing a later row under one filter does not mark another filters hidden unread row seen', () => {
@@ -55,24 +55,24 @@ test('seeing a later row under one filter does not mark another filters hidden u
   f.step([intent,item(10)], {top:100,rows:[row(1,100),row(10,700)],loaded:[{kind:'message',seq:1},{kind:'message',seq:10}],anchor:{item:{kind:'message',seq:1},edge: 'row', offset:0}});
   f.step([{type:'filter',active:true},item(20,true,false)], {rows:[row(20,800)],loaded:[{kind:'message',seq:20}]});
   const result = f.step([{type:'filter',active:true},item(10,true,false)], {rows:[row(10,500)],loaded:[{kind:'message',seq:10}]});
-  assert.deepEqual([result.state.kind,result.decision.scrollTop,result.decision.dividerBefore], ['reader',500,10]);
+  assert.deepEqual([result.state.kind,result.decision.scrollTop,result.decision.divider?.seq], ['reader',500,10]);
 });
 
 test('scrolling a normal view keeps its existing unread divider and offscreen count', () => {
   const f = fixture();
   f.step([intent,item(10)], {top:100,rows:[row(1,100),row(10,600)],loaded:[{kind:'message',seq:1},{kind:'message',seq:10}],anchor:{item:{kind:'message',seq:1},offset:0,edge:'row'}});
   const result=f.step([scroll], {top:550,anchor:{item:{kind:'message',seq:10},offset:50,edge:'row'}});
-  assert.deepEqual([result.decision.dividerBefore,result.decision.latest], [10,{show:true,count:0}]);
+  assert.deepEqual([result.decision.divider?.seq,result.decision.latest], [10,{show:true,count:0}]);
 });
 
 test('hidden arrivals and reply sections stay unread when switching to their topic or all topics', () => {
   for (const active of [true,false]) for (const section of [false,true]) {
     const f = fixture();
     f.step([{type:'filter',active:true}]);
-    if (section) f.step([{type:'item',seq:10,kind:'assistant',visible:true,appended:false,rows:[{key:'10:0',visible:true}]}]);
-    f.step([{type:'item',seq:10,kind:'assistant',visible:section,appended:!section,rows:[...(section?[{key:'10:0',visible:true}]:[]),{key:'10:1',visible:false}]}]);
-    const result=f.step([{type:'filter',active},{type:'item',seq:10,kind:'assistant',visible:true,appended:false,rows:[{key:'10:1',visible:true}]}], {rows:[{item:{kind:'message',seq:10,row:'10:1'},top:500,bottom:600}],loaded:[{kind:'message',seq:10}]});
-    assert.deepEqual([result.state.kind,result.decision.dividerBefore,result.decision.dividerRow,result.decision.scrollTop], ['reader',10,'10:1',500]);
+    if (section) f.step([{type:'item',seq:10,kind:'assistant',visible:true,appended:false,rows:[{row:{kind:'text' as const,source:{kind:'block' as const,seq:10,index:0}},visible:true}]}]);
+    f.step([{type:'item',seq:10,kind:'assistant',visible:section,appended:!section,rows:[...(section?[{row:{kind:'text' as const,source:{kind:'block' as const,seq:10,index:0}},visible:true}]:[]),{row:{kind:'text' as const,source:{kind:'block' as const,seq:10,index:1}},visible:false}]}]);
+    const result=f.step([{type:'filter',active},{type:'item',seq:10,kind:'assistant',visible:true,appended:false,rows:[{row:{kind:'text' as const,source:{kind:'block' as const,seq:10,index:1}},visible:true}]}], {rows:[{item:{kind:'message',seq:10,row:{kind:'text',source:{kind:'block',seq:10,index:1}}},top:500,bottom:600}],loaded:[{kind:'message',seq:10}]});
+    assert.deepEqual([result.state.kind,result.decision.divider?.seq,result.decision.divider?.row,result.decision.scrollTop], ['reader',10,{kind:'text',source:{kind:'block',seq:10,index:1}},500]);
   }
 });
 
@@ -154,7 +154,7 @@ test('a toggle holds its anchor, cancels travel and glide, and follows only at t
     assert.equal(result.decision.scrollTop ?? 900, 900);
     assert.equal(result.state.kind, 'reader');
     assert.equal(result.decision.glideOffset, 0);
-    assert.equal(result.decision.dividerBefore, undefined);
+    assert.equal(result.decision.divider?.seq, undefined);
     assert.equal(f.step([{ type: 'frame' }], { now: 1100 }).decision.scrollTop, undefined);
   }
   const clamped = fixture().step([{ type: 'layout', cause: 'toggle', anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: 200 } }]);
@@ -238,7 +238,7 @@ test('up input without scroll range keeps following and adds no unread divider',
   f.step([layout], { top: 0, max: 0 });
   f.step([intent]);
   const result = f.step([item(2)]);
-  assert.deepEqual([result.state.kind, result.decision.dividerBefore], ['following', undefined]);
+  assert.deepEqual([result.state.kind, result.decision.divider?.seq], ['following', undefined]);
 });
 
 test('a slow wheel up from the bottom leaves following, and its sub-pixel scrolls never snap back', () => {
@@ -328,7 +328,7 @@ test('unfocused growth becomes reader; focus alone cannot follow; first arrival 
   assert.equal(background.state.kind, 'reader');
   assert.equal(background.decision.scrollTop, undefined);
   const fresh = f.step([item(2)], { rows: [row(0, 0), row(1, 100), row(2, 1200)] });
-  assert.deepEqual([fresh.decision.dividerBefore, fresh.decision.latest.count], [2, 1]);
+  assert.deepEqual([fresh.decision.divider?.seq, fresh.decision.latest.count], [2, 1]);
   assert.equal(f.step([{ type: 'focus' }], { focused: true }).state.kind, 'reader');
 });
 
@@ -338,7 +338,7 @@ test('Enter follows from every prior mode after background growth and from a del
   assert.equal(f.step([layout], { focused: false, max: 1000 }).state.kind, 'reader');
   const sent: ScrollEvent = { type: 'item', seq: 2, kind: 'user', visible: true, appended: true };
   const appended = f.step([sent], { max: 1300, rows: [row(2, 1200)], loaded: [{ kind: 'message', seq: 2 }] });
-  assert.deepEqual([appended.state.kind, appended.decision.scrollTop, appended.decision.dividerBefore], ['following', 1300, undefined]);
+  assert.deepEqual([appended.state.kind, appended.decision.scrollTop, appended.decision.divider?.seq], ['following', 1300, undefined]);
   f.step([{ type: 'submit' }], { focused: true });
   assert.equal(f.step([sent, scroll], { top: 1200, max: 1500 }).decision.scrollTop, 1500);
 });
@@ -377,7 +377,7 @@ test('Latest hysteresis uses one third and one quarter, unread overrides it, and
   assert.equal(f.step([item(2)]).decision.latest.show, true);
   assert.equal(f.step([{ type: 'submit' }]).decision.latest.show, false);
   f.step([intent, item(2)]);
-  assert.equal(f.step([{ type: 'reset' }]).decision.dividerBefore, undefined);
+  assert.equal(f.step([{ type: 'reset' }]).decision.divider?.seq, undefined);
 });
 
 test('Latest travel retargets the moving bottom, is interrupted by intent, and completes without glide', () => {
@@ -487,7 +487,7 @@ test('view return restores reader instantly with away arrivals, but a followed v
   f.step([{ type: 'reset' }], { top: 0, max: 500, loaded: [], rows: [] });
   f.step([{ type: 'switch', filtered: false, loaded: false, scope }]);
   const restored = f.step([{ type: 'reset' }, item(2, true, false)], { loaded: [{ kind: 'message', seq: 1 }, { kind: 'message', seq: 2 }], rows: [row(1, 100), row(2, 700)], max: 900 });
-  assert.deepEqual([restored.state.kind, restored.decision.scrollTop, restored.decision.dividerBefore, restored.decision.glideOffset], ['reader', 100, 2, 0]);
+  assert.deepEqual([restored.state.kind, restored.decision.scrollTop, restored.decision.divider?.seq, restored.decision.glideOffset], ['reader', 100, 2, 0]);
   f.step([{ type: 'switch', filtered: false, loaded: false, scope: { view: 'child', sessionId: 'c' } }]);
   assert.equal(f.step([{ type: 'reset' }], { max: 1500 }).decision.scrollTop, 1500);
 });

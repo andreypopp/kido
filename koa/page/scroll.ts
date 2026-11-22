@@ -1,13 +1,14 @@
+import { rowKey, type RowId } from './extent.ts';
 import type { PromptResult } from '../koa-records.ts';
 
-export type ItemId = { kind: 'message'; seq: number; row?: string } | { kind: 'job'; byte: number };
+export type ItemId = { kind: 'message'; seq: number; row?: RowId } | { kind: 'job'; byte: number };
 export type Anchor = { item: ItemId; offset: number; edge: 'row' | 'divider' };
 type Scope = { view: string; sessionId: string | undefined };
 export type Saved = { scope: Scope; anchor: Anchor; last: number };
 type Glide = { from: number; start: number; offset: number };
 type Travel = { from: number; start: number };
 type Geometry = { top: number; max: number; viewport: number; width: number; origin: number };
-type Candidate = { row?: string; index: number; visible: boolean; unread: boolean };
+type Candidate = { row?: RowId; index: number; visible: boolean; unread: boolean };
 type Common = {
   scope: Scope;
   last?: Geometry;
@@ -35,7 +36,7 @@ export type ScrollEvent =
   | { type: 'layout'; cause: 'toggle'; anchor: Anchor }
   | { type: 'submit' }
   | { type: 'send-result'; result: PromptResult['disposition'] | 'failed' }
-  | { type: 'item'; seq: number; kind: 'user' | 'assistant' | 'other'; visible: boolean; appended: boolean; rows?: { key: string; visible: boolean }[] }
+  | { type: 'item'; seq: number; kind: 'user' | 'assistant' | 'other'; visible: boolean; appended: boolean; rows?: { row: RowId; visible: boolean }[] }
   | { type: 'focus' | 'visibility' | 'frame' | 'resize' | 'latest' | 'history' }
   | { type: 'switch'; scope: Scope; loaded: boolean; filtered: boolean }
   | { type: 'reset' }
@@ -62,8 +63,7 @@ export type Decision = {
   scrollTop?: number;
   glideOffset: number;
   latest: { show: boolean; count: number };
-  dividerBefore?: number;
-  dividerRow?: string;
+  divider?: { seq: number; row?: RowId };
   windowTop: number;
   request?: { type: 'mount'; item: ItemId } | { type: 'load'; item: ItemId; generation: number };
   frame: 'none' | 'animation' | 'measure';
@@ -199,13 +199,13 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
           follow();
         }
         if (event.kind !== 'assistant') break;
-        const rows = event.rows?.length ? event.rows : [{ key: '', visible: event.visible }];
+        const rows = event.rows?.length ? event.rows : [{ row: undefined, visible: event.visible }];
         const known = state.candidates.get(event.seq);
         const baseline = !event.appended && !known && state.kind !== 'restoring';
-        const keys = new Set(rows.map(row => row.key));
+        const keys = new Set(rows.map(({ row }) => row ? rowKey(row) : ''));
         for (const [key, candidate] of known ?? []) if (!keys.has(key) && (candidate.visible || candidate.unread)) candidates(event.seq).set(key, { ...candidate, visible: false, unread: state.filtered && candidate.unread });
-        rows.forEach(({ key, visible }, index) => {
-          const row = key || undefined, before = known?.get(key);
+        rows.forEach(({ row, visible }, index) => {
+          const key = row ? rowKey(row) : '', before = known?.get(key);
           const arrived = event.rows?.length ? !before : !before?.visible;
           const unread = !!before?.unread && (state.filtered || visible) || (!!event.rows?.length || event.visible) && arrived && !baseline && !filtering && !(state.kind === 'following' && focused && visible) && (state.kind !== 'restoring' || event.seq > state.target.last);
           if (before?.visible !== visible || before?.unread !== unread || before?.index !== index) candidates(event.seq).set(key, { row, index, visible, unread });
@@ -370,11 +370,11 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     }
   }
   let count = 0;
-  let dividerBefore: number | undefined, dividerRow: string | undefined, dividerIndex = Infinity;
+  let divider: Decision['divider'], dividerIndex = Infinity;
   for (const [seq, rows] of state.candidates) for (const candidate of rows.values()) {
     if (!candidate.unread || !candidate.visible) continue;
     const { row, index } = candidate;
-    if (dividerBefore === undefined || seq < dividerBefore || seq === dividerBefore && index < dividerIndex) { dividerBefore = seq; dividerRow = row; dividerIndex = index; }
+    if (!divider || seq < divider.seq || seq === divider.seq && index < dividerIndex) { divider = { seq, row }; dividerIndex = index; }
     const found = m.lookup({ kind: 'message', seq, row });
     if ((found.kind === 'mounted' || found.kind === 'unmounted') && found.row.top >= top + m.dock) count++;
   }
@@ -398,8 +398,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
       scrollTop,
       glideOffset,
       latest: { show: state.kind === 'reader' && (count > 0 || state.threshold), count },
-      dividerBefore,
-      dividerRow,
+      divider,
       windowTop,
       request,
       frame,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { quotedTopic, topicContext } from './koa-classify.ts';
+import { quotedTopic, topicQuotes, topicContext } from './koa-classify.ts';
 import type { Item, QueuedPrompt } from './koa-records.ts';
 import { parseTopicName } from './records.ts';
 import { classifierPrompt, parseClassification } from './koa-classify.ts';
@@ -8,11 +8,17 @@ import { classifierPrompt, parseClassification } from './koa-classify.ts';
 test('quotes require one unambiguous topic and ignore short fragments', () => {
   const one = parseTopicName('one'), two = parseTopicName('two'); assert.ok(one && two);
   const reply = (seq: number, topic: typeof one): Item => ({ kind: 'assistant', seq, revision: 0, at: 1, final: true, lifecycle: 'ended', blocks: [{ type: 'text', topic, text: 'A sufficiently long **quoted** passage' }], stop: 'stop', error: '' });
-  assert.equal(quotedTopic([reply(0, one)], '> A sufficiently long quoted passage\nYes', new Set()), one);
-  assert.equal(quotedTopic([reply(0, one), reply(1, two)], '> A sufficiently long quoted passage', new Set()), undefined);
-  assert.equal(quotedTopic([reply(0, one)], '> short', new Set()), undefined);
-  assert.equal(quotedTopic([reply(0, one)], '> A sufficiently long quoted passage', new Set([one])), undefined);
-  assert.equal(quotedTopic([reply(0, one), reply(1, two)], '> A sufficiently long quoted passage', new Set([one])), two);
+  assert.equal(quotedTopic([reply(0, one)], topicQuotes('> A sufficiently long quoted passage\nYes'), new Set()), one);
+  assert.equal(quotedTopic([reply(0, one), reply(1, two)], topicQuotes('> A sufficiently long quoted passage'), new Set()), undefined);
+  assert.equal(quotedTopic([reply(0, one)], topicQuotes('> short'), new Set()), undefined);
+  assert.equal(quotedTopic([reply(0, one)], topicQuotes('> A sufficiently long quoted passage'), new Set([one])), undefined);
+  assert.equal(quotedTopic([reply(0, one), reply(1, two)], topicQuotes('> A sufficiently long quoted passage'), new Set([one])), two);
+  const projected: number[] = [], project = (item: Item) => { projected.push(item.seq); return item; };
+  const items = Array.from({ length: 30 }, (_, seq) => reply(seq, one));
+  assert.equal(quotedTopic(items, topicQuotes('No quotation'), new Set(), project), undefined);
+  assert.deepEqual(projected, []);
+  assert.equal(quotedTopic(items, topicQuotes('> A sufficiently long quoted passage'), new Set(), project), one);
+  assert.deepEqual(projected, Array.from({ length: 20 }, (_, index) => index + 10));
 });
 
 test('classification accepts only one complete valid name', () => {
