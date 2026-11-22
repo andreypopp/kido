@@ -4299,6 +4299,19 @@ test('a short reset fills the viewport from older pages and stops at the end or 
   }
 });
 
+test('a reset followed by its initial state still fills short history', async () => {
+  const page = await windowPage(), requests: string[] = [];
+  page.evaluate("element('scroll').clientHeight=1000");
+  Object.assign(page.app.context, { fetch: async (path: string) => {
+    requests.push(path);
+    return { ok: true, json: async () => ({ type: 'reset', epoch: 'a', more: false, items: page.rows(0, 20) }) };
+  } });
+  page.evaluate(`apply({type:'reset',epoch:'a',more:true,items:${JSON.stringify(page.rows(20, 21))}});apply({...state,type:'state',sessionId:'initial',view:{id:'initial',type:'root',path:[]}})`);
+  for (let turn = 0; turn < 6; turn++) { page.settle(4); await page.settled(); }
+  assert.equal(requests.length, 1);
+  assert.equal(page.evaluate('more'), false);
+});
+
 test('a short reset continues through multiple older pages', async () => {
   const page = await windowPage(), requests: number[] = [];
   page.evaluate("element('scroll').clientHeight=1000");

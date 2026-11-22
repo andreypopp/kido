@@ -27,8 +27,7 @@ function decodeAnnotation(entry: SessionEntry): { at: number; reply: { at: numbe
   return { at, reply: { at: reply.at, block: reply.block, length: reply.length }, annotations };
 }
 
-const MAX_WEBVIEW_WINDOW_ITEMS = 40;
-const MAX_WEBVIEW_WINDOW_BYTES = 256 * 1024;
+const MAX_WEBVIEW_WINDOW_MESSAGES = 100;
 const MAX_WEBVIEW_ARGS_BYTES = 4 * 1024;
 const MAX_WEBVIEW_RESULT_BYTES = 16 * 1024;
 
@@ -246,6 +245,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
   const flushRecord = (bytes: number, id: number): Extract<PageRecord, { type: "flush" }> => ({ type: "flush", id, t: Date.now(), bytes });
   const window = (before: number, topic?: TopicName): string => {
     const { owner, project, output, id } = projection();
+    const counted = (item: WireItem, inferred?: TopicName): boolean => item.kind === 'user' || item.kind === 'assistant' && item.blocks.some(block => block.type === 'text' && block.text.trim() !== '' && (!topic || (block.topic ?? inferred) === topic));
     if (topic) {
       const matches = (raw: Item): boolean => {
         const item = project(raw), inferred = owner.overridden(id(item.seq)) ? [] : labels.get(item.seq)?.map(owner.resolve);
@@ -260,29 +260,26 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
         entries.set(extra.kind === 'topics' ? 'topics' : 'annotation:' + extra.reply.block, extra);
       }
       const selected: { seq: number; json: string }[] = [];
-      let bytes = 0, more = false;
+      let messages = 0, more = false;
       for (let index = Math.min(before, items.length) - 1; index >= 0; index--) {
         const item = items[index];
         if (!matches(item)) continue;
-        if (selected.length >= MAX_WEBVIEW_WINDOW_ITEMS || bytes >= MAX_WEBVIEW_WINDOW_BYTES) { more = true; break; }
+        if (messages >= MAX_WEBVIEW_WINDOW_MESSAGES) { more = true; break; }
         const bundle = [item, ...(dependencies.get(item.seq)?.values() ?? [])].map(entry => ({ seq: entry.seq, json: JSON.stringify(output(entry)) }));
-        const size = bundle.reduce((sum, entry) => sum + Buffer.byteLength(entry.json), 0);
-        if (selected.length && (selected.length + bundle.length > MAX_WEBVIEW_WINDOW_ITEMS || bytes + size > MAX_WEBVIEW_WINDOW_BYTES)) { more = true; break; }
-        selected.push(...bundle); bytes += size;
+        selected.push(...bundle);
+        if (counted(output(item), owner.overridden(id(item.seq)) ? undefined : labels.get(item.seq)?.map(owner.resolve)[0])) messages++;
       }
       return '"items":[' + selected.sort((a, b) => a.seq - b.seq).map(entry => entry.json).join(',') + '],"more":' + more;
     }
     let start = Math.min(before, items.length);
     const strings: string[] = [];
-    let bytes = 0;
+    let messages = 0;
     const seen = new Map<string, boolean>();
-    while (start > 0 && strings.length < MAX_WEBVIEW_WINDOW_ITEMS) {
+    while (start > 0 && messages < MAX_WEBVIEW_WINDOW_MESSAGES) {
       const item: WireItem = output(items[start - 1], seen);
       const json = JSON.stringify(item);
-      const size = Buffer.byteLength(json);
-      if (strings.length && bytes + size > MAX_WEBVIEW_WINDOW_BYTES) break;
-      bytes += size;
       strings.push(json);
+      if (counted(item)) messages++;
       start--;
     }
     return '"items":[' + strings.reverse().join(",") + '],"more":' + (start > 0);

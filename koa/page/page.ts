@@ -1897,7 +1897,7 @@ function apply(record: PageRecord) {
     for (const item of record.items) { accept(item); changedItem(item.seq, false); }
     historyBefore = record.items.filter(item => !topicFilter() || item.kind !== 'annotations' && item.kind !== 'topics').reduce((lowest, item) => Math.min(lowest, item.seq), Infinity);
     if (topicFilter()) void reloadTopic();
-    else { const generation = scrolling.generation; void rendered().then(() => { if (epoch === record.epoch && scrolling.generation === generation) fillHistory(); }); }
+    else void rendered().then(() => { if (epoch === record.epoch) fillHistory(); });
     schedule();
   } else if (record.type === 'item') {
     const current = items.get(record.item.seq);

@@ -151,7 +151,7 @@ test('selecting a topic loads its items before compaction and outside the live w
   const historical = selected();
   assert.deepEqual(historical.items.filter((item: WireItem) => item.kind === 'assistant').map((item: { blocks: { text: string }[] }) => item.blocks[0].text), ['Historical reply']);
   assert.equal(historical.more, false);
-  for (let index = 0; index < 80; index++) view.message({ ...assistant('[topic: recent]\nRecent reply ' + index), timestamp: 200 + index }, 'end');
+  for (let index = 0; index < 120; index++) view.message({ ...assistant('[topic: recent]\nRecent reply ' + index), timestamp: 200 + index }, 'end');
   const live = JSON.parse(request(view, '/items?before=' + Number.MAX_SAFE_INTEGER).join(''));
   assert.equal(live.more, true);
   assert.equal(live.items.some((item: WireItem) => item.kind === 'assistant' && item.blocks.some(block => block.topic === 'old')), false);
@@ -456,7 +456,7 @@ test("events use SSE framing", t => {
   view.close();
 });
 
-test("caps preserve UTF-8 and windows retain the newest forty items", t => {
+test("caps preserve UTF-8 and windows retain the newest hundred messages", t => {
   const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 });
   view.message({ role: "bashExecution", command: "test", output: "a".repeat(16383) + "😀", exitCode: 0, cancelled: false, truncated: false, timestamp: 12 }, "end");
   const item = JSON.parse(request(view, "/items?before=100").join("")).items[0];
@@ -464,33 +464,43 @@ test("caps preserve UTF-8 and windows retain the newest forty items", t => {
   if (item.kind !== "bash") return;
   assert.deepEqual(item.result.output, { text: "a".repeat(16383), cut: 4 });
   assert.equal(item.at, 12);
-  for (let i = 0; i < 45; i++) view.message({ role: "user", content: `message ${i}`, timestamp: i }, "end");
-  const page = JSON.parse(request(view, "/items?before=46").join(""));
-  assert.equal(page.items.length, 40);
+  for (let i = 0; i < 105; i++) view.message({ role: "user", content: `message ${i}`, timestamp: i }, "end");
+  const page = JSON.parse(request(view, "/items?before=106").join(""));
+  assert.equal(page.items.length, 100);
   assert.equal(page.items[0].text, "message 5");
-  assert.equal(page.items.at(-1).text, "message 44");
+  assert.equal(page.items.at(-1).text, "message 104");
   assert.equal(page.more, true);
-  view.rebuild(...linked([
-    { role: "user", content: "x".repeat(200000), timestamp: 1 },
-    { role: "user", content: "y".repeat(200000), timestamp: 2 },
-  ]));
-  const bounded = JSON.parse(request(view, "/items?before=2").join(""));
-  assert.equal(bounded.items.length, 1);
-  assert.equal(bounded.items[0].at, 2);
-  assert.equal(bounded.more, true);
   view.close();
 });
 
-test('a history page returns its first record even when it exceeds the byte limit', t => {
-  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 }); t.after(() => view.close());
-  const summary = 'x'.repeat(421000);
-  view.message({ role: 'user', content: 'before', timestamp: 1 }, 'end');
-  view.message({ role: 'compactionSummary', summary, tokensBefore: 100, timestamp: 2 }, 'end');
-  const page = JSON.parse(request(view, '/items?before=2').join(''));
-  assert.deepEqual(page.items.map((item: WireItem) => item.kind), ['summary']);
-  assert.equal(page.items[0].text, summary);
-  assert.equal(page.more, true);
-  assert.equal(JSON.parse(request(view, '/items?before=1').join('')).items[0].text, 'before');
+test('tool-heavy reset and older pages count messages, including with a topic filter', t => {
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const messages: AgentMessage[] = [];
+  for (let turn = 0; turn < 120; turn++) {
+    messages.push({ role: 'user', content: '[topic: one]\nQuestion ' + turn, timestamp: turn });
+    for (let step = 0; step < 5; step++) {
+      const id = turn + '-' + step;
+      messages.push({ ...assistant(''), content: [{ type: 'toolCall', id, name: 'bash', arguments: { command: 'x'.repeat(4096) } }] });
+      messages.push({ role: 'toolResult', toolCallId: id, toolName: 'bash', content: [{ type: 'text', text: 'y'.repeat(16384) }], isError: false, timestamp: turn });
+    }
+    messages.push(assistant('[topic: one]\nAnswer ' + turn));
+  }
+  view.rebuild(...linked(messages));
+  const counted = (item: WireItem) => item.kind === 'user' || item.kind === 'assistant' && item.blocks.some(block => block.type === 'text' && block.text.trim());
+  const check = (page: { items: WireItem[]; more: boolean }, first: string) => {
+    assert.equal(page.items.filter(counted).length, 100);
+    assert.equal(page.items[0].kind === 'user' && page.items[0].text, first);
+    assert.equal(page.items.filter(item => item.kind === 'assistant' && !counted(item)).length, 250);
+    assert.equal(page.more, true);
+  };
+  const reset = record(request(view, '/events')[0]);
+  check(reset, 'Question 70');
+  for (const suffix of ['', '&topic=one']) {
+    const newest = JSON.parse(request(view, '/items?before=' + Number.MAX_SAFE_INTEGER + suffix).join(''));
+    check(newest, 'Question 70');
+    const older = JSON.parse(request(view, '/items?before=' + newest.items[0].seq + suffix).join(''));
+    check(older, 'Question 20');
+  }
 });
 
 test("patches append only unchanged text prefixes and replace changed blocks", t => {
@@ -670,7 +680,7 @@ test("image references keep disk bytes beyond the feed window and serve missing 
   view.toolDone("a", [], false, 7);
   assert.equal((await fetch(url + "/images/1.0.0")).status, 404);
   assert.equal((await fetch(url + "/images/1.1.0")).status, 200, "another tool block keeps its image");
-  for (let i = 0; i < 45; i++) view.message({ role: "user", timestamp: i + 2, content: "later" }, "end");
+  for (let i = 0; i < 105; i++) view.message({ role: "user", timestamp: i + 2, content: "later" }, "end");
   const response = await fetch(url + "/images/" + image.id);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-type"), "image/png");

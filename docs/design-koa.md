@@ -399,13 +399,19 @@ answer later arrives.
 A reconnect sends the epoch and the last final item, not
 Last-Event-ID. Patches change unfinished items, so an event id would
 be the wrong cursor. A current cursor gets the missing items; another
-epoch gets a capped reset window. Older history uses the same window
-limits. Without a topic filter, the page's cursor for the next older
+epoch gets a reset window. A window, and each older page, holds the
+newest records back to and including the hundredth counted message,
+with every record between them. A user message and an assistant
+message with visible text count; tool steps, agent and job items,
+notices and metadata records do not, so a tool-heavy turn does not
+fill a page by itself. A page has no byte limit: the per-field cuts
+of tool arguments and results bound its records. Without a topic filter, the page's cursor for the next older
 page is the lowest seq of every record that it received, metadata
 included, so a page of only metadata still moves it; a filtered
 reload's cursor ignores annotation and topic records, which can lie
 outside its message range. The page asks for older history when its top comes into view. After
-the first page, each older page and a topic reload, it asks for the
+the first page (also when the initial state that follows the reset
+moves the scroll), each older page and a topic reload, it asks for the
 next older page while its top is still in view, so a window that the
 rows do not fill fills itself; a failed page stops this until the next
 scroll. A slow page whose output queue exceeds the feed cap is
@@ -785,7 +791,7 @@ item, for the same cursor reason as annotations.
 
 The page derives topic colors from order and keeps filtering local.
 The live feed is not filtered. Older-history reads filter before
-window limits, so sparse topics can load useful history. Runs remain
+they count messages, and count only text in the topic, so sparse topics can load useful history. Runs remain
 whole under filtering.
 
 The page shows topics only in its own rendering: a header row on each
