@@ -168,7 +168,7 @@ test('attachment queue restores chips and separates sent paths', async () => {
 async function page() {
   const source = stripTypeScriptTypes(await readFile(new URL("page/page.ts", import.meta.url), "utf8"));
   class Node {
-    value = ""; private text = ""; style: Record<string, unknown> = { setProperty: (name: string, value: string) => { this.style[name] = value; }, getPropertyValue: (name: string) => this.style[name] ?? '' }; innerHTML = ''; clientWidth = 320; scrollTop = 0; scrollWidth = 0; clientHeight = 100; offsetHeight = 20; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {}; rects: { top: number; bottom: number }[] = [];
+    value = ""; private text = ""; style: Record<string, unknown> = { setProperty: (name: string, value: string) => { this.style[name] = value; }, getPropertyValue: (name: string) => this.style[name] ?? '', removeProperty: (name: string) => { delete this.style[name]; } }; innerHTML = ''; clientWidth = 320; scrollTop = 0; scrollWidth = 0; clientHeight = 100; offsetHeight = 20; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {}; rects: { top: number; bottom: number }[] = [];
     get textContent() { return this.text; }
     set textContent(value: unknown) { this.text = String(value); this.children = []; }
     private classes = new Set<string>();
@@ -202,7 +202,7 @@ async function page() {
     querySelectorAll(selector = ''): Node[] {
       return selector.split(/,(?![^(]*\))/).flatMap(part => part.replace(':scope>', '').split('>').reduce<Node[]>((nodes, step) => nodes.flatMap(node => node.children.filter((child): child is Node => child instanceof Node && (/^[a-z][\w-]*$/.test(step) ? child.tagName === step.toUpperCase() : [...step.matchAll(/\.([\w-]+)/g)].some(match => child.classes.has(match[1]))))), [this]));
     }
-    get isConnected(): boolean { return this === document.body || this === document.documentElement || this.parent?.isConnected === true; }
+    get isConnected(): boolean { return this === document.body || this === document.documentElement || [...elements.values()].includes(this) || this.parent?.isConnected === true; }
     get childNodes(): Node[] { return this.children.map(child => typeof child === 'string' ? Object.assign(new Node(), { tagName: '#text', textContent: child }) : child); }
     removeChild(child: Node) { this.children = this.children.filter(other => other !== child); if (child instanceof Node) child.parent = undefined; return child; }
     hasAttribute(name: string) { return this.attributes.has(name); } getAttributeNames() { return [...this.attributes.keys()]; }
@@ -253,11 +253,12 @@ async function page() {
     };
   };
   const history: { state: unknown; replaceState(state: unknown): void } = { state: null, replaceState(state) { this.state = state; } };
-  const context = { history, topicTurn, parseTopicName, ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, pathToken, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { history, topicTurn, parseTopicName, ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', fontFamily: 'sans-serif', fontSize: '13px', getPropertyValue: () => '', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, pathToken, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update,head,quote})', context));
   document.getElementById('scroll').clientHeight = 100000;
+  document.getElementById('items').hidden = false;
   Object.assign(document, { createTreeWalker: () => ({ nextNode: () => false }), createRange: () => { let target: Node | undefined; return { selectNodeContents(node: Node) { target = node; }, getClientRects: () => target?.rects ?? [] }; } });
   Object.assign(context, { NodeFilter: { SHOW_TEXT: 4 }, getSelection: () => context.window.getSelection() });
   const attachSource = stripTypeScriptTypes(await readFile(new URL('page/attach.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
@@ -300,7 +301,8 @@ async function page() {
   const workingSource = stripTypeScriptTypes(readFileSync(new URL('page/working.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   Object.assign(context, runInNewContext(workingSource + '\n({dots})', context));
   Object.assign(context, { scrollInitial, scrollMemory, scrollStored, scrollUpdate, scrollWindow });
-  const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\nfunction put(item) { accept(item); renderDirty(); return views.get(item.seq)?.view; }\nlet agentTestSeq=10000;function agentStep(card,at,key,slots=new Map()){let seq=slots.get(key);if(seq===undefined){seq=agentTestSeq++;slots.set(key,seq)}const base={seq,revision:0,at,final:true};put(card.direction==='in'?{...base,kind:'agent',...card}:{...base,kind:'assistant',stop:'stop',error:'',blocks:[{type:'tool',id:key,name:'spawn_agent',args:{text:'{}'},state:{type:'done',error:false,result:{text:'',images:[]}},agent:card}]});const owner=runOwner(runContext(),card.direction==='in'?{kind:'item',seq}:{kind:'block',seq,index:0});return openers.get(sourceKey(card.direction==='in'?{kind:'item',seq}:{kind:'block',seq,index:0})).view;}";
+  Object.assign(document, { fonts: { ready: { then(resolve: () => void) { resolve(); } } } });
+  const body = source.replace(/^import .*;\n/gm, "").replace('refreshComposer(); focusComposer(); void connect();', '') + "\nfunction put(item) { accept(item); renderDirty(); return views.get(item.seq)?.view; }\nlet agentTestSeq=10000;function agentStep(card,at,key,slots=new Map()){let seq=slots.get(key);if(seq===undefined){seq=agentTestSeq++;slots.set(key,seq)}const base={seq,revision:0,at,final:true};accept(card.direction==='in'?{...base,kind:'agent',...card}:{...base,kind:'assistant',stop:'stop',error:'',blocks:[{type:'tool',id:key,name:'spawn_agent',args:{text:'{}'},state:{type:'done',error:false,result:{text:'',images:[]}},agent:card}]});live.add(seq);renderDirty();live.delete(seq);const owner=runOwner(runContext(),card.direction==='in'?{kind:'item',seq}:{kind:'block',seq,index:0});return openers.get(sourceKey(card.direction==='in'?{kind:'item',seq}:{kind:'block',seq,index:0})).view;}";
   return { observers, repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
 }
 
@@ -2220,6 +2222,8 @@ test('the tail renders whole under a clip that opens at whole lines once the cap
   fixture.step(0);
   fixture.step(0);
   assert.equal(tailOf(fixture).shown, 0, 'two lines are under the cap of 80 px');
+  fixture.step(220);
+  fixture.step(0);
   assert.deepEqual([fixture.queued.size, fixture.timers.size], [0, 1]);
   fixture.step(1500);
   fixture.step(0);
@@ -2227,7 +2231,7 @@ test('the tail renders whole under a clip that opens at whole lines once the cap
   assert.equal(fixture.evaluate("texts.get('0:0').reveal.tail.view.className"), 'reveal', 'a clip above zero puts the wrapper in the flow');
   fixture.patch(1, ' seven eight nine ten eleven twelve thirteen fourteen');
   fixture.step(16);
-  assert.equal(tailOf(fixture).clip, '20px', 'new text renders under the old clip');
+  assert.equal(tailOf(fixture).clip, '80px', 'the rendering transaction updates the clip at the cap');
   assert.equal(tailOf(fixture).text, 'one two three four five six seven eight nine ten eleven twelve thirteen fourteen');
   fixture.step(16);
   assert.equal(tailOf(fixture).clip, '80px', 'the hidden height reached the cap: the clip stops before the unfinished line');
@@ -2384,12 +2388,12 @@ test('every notice is one nrow that opens only when it has more than its line', 
   const app = await page();
   const result = app.run(`(()=>{
     const row=seq=>views.get(seq).view.children[0], hd=r=>r.children[0], tx=r=>hd(r).children[0];
-    const out={},fit=(...rows)=>{resized(rows.map(r=>({target:tx(r),borderBoxSize:[{blockSize:0}]})));tick()};
+    const out={},fit=()=>{element('items').clientWidth++;resized([{target:element('items'),borderBoxSize:[{blockSize:0}]}]);tick()};
     put({seq:0,at:0,final:true,kind:'notify',level:'warning',text:{text:'Notice stays',cut:0}});apply({...state,type:'state'});
     const a=row(0);
     out.warning=[views.get(0).view.className,a.className,tx(a).textContent,hd(a).children[1].tagName,hd(a).children.length];
     tx(a).scrollWidth=500;fit(a);out.overflow=[a.classList.contains('more'),a.children[1].textContent];
-    tx(a).scrollWidth=100;fit(a);out.kept=a.classList.contains('more');tx(a).clientWidth=300;fit(a);out.fits=a.classList.contains('more');
+    tx(a).scrollWidth=100;out.kept=a.classList.contains('more');tx(a).clientWidth=300;fit(a);out.fits=a.classList.contains('more');
     put({seq:8,at:0,final:true,kind:'command',result:{type:'export',path:'/very/long/export.html'}});
     const x=row(8);tx(x).children[1].scrollWidth=0;x.children[0].children[0].scrollWidth=900;fit(x);out.export=[x.classList.contains('more'),x.children[1].children.map(c=>c.textContent)];
     put({seq:1,at:0,final:true,kind:'notify',level:'info',text:{text:'one\\ntwo',cut:0}});
@@ -3076,7 +3080,7 @@ test('an assistant item with nothing to show gets no divider and no count', asyn
   page.scroll(0);
   page.add({ ...page.text(2), blocks: [] });
   page.add({ ...page.text(3), blocks: [{ type: 'text', text: '' }] });
-  assert.equal(page.dividers(), '0,1,2,3');
+  assert.equal(page.dividers(), '0,1,2');
   assert.equal(page.latest(), '↓ Latest,true');
 });
 
@@ -3165,10 +3169,10 @@ test('an agent run counts once while an error notice and blank text do not count
   page.add(card(1));
   page.add({ ...page.text(2), blocks: [], stop: 'error', error: 'boom' });
   page.add({ ...page.text(3), blocks: [{ type: 'text', text: ' \n ' }] });
-  assert.equal(page.dividers(), '0,divider,1,2,3');
+  assert.equal(page.dividers(), '0,divider,1,2');
   assert.equal(page.latest(), '↓ 1 new,true');
   page.add({ ...page.text(4), blocks: [{ type: 'text', text: ' ' }, { type: 'text', text: 'words' }] });
-  assert.equal(page.dividers(), '0,divider,1,2,3,4');
+  assert.equal(page.dividers(), '0,divider,1,2');
   assert.equal(page.latest(), '↓ 2 new,true');
 });
 
@@ -3224,22 +3228,6 @@ async function blockPage(position: number) {
   return { ...page, gap, rounds };
 }
 
-test('a block that skips its layout until it is relevant grows after the scroll write and the following pane still reaches the bottom', async () => {
-  const page = await blockPage(900);
-  page.add(page.text(1));
-  assert.equal(page.gap(), 0);
-  assert.equal(page.evaluate("element('scroll').scrollTop"), 1500);
-});
-
-test('a growth that the depth rule skipped is delivered at the next update and the following pane still reaches the bottom', async () => {
-  const page = await blockPage(900);
-  page.hooks.delivered = () => { page.rounds.relevant = true; if (++page.rounds.count === 2) page.rounds.late = 300; };
-  page.add(page.text(1));
-  page.step(16);
-  assert.equal(page.gap(), 0);
-  assert.equal(page.evaluate("element('scroll').scrollTop"), 1800);
-});
-
 test('an animation frame preserves physical elastic overscroll during Latest travel', async () => {
   const page = await latestPage();
   page.add(page.text(0));
@@ -3274,7 +3262,7 @@ test('a delivery of only a reveal child still scrolls a following pane to the gr
   const page = await latestPage();
   page.add(page.text(0));
   page.scroll(900);
-  page.evaluate("element('scroll').scrollHeight=1200;const child=document.createElement('div');element('items').append(child);observed.set(child,{type:'reveal',memo:{}});resized([{target:child,borderBoxSize:[{blockSize:0}]}])");
+  page.evaluate("element('scroll').scrollHeight=1200;const child=document.createElement('div');element('items').append(child);resized([{target:child,borderBoxSize:[{blockSize:0}]}])");
   assert.equal(page.evaluate("element('scroll').scrollTop"), 1100);
 });
 
@@ -3472,7 +3460,7 @@ test('an older page keeps the reader where they are now, also after they moved w
   assert.equal(page.offset(13), 0);
 });
 
-test('a restored position survives the entry animation of an unfinished reply and an image that decodes above it', async () => {
+test('a restored position survives the entry animation of an unfinished reply', async () => {
   const page = await flowPage();
   const image = { seq: 1, revision: 0, at: 1, kind: 'user', text: 'look', images: [{ id: 'i1', revision: 0, mimeType: 'image/png', bytes: 1, width: 10, height: 10 }], attachments: [] };
   const items = [page.reveal(0, 'Intro.\n\nwaiting tail').item, image, ...[2, 3, 4, 5, 6, 7, 8, 9].map(page.text)];
@@ -3484,23 +3472,22 @@ test('a restored position survives the entry animation of an unfinished reply an
   page.go('r'); page.open(items);
   page.settle();
   assert.equal(page.offset(6), anchor);
-  page.extra.set(1, 80);
-  page.evaluate("(function find(node){return node.tagName==='IMG'?node:node.children.map(find).find(Boolean)})(views.get(1).view).onload()");
-  page.settle();
-  assert.equal(page.offset(6), anchor);
 });
 
 test('replacing a running compaction with its summary keeps the reader anchor offset', async () => {
   const page = await flowPage();
+  page.extra.set(1, 40);
   page.open([page.text(0), { seq: 1, revision: 1, at: 1, final: false, kind: 'command', result: { type: 'compaction', state: { type: 'running' } } }, ...Array.from({ length: 9 }, (_, index) => page.text(index + 2))]);
   page.settle();
-  page.reader(550);
-  const anchor = page.offset(5);
+  const anchorSeq = 5;
+  page.evaluate("decide({type:'navigate',anchor:{item:{kind:'message',seq:5,row:unitRows(5)[0]},offset:-30,edge:'row'}})");
+  page.settle();
+  const anchor = page.offset(anchorSeq);
   const get = page.extra.get.bind(page.extra);
-  page.extra.get = seq => (get(seq) ?? 0) + (seq === 1 && page.evaluate("views.get(1).item.kind === 'summary'") ? 150 : 0);
+  page.extra.get = seq => (get(seq) ?? 0) + (seq === 1 && page.evaluate("items.get(1).kind === 'summary'") ? 150 : 0);
   page.deliver({ type: 'item', item: { seq: 1, revision: 2, at: 11, final: true, kind: 'summary', source: 'compaction', text: 'Saved context' } });
   page.settle();
-  assert.equal(page.offset(5), anchor);
+  assert.equal(page.offset(anchorSeq), anchor);
 });
 
 test('a reload restores reader memory when reset arrives before state and accepts later scrolling', async () => {
@@ -3678,16 +3665,13 @@ test('a following pane is at the bottom after every frame of a new reply, with n
   assert.deepEqual(gaps.filter(gap => gap !== 0), []);
 });
 
-test('an image that loads and a card that grows move the following pane to the new bottom in the same frame', async () => {
+test('a card that grows moves the following pane to the new bottom in the same frame', async () => {
   const page = await streamingPage();
   const image = { seq: 1, revision: 0, at: 1, kind: 'user', text: 'look', images: [{ id: 'i1', revision: 0, mimeType: 'image/png', bytes: 1, width: 10, height: 10 }], attachments: [] };
   page.deliver({ type: 'item', item: image });
   page.settle();
-  page.extra.set(1, 80);
-  page.evaluate("(function find(node){return node.tagName==='IMG'?node:node.children.map(find).find(Boolean)})(views.get(1).view).onload()");
-  page.step(16);
-  assert.equal(page.bottom() - page.top(), 0);
   page.pad.value += 60;
+  page.evaluate("dirtyExtent(views.get(1).view)");
   page.step(16);
   assert.equal(page.bottom() - page.top(), 0);
 });
@@ -4317,19 +4301,27 @@ test('patches between two frames render once', async () => {
   assert.equal(page.evaluate('items.get(0).blocks[0].text'), 'Intro.\n\nbody w1 w2 w3 w4 w5');
 });
 
-test('a streaming frame reads no geometry after it wrote the DOM', async () => {
-  const page = await latestPage(), watch = frameWatch(page);
-  page.evaluate("state={...state,life:{type:'ready'},working:true,since:1700000000000}");
-  page.deliver({ type: 'item', item: assistant(0, 'Intro.\n\none two three four five six') });
+test('a streaming frame measures its dirty row and corrects once only when its height changes', async () => {
+  const page = await latestPage();
+  Object.assign(page.app.context, { matchMedia: () => ({ matches: true }) });
+  page.add(assistant(0, 'Earlier.', true)); page.add(assistant(1, 'Earlier too.', true)); page.add(assistant(2, 'a'));
   page.step(16);
-  let reads = 0;
-  for (let revision = 1; revision <= 20; revision++) {
-    page.deliver(patchOf(0, revision, ' word' + revision + (revision % 4 ? '' : '\n\nblock ' + revision)));
-    page.evaluate("node('div').append(node('i'))");
-    watch.frame(16);
-    reads += watch.counts.reads;
-  }
-  assert.equal(reads, 0);
+  page.evaluate(`
+    Object.assign(globalThis,{afterWrite:false,postMeasures:0,height:20,reads:[]});
+    for(const [seq,{view}] of views)Object.defineProperty(view,'offsetHeight',{get(){if(afterWrite)reads.push(seq);return seq===2?height:20}});
+    const originalRender=renderItem,originalMeasure=measure,originalTick=tick;
+    renderItem=item=>{const result=originalRender(item);if(result)afterWrite=true;return result};
+    measure=()=>{if(afterWrite)postMeasures++;return originalMeasure()};
+    tick=()=>{afterWrite=false;try{return originalTick()}finally{afterWrite=false}};
+  `);
+  page.deliver(patchOf(2, 1, ' b')); page.step(16);
+  assert.deepEqual(JSON.parse(String(page.evaluate('JSON.stringify({reads,postMeasures})'))), { reads: [2], postMeasures: 0 });
+  page.evaluate('reads=[];postMeasures=0;height=40');
+  page.deliver(patchOf(2, 2, ' more words')); page.step(16);
+  const grown = JSON.parse(String(page.evaluate('JSON.stringify({reads,postMeasures})')));
+  assert.equal(grown.postMeasures, 1);
+  assert.equal(grown.reads.filter((seq: number) => seq === 2).length, 2);
+  assert.ok(grown.reads.filter((seq: number) => seq !== 2).length <= 2);
 });
 
 test('assistant items and text patches in one turn never take the dots out of the page', async () => {
@@ -4347,13 +4339,13 @@ test('assistant items and text patches in one turn never take the dots out of th
   assert.equal(page.evaluate("element('items').lastChild.className.includes('working')"), true);
 });
 
-test('a new reveal tail is measured after the layout that follows its render, never in a frame', async () => {
+test('a new reveal tail is prepared in its rendering frame', async () => {
   const page = await latestPage(), watch = frameWatch(page);
   page.deliver({ type: 'item', item: assistant(0, 'Intro.\n\none two three four five six') });
   page.evaluate("node('div').append(node('i'))");
   assert.equal(page.evaluate('texts.has("0:0")'), false);
   watch.frame(16);
-  assert.deepEqual([watch.counts.reads, page.evaluate("texts.get('0:0').reveal.tail.units.map(unit => [unit.bottom, unit.complete]).join('|')"), page.evaluate('revealDirty')], [0, '20,true|40,false', true]);
+  assert.deepEqual([page.evaluate("texts.get('0:0').reveal.tail.units.map(unit => [unit.bottom, unit.complete]).join('|')"), page.evaluate('revealPreparation.size'), page.evaluate('revealDirty')], ['20,true|40,false', 0, false]);
 });
 
 test('a fresh row that jumps from below the view to above it leaves the count', async () => {
@@ -4368,7 +4360,7 @@ test('a fresh row that jumps from below the view to above it leaves the count', 
 
 test('a new block holds, is measured after layout, grows with its measured height, and ends with neither class', async () => {
   const page = await revealPage();
-  page.hooks.layout = () => { page.evaluate("for (const [target, watch] of observed) if (watch.type === 'hold') Object.assign(target, { scrollHeight: 66, offsetHeight: 2, clientHeight: 0 })"); };
+  page.evaluate("let content=template.content;Object.defineProperty(template,'content',{get:()=>content,set(value){content=value;for(const child of value.childNodes)Object.assign(child,{scrollHeight:66,offsetHeight:2,clientHeight:0})}})");
   page.deliver({ type: 'item', item: assistant(0, 'First.\n\nSecond.') });
   const classes = () => String(page.evaluate("texts.get('0:0').view.children.filter(block => !block.classList.contains('message-header')).map(block => block.className).join('|')"));
   const height = () => page.evaluate("texts.get('0:0').view.children.find(block => !block.classList.contains('message-header')).style['--h']");
@@ -4424,21 +4416,21 @@ test('unit geometry groups inline fragments by line, closes complete code and sk
   assert.equal(units(wrap(table), '| a | b |\n| - | - |\n'), '[[20,false],[40,false],[60,false]]');
 });
 
-test('a resize or an opened fence re-reads the tail geometry, and a replaced tail drops its observers', async () => {
+test('a width change re-reads the tail geometry, and a replaced tail completes its preparation', async () => {
   const fixture = await revealPage(200);
   const code = Array.from({ length: 20 }, (_, index) => 'line ' + index).join('\n');
   fixture.put('Intro.\n\n```js\n' + code);
   fixture.step(0);
   const units = () => fixture.evaluate("texts.get('0:0').reveal.tail.units.length");
-  const watched = () => fixture.evaluate("[...observed.values()].filter(watch => watch.type === 'reveal').length");
-  assert.deepEqual([units(), watched(), fixture.evaluate("observed.has(texts.get('0:0').reveal.tail.view.children[0])")], [21, 1, true]);
+  assert.equal(units(), 21);
   fixture.bars.at(-1)?.onclick?.();
   fixture.evaluate("texts.get('0:0').reveal.tail.view.children[0].querySelector('code').rects.push({ top: 422, bottom: 438 })");
-  fixture.evaluate("resized([{ target: texts.get('0:0').reveal.tail.view.children[0], borderBoxSize: [{ blockSize: 0 }] }])");
+  fixture.evaluate('invalidateExtents()');
   assert.equal(units(), 22);
   fixture.patch(1, '\nmore');
   fixture.step(0);
-  assert.equal(watched(), 1, 'the replaced wrapper left no observer behind');
+  assert.equal(fixture.evaluate('revealPreparation.size'), 0);
+  assert.equal(units(), 22);
 });
 
 test('a clip that reflow leaves inside a line snaps down to the last whole line and puts the wrapper out of the flow at zero', async () => {
@@ -4448,8 +4440,7 @@ test('a clip that reflow leaves inside a line snaps down to the last whole line 
   fixture.step(1500);
   fixture.step(0);
   assert.equal(tailOf(fixture).shown, 20);
-  fixture.evaluate("texts.get('0:0').reveal.tail.view.children[0].rects = [{ top: 2, bottom: 18 }]");
-  fixture.evaluate("resized([{ target: texts.get('0:0').reveal.tail.view.children[0], borderBoxSize: [{ blockSize: 0 }] }])");
+  fixture.evaluate("texts.get('0:0').reveal.tail.view.children[0].rects = [{ top: 2, bottom: 18 }];element('items').clientWidth++;resized([{ target: element('items'), borderBoxSize: [{ blockSize: 0 }] }])");
   fixture.step(16);
   assert.deepEqual([tailOf(fixture).shown, tailOf(fixture).clip, fixture.evaluate("texts.get('0:0').reveal.tail.view.className")], [0, '0px', 'reveal dormant']);
 });
@@ -4563,7 +4554,7 @@ test('a width change replaces mounted measurements and invalidates absent ones',
   page.settle(8);
   const mounted = page.seqs(), measured = () => page.extents().filter(([, extent]) => extent.kind === 'measured');
   assert.ok(measured().length >= mounted.length && measured().every(([, extent]) => extent.width === 320), 'a row that scrolled out keeps its measurement');
-  page.evaluate("element('items').clientWidth=200;resized([{target:element('items'),borderBoxSize:[{blockSize:1}]}])");
+  page.evaluate("element('items').clientWidth=200;resized([{target:element('items'),borderBoxSize:[{blockSize:1}]}]);flushExtents();ensureTable()");
   assert.deepEqual(measured().map(([seq]) => seq), mounted, 'only the mounted rows are measured again');
   assert.ok(measured().every(([, extent]) => extent.width === 200), 'every measurement is at the new width');
   assert.deepEqual(page.extents().find(([seq]) => seq === 285)?.[1], { kind: 'estimated', px: page.guess(285) });

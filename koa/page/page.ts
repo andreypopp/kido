@@ -64,7 +64,7 @@ const rhythmPending = new Set<HTMLElement>();
 const annotationItems = new Map<number, Map<number, Extract<WireItem, { kind: 'annotations' }>>>();
 const items = new Map<number, WireItem>();
 const views = new Map<number, { view: HTMLElement; item: WireItem; warning?: string; slots: Map<string, Slot>; filter?: TopicName; runs: string }>();
-const openers = new Map<string, { view: HTMLElement; open: () => void }>(), fenceOpeners = new Map<string, { view: HTMLElement; open: () => void }>(), patched = new Set<number>(), live = new Set<number>(), order: number[] = [], extents = new Map<number, Extent>(), openFences = new Set<string>(), animating = new Map<HTMLElement, number>();
+const openers = new Map<string, { view: HTMLElement; open: () => void }>(), fenceOpeners = new Map<string, { view: HTMLElement; open: () => void }>(), patched = new Set<number>(), live = new Set<number>(), order: number[] = [], extents = new Map<number, Extent>(), openFences = new Set<string>(), animating = new Map<HTMLElement, { seq: number; until: number }>();
 type Extent = { kind: 'measured'; width: number; lh: number; px: number } | { kind: 'estimated'; px: number };
 type Group = SeqRange;
 type Table = { index: Map<number, number>; starts: number[]; groups: Group[]; divider: { before: number; px: number } | undefined };
@@ -74,7 +74,6 @@ const folds = new Map<string, boolean>();
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 const REVEAL = { cap: .4, wait: 1500, fold: 15, grow: 220 };
 type Reveal = { at: number; tail?: { block: Tail; view: HTMLElement; shown: number; units?: Unit[] } };
-type Watch = { type: 'reveal'; memo: TextMemo } | { type: 'hold' } | { type: 'block' } | { type: 'row' } | { type: 'fit'; row: HTMLElement; width: number };
 type TextMemo = { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }>; assistant: boolean; paths: boolean; key?: string; reveal?: Reveal; grown: number };
 const texts = new Map<string, TextMemo>();
 type StepMarks = { key: string; shape: string; links: string; cwd: string; card?: NonNullable<ReturnType<typeof stepInfo>['card']>; child: HTMLElement; sum: HTMLElement; name?: HTMLElement; label: HTMLElement; after: HTMLElement; tail: HTMLElement[]; tailKey: string; result: HTMLElement; time: HTMLElement; detail: HTMLElement; current: Step; live: boolean; file?: string; images?: ReturnType<typeof thumbnails>; show?: () => void };
@@ -85,19 +84,20 @@ type WorkingPlace = { kind: 'bare'; row: HTMLElement; line: HTMLElement; sum: HT
 let working: { view: string; since: number; primary: HTMLElement; place: WorkingPlace; extra: Map<string, HTMLElement> } | undefined;
 const runContext = (): RunContext => ({ raw: seq => items.get(seq), shown: visible, owners });
 type Spot = { key: string; parent: HTMLElement; before: ChildNode | null };
-const revealing = new Set<TextMemo>();
+const revealing = new Set<TextMemo>(), revealPreparation = new Set<TextMemo>();
 let capTimer: number | undefined;
 let pending: { kind: 'frame' | 'timer'; id: number } | undefined;
 const dirty = new Set<number>(), stale = new Set<string>(), waiters: (() => void)[] = [];
 const scrollEvents: ScrollEvent[] = [];
 let revealDirty = false, resetting = false, annotated = false;
-const growing: HTMLElement[] = [], observed = new Map<Element, Watch>(), measuredHolds = new Map<HTMLElement, number>(), fits = new Map<HTMLElement, boolean>();
+const growing: HTMLElement[] = [], measuredHolds = new Map<HTMLElement, number>(), fits = new Map<HTMLElement, HTMLElement>(), extentDirty = new Set<HTMLElement>(), fitPending = new Set<HTMLElement>();
+let fontsReady = false;
 const pathWarnings = new Map<number, string>();
 let pathWarningEpoch = 0;
 let state: State = { pathEditor: false, view: { id: '', path: [], type: 'root' }, topics: [], agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, dialogs: [] };
 let shownFilter: TopicName | undefined;
 const topics = createTopics({
-  state: () => state, items, element, node, timestamp, refreshComposer, focus: () => editor.focus(),
+  state: () => state, items, element, node, timestamp, refreshComposer, layout: dirtyExtent, focus: () => editor.focus(),
   filterChanged() {
     transcriptHistory.cancel('scope'); topics.close(); topics.render(); refreshComposer();
     if (epoch) void transcriptHistory.reload('filter');
@@ -295,13 +295,13 @@ function show(memo: TextMemo, source: string, final: boolean, changed = 0) {
     if (wrapper && tail) {
       wrapper.style.maxHeight = shown + 'px';
       reveal.tail = { block: tail, view: wrapper, shown };
-      for (const child of wrapper.children) { observed.set(child, { type: 'reveal', memo }); layoutObserver.observe(child); }
+      revealPreparation.add(memo); revealDirty = true;
       if (before?.block.start !== tail.start) reveal.at = performance.now();
       return;
     }
     const elements = nodes.filter(child => child instanceof HTMLElement), fresh = index >= memo.grown;
     if (!elements.length) return;
-    if (fresh) { memo.grown = index + 1; if (scrolling.kind !== 'restoring' && !reducedMotion()) { growing.push(...elements); for (const element of elements) animating.set(element, Number(memo.key?.split(':')[0])); } reveal.at = performance.now(); }
+    if (fresh) { memo.grown = index + 1; if (scrolling.kind !== 'restoring' && !reducedMotion()) { growing.push(...elements); for (const element of elements) animating.set(element, { seq: Number(memo.key?.split(':')[0]), until: Infinity }); } reveal.at = performance.now(); }
   });
   if (reveal) {
     if (!blocks.at(-1)?.tail) reveal.tail = undefined;
@@ -312,11 +312,11 @@ function show(memo: TextMemo, source: string, final: boolean, changed = 0) {
     const last = memo.view.lastElementChild;
     (last?.tagName === 'P' ? last : memo.view).append(node('span', undefined, 'caret'));
   }
+  dirtyExtent(memo.view);
 }
 function unwatch(target: ChildNode) {
   if (!(target instanceof HTMLElement)) return;
-  if (observed.delete(target)) layoutObserver.unobserve(target);
-  fits.delete(target); measuredHolds.delete(target); animating.delete(target);
+  extentDirty.delete(target); fits.delete(target); fitPending.delete(target); measuredHolds.delete(target); animating.delete(target);
   for (const child of target.children) unwatch(child);
 }
 function clear(view: HTMLElement) {
@@ -329,12 +329,13 @@ function foldFence(pre: HTMLElement, key: string) {
   const bar = node('button', 'Show ' + (count - REVEAL.fold) + ' more lines', 'more');
   pre.classList.add('folded');
   pre.style.setProperty('--fold', String(REVEAL.fold));
-  const expand = () => { openFences.add(key); pre.classList.remove('folded'); bar.remove(); };
+  const expand = () => { openFences.add(key); pre.classList.remove('folded'); bar.remove(); dirtyExtent(pre); };
   bar.onclick = () => toggleAt(bar, expand);
   fenceOpeners.set(key, { view: pre, open: () => { if (pre.classList.contains('folded')) expand(); } });
   pre.after(bar);
 }
-const wanted = () => dirty.size > 0 || windowDirty && state.view.type !== 'job' || resetting || revealDirty || scrollEvents.length > 0 || fits.size > 0 || growing.length > 0 || measuredHolds.size > 0 || scrollDecision.frame !== 'none' || waiters.length > 0 || !!metrics?.waiting.length;
+const transcriptVisible = () => state.view.type !== 'job' && !element('items').hidden;
+const wanted = () => fontsReady && (transcriptVisible() && (extentDirty.size > 0 || animating.size > 0 || windowDirty || revealDirty || fitPending.size > 0 || growing.length > 0 || measuredHolds.size > 0) || dirty.size > 0 || resetting || scrollEvents.length > 0 || scrollDecision.frame !== 'none' || waiters.length > 0 || !!metrics?.waiting.length);
 function schedule() {
   if (pending || !wanted()) return;
   pending = document.hidden ? { kind: 'timer', id: setTimeout(tick, 50) } : { kind: 'frame', id: requestAnimationFrame(tick) };
@@ -360,23 +361,40 @@ function tick() {
   const now = performance.now(), measurement = scrollDecision.frame === 'measure' ? measure() : lastMeasurement ?? measure(), geo = geometry();
   const physicalTop = element('scroll').scrollTop;
   const top = physicalTop < -1 || physicalTop > measurement.max + 1 ? physicalTop : scrolling.last?.top ?? measurement.top;
-  const grown = [...measuredHolds], fitted = [...fits];
-  measuredHolds.clear(); fits.clear();
-  for (const [row, overflows] of fitted) row.classList.toggle('more', overflows);
+  const grown = [...measuredHolds];
+  measuredHolds.clear();
   for (const [target, height] of grown) {
     if (height) target.style.setProperty('--h', height + 'px');
     target.style.animationDuration = REVEAL.grow + 'ms';
     target.classList.remove('hold');
     target.classList.add('grow');
-    for (const type of ['animationend', 'animationcancel']) target.addEventListener(type, () => { target.classList.remove('grow'); animating.delete(target); }, { once: true });
+    const active = animating.get(target); if (active) active.until = now + REVEAL.grow;
+    const finish = () => { target.classList.remove('grow'); animating.delete(target); dirtyExtent(target); };
+    for (const type of ['animationend', 'animationcancel']) target.addEventListener(type, finish, { once: true });
   }
+  renderDirty(geo);
+  for (const target of fitPending) {
+    const row = fits.get(target); if (!row || !target.isConnected) continue;
+    const overflows = target.scrollWidth > target.clientWidth;
+    if (row.classList.contains('more') !== overflows) { row.classList.toggle('more', overflows); dirtyExtent(row); }
+  }
+  fitPending.clear();
+  for (const memo of revealPreparation) { const tail = memo.reveal?.tail; if (tail) tail.units = unitsOf(tail.view, tail.block.token); }
+  revealPreparation.clear();
   if (revealDirty) {
     revealDirty = false;
     for (const memo of revealing) revealStep(memo, now, geo.viewport);
   }
-  renderDirty(geo);
-  for (const target of growing.splice(0)) { target.classList.add('hold'); observed.set(target, { type: 'hold' }); layoutObserver.observe(target); }
-  decide({ type: 'frame' }, { ...measurement, now, top });
+  const holds = growing.splice(0);
+  for (const target of holds) target.classList.add('hold');
+  for (const target of holds) { measuredHolds.set(target, target.scrollHeight + target.offsetHeight - target.clientHeight); dirtyExtent(target); }
+  for (const [target, active] of animating) {
+    if (target.isConnected) dirtyExtent(target);
+    if (!target.isConnected || now >= active.until) { target.classList.remove('grow'); animating.delete(target); }
+  }
+  const layout = flushExtents();
+  if (layout) scrollEvents.push({ type: 'layout', cause: 'layout' });
+  decide({ type: 'frame' }, layout ? measure() : { ...measurement, now, top });
   for (const resolve of waiters.splice(0)) resolve();
   for (const waiter of metrics?.waiting.splice(0) ?? []) waiter();
   schedule();
@@ -515,7 +533,7 @@ function applyScroll(decision: Decision) {
     if (!divider) { divider = node('div', undefined, 'newmsgs'); divider.append(node('span', 'new messages')); }
     if (divider.nextSibling !== view) { remember(); view.parentNode?.insertBefore(divider, view); remember(); }
   }
-  if (changed.length) rhythm(changed);
+  if (changed.length) { rhythm(changed); changed.forEach(dirtyExtent); }
   if (decision.request?.type === 'mount') windowDirty = true;
   else if (decision.request?.type === 'load') void loadAnchor(decision.request.item, decision.request.generation);
   if (decision.frame !== 'none') schedule();
@@ -567,6 +585,7 @@ function revealStep(memo: TextMemo, now: number, viewport: number) {
   tail.shown = shown;
   tail.view.style.maxHeight = shown + 'px';
   tail.view.classList.toggle('dormant', shown === 0);
+  dirtyExtent(memo.view);
 }
 
 function thumbnails(refs: ImageRef[], owner: () => Map<string, Slot>, name?: string) {
@@ -584,20 +603,19 @@ function thumbnails(refs: ImageRef[], owner: () => Map<string, Slot>, name?: str
       const base = '/images/' + encodeURIComponent(ref.id) + '?e=' + encodeURIComponent(epoch) + '&r=' + ref.revision, src = scoped(base, state.sessionId);
       thumb.setAttribute('data-base', base);
       if (image.getAttribute('src') !== src) {
-        thumb.classList.remove('gone'); thumb.removeAttribute('role'); thumb.disabled = false;
+        thumb.classList.remove('gone'); thumb.removeAttribute('role'); thumb.removeAttribute('title'); thumb.disabled = false;
         while (thumb.children.length > 2) thumb.lastElementChild?.remove();
         const size = ref.width && ref.height ? ref.width + '×' + ref.height : '';
         label.textContent = size; label.hidden = !size;
         thumb.setAttribute('aria-label', 'Preview image' + (size ? ' ' + size : ''));
         image.alt = ''; image.hidden = false;
-        if (ref.width && ref.height) { image.width = ref.width; image.height = ref.height; }
-        else { image.removeAttribute('width'); image.removeAttribute('height'); }
+        if (ref.width && ref.height) { image.width = ref.width; image.height = ref.height; image.style.setProperty('--w', ref.width + 'px'); image.style.setProperty('--r', String(ref.width / ref.height)); }
+        else { image.removeAttribute('width'); image.removeAttribute('height'); image.style.removeProperty('--w'); image.style.removeProperty('--r'); }
         const target = thumb;
-        image.onload = () => enqueue({ type: 'layout', cause: 'layout' });
         image.onerror = () => {
           if (target.classList.contains('gone')) return;
-          target.classList.add('gone'); target.setAttribute('role', 'img'); target.setAttribute('aria-label', 'Image unavailable'); target.disabled = true;
-          image.hidden = true; target.append(node('span', 'Image unavailable')); enqueue({ type: 'layout', cause: 'layout' });
+          target.classList.add('gone'); target.setAttribute('role', 'img'); target.setAttribute('aria-label', 'Image unavailable'); target.title = 'Image unavailable'; target.disabled = true;
+          target.append(node('span', 'Image unavailable'));
         };
         image.setAttribute('src', src);
       }
@@ -617,6 +635,7 @@ function toggleAt(line: HTMLElement, change: () => void) {
   const before = line.getBoundingClientRect().top;
   const rowBefore = row.getBoundingClientRect().top;
   change();
+  flushExtents();
   const measurement = measure();
   const found = measurement.lookup(item);
   if (found.kind !== 'mounted') return;
@@ -628,7 +647,7 @@ function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLEl
   view.classList.toggle(className, folds.get(key) === true);
   line.setAttribute('role', 'button'); line.tabIndex = -1;
   line.setAttribute('aria-expanded', String(folds.get(key) === true));
-  const toggle = () => { if (view.classList.contains('no-detail')) return; const open = !view.classList.contains(className); folds.set(key, open); view.classList.toggle(className, open); line.setAttribute('aria-expanded', String(open)); if (open) show?.(); changed?.(); const row = Array.from(messageRows()).find(row => row.contains(view)); rhythm(row ? [row] : []); };
+  const toggle = () => { if (view.classList.contains('no-detail')) return; const open = !view.classList.contains(className); folds.set(key, open); view.classList.toggle(className, open); line.setAttribute('aria-expanded', String(open)); if (open) show?.(); changed?.(); const row = Array.from(messageRows()).find(row => row.contains(view)); rhythm(row ? [row] : []); dirtyExtent(view); };
   openers.set(key, { view, open: () => { if (!view.classList.contains(className)) toggle(); } });
   line.onclick = event => { if (!(event?.target instanceof Element && event.target.closest('a'))) toggleAt(line, toggle); };
   line.onkeydown = event => { if (!(event.target instanceof Element && event.target.closest('a')) && !event.metaKey && !event.ctrlKey && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggleAt(line, toggle); } };
@@ -758,6 +777,7 @@ function patchRun(marks: RunMarks, input: Step[], links = JSON.stringify(state.a
   for (const old of known.values()) { rescue(old.child, marks.summary); old.child.remove(); }
   marks.steps.forEach((record, index) => { if (marks.children.children[index] !== record.child) marks.children.insertBefore(record.child, marks.children.children[index] ?? null); });
   if (marks.steps.some(step => step.live)) liveMarks.set(marks.key, marks); else liveMarks.delete(marks.key);
+  dirtyExtent(marks.summary);
 }
 function bareRun(): Extract<WorkingPlace, { kind: 'bare' }> {
   const row = node('div', undefined, 'run working'), line = node('div', undefined, 'line'), sum = node('span', undefined, 'sum');
@@ -781,12 +801,13 @@ function run(input: Step[]) {
 }
 function removeRow(view: HTMLElement) {
   const before = view.previousElementSibling;
-  if (before instanceof HTMLElement) rhythmPending.add(before);
-  view.remove();
+  if (before instanceof HTMLElement) { rhythmPending.add(before); dirtyExtent(before); }
+  dirtyExtent(view.parentElement ?? view);
+  extentDirty.delete(view); view.remove();
 }
 function clearWorking() {
   if (working?.place.kind === 'bare') removeRow(working.place.row);
-  working?.primary.remove(); working?.extra.forEach(mark => mark.remove()); working = undefined;
+  if (working) { dirtyExtent(working.primary); working.primary.remove(); working.extra.forEach(mark => { dirtyExtent(mark); mark.remove(); }); working = undefined; }
 }
 function lastRun() { const source = trailingOwner(); return source ? openers.get(rowKey({ kind: 'run', source }))?.view : undefined; }
 function reconcileWorking() {
@@ -812,11 +833,11 @@ function reconcileWorking() {
     spots.push({ key: 'bare', parent: sum, before: null });
   }
   const place = (mark: HTMLElement, { parent, before }: Omit<Spot, 'key'>) => {
-    if (before !== mark && (mark.parentNode !== parent || mark.nextSibling !== before)) parent.insertBefore(mark, before);
+    if (before !== mark && (mark.parentNode !== parent || mark.nextSibling !== before)) { dirtyExtent(mark); parent.insertBefore(mark, before); dirtyExtent(parent); }
   };
   if (spots[0]) place(turn.primary, spots[0]);
   const extra = new Map(spots.slice(1).map(spot => [spot.key, spot]));
-  for (const [key, mark] of turn.extra) if (!extra.has(key)) { mark.remove(); turn.extra.delete(key); }
+  for (const [key, mark] of turn.extra) if (!extra.has(key)) { dirtyExtent(mark); mark.remove(); turn.extra.delete(key); }
   for (const [key, spot] of extra) { let mark = turn.extra.get(key); if (!mark) { mark = dots(); turn.extra.set(key, mark); } place(mark, spot); }
 }
 function reconcileRuns() {
@@ -842,7 +863,7 @@ function reconcileRuns() {
     if (owner?.type !== 'run') continue;
     const current = owner.view.firstElementChild;
     let marks = current instanceof HTMLElement ? runMarks.get(current) : undefined;
-    if (!marks) { const next = run(steps); owner.view.replaceChildren(next); marks = runMarks.get(next); }
+    if (!marks) { const next = run(steps); owner.view.replaceChildren(next); dirtyExtent(owner.view); marks = runMarks.get(next); }
     else {
       const records = marks.steps;
       if (marks.links !== links || marks.cwd !== displayPath(state.cwd) || records.length !== steps.length || steps.some((step, index) => {
@@ -855,7 +876,9 @@ function reconcileRuns() {
       const slot = views.get(step.item.seq)?.slots.get(step.key);
       if (slot?.type === 'run' && slot !== owner && slot.view.childNodes.length) {
         const first = slot.view.firstElementChild; if (first instanceof HTMLElement) liveMarks.delete(runMarks.get(first)?.key ?? '');
-        if (marks) rescue(slot.view, marks.summary); clear(slot.view);
+        dirtyExtent(slot.view);
+        if (marks) { rescue(slot.view, marks.summary); dirtyExtent(marks.summary); }
+        clear(slot.view);
       }
     }
   }
@@ -879,7 +902,7 @@ function noticeRow(input: NoticeRow | NoticeData, bodyOnly = false) {
   else { tx.append(...content.head()); details.append(...content.head()); }
   if (bodyOnly) { if (!more) clear(details); return details; }
   line.append(tx, node('time', timestamp(at)));
-  if (more) row.classList.add('more'); else { observed.set(tx, { type: 'fit', row, width: 0 }); layoutObserver.observe(tx); }
+  if (more) row.classList.add('more'); else { fits.set(tx, row); fitPending.add(tx); }
   fold(row, key, line, details);
   return row;
 }
@@ -958,12 +981,12 @@ function accept(item: WireItem) {
   const shown = visible(item.seq);
   if (shown && !previous) order.splice(orderIndex(item.seq), 0, item.seq);
   else if (!shown && previous) { const position = order.indexOf(item.seq); if (position >= 0) order.splice(position, 1); unmountRow(item.seq); }
-  extents.delete(item.seq);
+  if (!views.has(item.seq)) extents.delete(item.seq);
   const topology = (raw: WireItem | undefined, shown: WireItem | undefined) => runParts(raw, shown).map(part => part.kind === 'boundary' ? 'boundary' : part.kind + ':' + sourceKey(part.source)).join('|');
   const same = old && topology(old, previous) === topology(item, shown);
   const appended = !old && shown && table && order.at(-1) === item.seq;
   const affected = same ? item.seq : invalidateRuns(runContext(), item.seq);
-  for (let at = item.seq; at <= affected; at++) { segmentCache.delete(at); extents.delete(at); }
+  for (let at = item.seq; at <= affected; at++) { segmentCache.delete(at); if (!views.has(at)) extents.delete(at); }
   if (!same && !appended) table = undefined;
   else if (appended && table) appendRow(table, item.seq);
   else if (table) patched.add(item.seq);
@@ -1089,15 +1112,12 @@ function renderItem(item: WireItem) {
   syncChildren(view, children);
   views.set(item.seq, { view, item, warning, slots, filter, runs });
   if (!previous) {
-    observed.set(view, { type: 'row' }); layoutObserver.observe(view);
     const container = element('items'), next = [...views.keys()].filter(seq => seq > item.seq).sort((a, b) => a - b)[0];
     container.insertBefore(view, views.get(next)?.view ?? (working?.place.kind === 'bare' && working.place.row.parentNode === container ? working.place.row : null));
+    if (view.previousElementSibling) dirtyExtent(view.previousElementSibling);
   }
+  dirtyExtent(view);
   return true;
-}
-const ROW_BLOCKS = ':scope>:is(.msg,.nrow,.cmdrun),:scope>div>.run,:scope>.reply-section>:is(.msg,.nrow,.cmdrun),:scope>.reply-section>div>.run';
-function watchBlocks(row: HTMLElement) {
-  for (const block of [...row.matches('.user') ? [row] : [], ...row.querySelectorAll(ROW_BLOCKS)]) if (!observed.has(block)) { observed.set(block, { type: 'block' }); layoutObserver.observe(block); }
 }
 function orderIndex(seq: number) {
   let low = 0, high = order.length;
@@ -1141,25 +1161,32 @@ function appendRow(t: Table, seq: number) {
   t.starts.push(t.starts[t.starts.length - 1] + extentOf(t, seq));
 }
 const rowTop = (seq: number) => { const t = ensureTable(); return (t.starts[t.index.get(seq) ?? 0] ?? 0) + (t.divider?.before === seq ? t.divider.px : 0); };
-function measureExtents(targets: readonly Element[]) {
+function dirtyExtent(target: Element) {
   const list = element('items');
-  if (list.hidden || state.view.type === 'job') return;
-  const width = list.clientWidth, lh = lineHeight(), rows = new Set<HTMLElement>();
-  const visible = (row: Element | null, step: (row: Element) => Element | null) => { for (let at = row; at; at = step(at)) if (at instanceof HTMLElement && !at.hidden) return at; return null; };
-  const previous = (row: Element) => visible(row.previousElementSibling, at => at.previousElementSibling), next = (row: Element) => visible(row.nextElementSibling, at => at.nextElementSibling);
-  if (width !== measured.width || lh !== measured.lh) {
-    measured = { width, lh }; extents.clear(); dividerPx = undefined; table = undefined; windowDirty = true;
-    for (const row of list.children) if (row instanceof HTMLElement) rows.add(row);
-  } else for (const target of targets) {
-    let row: Node | null = target;
-    while (row && row.parentNode !== list) row = row.parentNode;
-    if (row instanceof HTMLElement && row.dataset.seq !== undefined) { rows.add(row); const before = previous(row); if (before instanceof HTMLElement) rows.add(before); }
-  }
+  let row: Element | null = target;
+  while (row && row.parentNode !== list) row = row.parentElement;
+  if (row instanceof HTMLElement && row.dataset.seq !== undefined) { extentDirty.add(row); schedule(); }
+}
+function invalidateExtents() {
+  readMetrics(); extents.clear(); dividerPx = undefined; table = undefined; windowDirty = true;
+  for (const entry of views.values()) dirtyExtent(entry.view);
+  for (const target of fits.keys()) fitPending.add(target);
+  for (const memo of texts.values()) { const tail = memo.reveal?.tail; if (tail) { tail.units = unitsOf(tail.view, tail.block.token); revealDirty = true; } }
+  schedule();
+}
+function flushExtents() {
+  const list = element('items');
+  if (list.hidden || state.view.type === 'job') return false;
+  const { width, lh } = measured, rows = [...extentDirty];
+  extentDirty.clear();
+  const next = (row: Element) => { for (let at = row.nextElementSibling; at; at = at.nextElementSibling) if (at instanceof HTMLElement && !at.hidden) return at; return null; };
+  let changed = false;
   for (const row of rows) {
-    if (row.hidden || row.dataset.seq === undefined) continue;
+    if (!row.isConnected || row.hidden || row.dataset.seq === undefined) continue;
     const seq = Number(row.dataset.seq), after = next(row), joined = after instanceof HTMLElement && after.dataset.seq !== undefined;
     const earlier = extents.get(seq), height = row.offsetHeight;
     const px = joined ? after.offsetTop - row.offsetTop : height + (parseFloat(getComputedStyle(row).marginBottom) || 0);
+    changed ||= earlier?.kind !== 'measured' || earlier.px !== px;
     if (earlier?.kind === 'measured' && earlier.px === px && earlier.width === width && earlier.lh === lh) continue;
     extents.set(seq, { kind: 'measured', width, lh, px });
     if (table) patched.add(seq);
@@ -1167,14 +1194,16 @@ function measureExtents(targets: readonly Element[]) {
   }
   const after = divider && next(divider), gapPx = after instanceof HTMLElement && after.dataset.seq !== undefined && divider ? after.offsetTop - divider.offsetTop : undefined;
   if (gapPx !== undefined && gapPx !== dividerPx) {
-    dividerPx = gapPx; windowDirty = true;
+    dividerPx = gapPx; windowDirty = true; changed = true;
     if (table?.divider) { table.divider.px = gapPx; patched.add(table.divider.before); }
   }
+  if (table && patched.size) refreshTable(table);
+  return changed;
 }
 function liveRange(t: Table) {
   let from = order.length && (state.working && state.view.type !== 'job' || state.bash.length) ? order[order.length - 1] : Infinity;
   for (const seq of live) from = Math.min(from, seq);
-  for (const [target, seq] of animating) if (element('items').contains(target)) from = Math.min(from, seq); else animating.delete(target);
+  for (const [target, { seq }] of animating) if (element('items').contains(target)) from = Math.min(from, seq); else animating.delete(target);
   const at = t.index.get(from), group = groupAt(t.groups, from);
   return at === undefined ? undefined : { lo: group ? t.index.get(group.from) ?? at : at, hi: order.length - 1 };
 }
@@ -1233,11 +1262,11 @@ function layoutWindow(t: Table) {
   const first = ranges[0], last = ranges.at(-1);
   list.style.paddingTop = (first ? t.starts[first.lo] : 0) + 'px';
   list.style.paddingBottom = (last ? t.starts[order.length] - t.starts[last.hi + 1] : 0) + 'px';
-  gaps.splice(Math.max(0, ranges.length - 1)).forEach(extra => extra.remove());
+  gaps.splice(Math.max(0, ranges.length - 1)).forEach(extra => { if (extra.previousElementSibling) dirtyExtent(extra.previousElementSibling); extra.remove(); });
   ranges.slice(1).forEach((range, index) => {
     const next = views.get(order[range.lo])?.view, between = gaps[index] ??= node('div', undefined, 'gap');
     between.style.height = t.starts[range.lo] - t.starts[ranges[index].hi + 1] + 'px';
-    if (next && between.nextSibling !== next) list.insertBefore(between, next);
+    if (next && between.nextSibling !== next) { if (between.previousElementSibling) dirtyExtent(between.previousElementSibling); list.insertBefore(between, next); if (between.previousElementSibling) dirtyExtent(between.previousElementSibling); }
   });
   mountedSpans = ranges.map(range => ({ start: t.starts[range.lo], end: t.starts[range.hi + 1] }));
 }
@@ -1271,7 +1300,7 @@ function rhythm(changed: Iterable<Element> = []) {
     blocks.forEach((view, index) => {
       if (view.matches('.gap,.newmsgs')) return;
       const next = blocks[index + 1] ?? after, spacing = view.matches(lines) && next?.matches(lines) ? 'compact' : 'block';
-      if (view.dataset.rhythm !== spacing) view.dataset.rhythm = spacing;
+      if (view.dataset.rhythm !== spacing) { view.dataset.rhythm = spacing; dirtyExtent(view); }
     });
   }
 }
@@ -1280,7 +1309,7 @@ function renderDirty(geo: Geo = geometry()) {
   if (resetting) {
     resetting = false;
     const list = element('items');
-    for (const target of [...observed.keys()]) if (list.contains(target)) { observed.delete(target); layoutObserver.unobserve(target); }
+    extentDirty.clear();
     if (working && working.view === state.view.id && working.since === state.since && state.working) {
       if (working.place.kind === 'run') {
         const row = working.place.owner, line = row.firstElementChild, sum = runMarks.get(row)?.summary;
@@ -1288,7 +1317,7 @@ function renderDirty(geo: Geo = geometry()) {
       }
       working.extra.forEach(mark => mark.remove()); working.extra.clear();
     } else clearWorking();
-    views.clear(); texts.clear(); openers.clear(); fenceOpeners.clear(); liveMarks.clear(); revealing.clear(); growing.length = 0; measuredHolds.clear(); fits.clear(); animating.clear(); openFences.clear();
+    views.clear(); texts.clear(); openers.clear(); fenceOpeners.clear(); liveMarks.clear(); revealing.clear(); revealPreparation.clear(); growing.length = 0; measuredHolds.clear(); fits.clear(); fitPending.clear(); animating.clear(); openFences.clear();
     list.replaceChildren(); divider = undefined; gaps.length = 0; mountedSpans = []; table = undefined; windowDirty = true;
   }
   for (const key of stale) { const memo = texts.get(key); if (memo) revealing.delete(memo); texts.delete(key); }
@@ -1302,7 +1331,6 @@ function renderDirty(geo: Geo = geometry()) {
   if (reset) { refreshBash(); refreshComposer(); }
   reconcileWorking(); rhythm(new Set([...seqs, ...rendered].flatMap(seq => { const view = views.get(seq)?.view; return view ? [view] : []; })));
   for (const seq of new Set([...seqs, ...seqs.map(seq => seq + 1), ...touched])) changedItem(seq, false);
-  for (const seq of rendered) { const row = views.get(seq)?.view; if (row) watchBlocks(row); }
   const older = element('older');
   if (older.hidden === transcriptHistory.more) older.hidden = !transcriptHistory.more;
   return reset;
@@ -1338,6 +1366,7 @@ function commandRun(value: Extract<WireItem, { kind: 'bash' }> | Bash, key: stri
     setText(pre, result?.output.text ?? ('output' in value ? value.output.text : '')); pre.classList.toggle('live', running);
     footer.hidden = !(result?.truncated || result?.output.cut);
     setText(footer, result?.fullOutputPath ? '… full output: ' + result.fullOutputPath : '… output truncated');
+    dirtyExtent(view);
   };
   update(value);
   return { view, update };
@@ -1628,7 +1657,7 @@ function apply(record: PageRecord) {
     if (state.sessionId !== record.sessionId || state.life.type !== record.life.type) editor.resetCompletion();
     if (state.sessionId && state.sessionId !== record.sessionId) { closeSessions(); closePicker(); editorId = undefined; }
     const agentsChanged = JSON.stringify(state.agents) !== JSON.stringify(record.agents);
-    const wasEditing = !!state.edit, viewChanged = state.view.id !== record.view.id;
+    const wasEditing = !!state.edit, viewChanged = state.view.id !== record.view.id, transcriptWasVisible = transcriptVisible();
     if (viewChanged) leaveView(record.view.id);
     if (viewChanged || state.sessionId !== record.sessionId) { pathWarnings.clear(); pathWarningEpoch++; }
     const loaded = state.view.id === '' && epoch !== '';
@@ -1646,6 +1675,7 @@ function apply(record: PageRecord) {
     if (workingChanged && previousFilter === shownFilter && shownFilter && priorInput?.kind === 'user') accept({ ...priorInput });
     windowDirty = true; schedule(); if (agentsChanged || viewChanged) { for (const seq of views.keys()) dirty.add(seq); } document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
     showJobView();
+    if (!transcriptWasVisible && transcriptVisible()) invalidateExtents();
     if (viewChanged) rescopeImages();
     renderBar(); refreshBash(); reconcileWorking(); refreshComposer(); dialogs(); queue(); exited();
     if (state.life.type === 'ready' && state.editor && editorId !== state.editor.id) {
@@ -1672,7 +1702,7 @@ function rescopeImages() {
   for (const thumb of element('items').querySelectorAll<HTMLButtonElement>('[data-base]')) {
     const image = thumb.firstElementChild, src = scoped(thumb.getAttribute('data-base') ?? '', state.sessionId);
     if (!(image instanceof HTMLImageElement) || image.getAttribute('src') === src) continue;
-    thumb.classList.remove('gone'); thumb.removeAttribute('role'); thumb.disabled = false;
+    thumb.classList.remove('gone'); thumb.removeAttribute('role'); thumb.removeAttribute('title'); thumb.disabled = false;
     while (thumb.children.length > 2) thumb.lastElementChild?.remove();
     image.hidden = false; image.setAttribute('src', src);
   }
@@ -2227,19 +2257,7 @@ element('latest').onmousedown = event => event.preventDefault();
 element('latest').onclick = () => decide({ type: 'latest' });
 const layoutObserver = new ResizeObserver(entries => probe ? probe.within('ResizeObserver', () => resized(entries)) : resized(entries));
 function resized(entries: ResizeObserverEntry[]) {
-  const tails = new Set<TextMemo>(), items = element('items');
-  measureExtents(entries.map(entry => entry.target));
-  if (windowDirty) schedule();
-  for (const { target } of entries) {
-    const watch = observed.get(target);
-    if (!watch) continue;
-    if (!items.contains(target)) { observed.delete(target); layoutObserver.unobserve(target); continue; }
-    if (watch.type === 'reveal' && watch.memo.reveal?.tail?.view.contains(target)) tails.add(watch.memo);
-    else if (watch.type === 'hold' && target instanceof HTMLElement) { measuredHolds.set(target, target.scrollHeight + target.offsetHeight - target.clientHeight); observed.delete(target); layoutObserver.unobserve(target); }
-    else if (watch.type === 'fit' && target.clientWidth && target.clientWidth !== watch.width) { watch.width = target.clientWidth; fits.set(watch.row, target.scrollWidth > target.clientWidth); }
-  }
-  for (const memo of tails) { const tail = memo.reveal?.tail; if (tail) tail.units = unitsOf(tail.view, tail.block.token); }
-  if (tails.size || measuredHolds.size || fits.size) { revealDirty ||= tails.size > 0; schedule(); }
+  if (fontsReady && transcriptVisible() && (element('items').clientWidth !== measured.width || lineHeight() !== measured.lh)) invalidateExtents();
   const column = entries.some(({ target }) => target === element('scroll')) && !bar.hidden ? element('transcript').getBoundingClientRect() : undefined;
   for (const { target, borderBoxSize } of entries) {
     if (target === element('dock')) { dockResized(borderBoxSize[0].blockSize); positionPicker(); }
@@ -2252,4 +2270,19 @@ layoutObserver.observe(topics.measure);
 for (const id of ['scroll', 'items', 'jobv', 'dock']) layoutObserver.observe(element(id));
 setInterval(() => { job.tick(); if (state.view.type === 'job') return; for (const item of state.bash) pendingBash.get(item.id)?.update(item); }, 1000);
 window.addEventListener('resize', positionPicker);
+let fontGeneration = 0;
+let fontKey = '';
+function readyFonts() {
+  const style = getComputedStyle(element('items'));
+  const key = [style.fontFamily, style.fontSize, ...['--ko-font-family', '--ko-font-size', '--prose'].map(name => style.getPropertyValue(name))].join(':');
+  if (key === fontKey) return;
+  const generation = ++fontGeneration;
+  fontKey = key; fontsReady = false; cancelPending();
+  void document.fonts.ready.then(() => {
+    if (generation !== fontGeneration) return;
+    fontsReady = true; invalidateExtents(); schedule();
+  });
+}
+window.addEventListener('ko-theme', readyFonts);
+readyFonts();
 refreshComposer(); focusComposer(); void connect();

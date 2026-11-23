@@ -16,7 +16,7 @@ export function createTopics(deps: {
   state(): State; items: ReadonlyMap<number, WireItem>;
   element(id: string): HTMLElement;
   node<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string): HTMLElementTagNameMap[K];
-  timestamp(at: number): string; refreshComposer(): void; focus(): void;
+  timestamp(at: number): string; refreshComposer(): void; focus(): void; layout(element: HTMLElement): void;
   filterChanged(name: TopicName | undefined): void; correct(correction: Correction): Promise<void>;
 }, memory?: TopicsMemory) {
   const { element, node, timestamp, refreshComposer, items } = deps;
@@ -85,7 +85,8 @@ export function createTopics(deps: {
     const name = commit ? parseTopicName(naming.input.value) : undefined;
     if (commit && !name) { naming.input.focus(); return; }
     interaction.naming = undefined;
-    naming.chip.replaceWith(newTopicChip(naming.target));
+    const replacement = newTopicChip(naming.target);
+    naming.chip.replaceWith(replacement); deps.layout(replacement);
     if (naming.scope !== filterKey()) return;
     if (naming.target.kind === 'composer') { if (commit) setComposerTopic(name); deps.focus(); }
     else if (name) void deps.correct({ kind: 'message', sessionId: naming.sessionId, seq: naming.target.seq, topic: name }).catch(() => {});
@@ -97,6 +98,7 @@ export function createTopics(deps: {
     const colour = () => {
       chip.style.setProperty('--topic-color', topicColour(parseTopicName(input.value)));
       input.style.width = Math.max(6, input.value.length || input.placeholder.length) + 'ch';
+      deps.layout(chip);
     };
     input.oninput = colour; colour();
     input.onkeydown = event => {
@@ -106,7 +108,7 @@ export function createTopics(deps: {
       else if (event.key === 'Escape') { event.preventDefault(); finishTopicNaming(false); }
     };
     const cancel = node('button', '×', 'topic-clear'); cancel.type = 'button'; cancel.setAttribute('aria-label', 'Cancel topic name'); cancel.onclick = () => finishTopicNaming(false);
-    chip.append(node('span', '#', 'topic-hash'), input, cancel); plus.replaceWith(chip);
+    chip.append(node('span', '#', 'topic-hash'), input, cancel); plus.replaceWith(chip); deps.layout(chip);
     interaction.naming = { kind: 'naming', target, scope: filterKey(), sessionId: current.state.sessionId, chip, input }; input.focus();
   }
   function topicChip(name: TopicName, clear = false) {

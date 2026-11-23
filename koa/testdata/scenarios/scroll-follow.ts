@@ -20,6 +20,8 @@ const older = expect({ on: { method: "GET", path: "/items" }, reply: { status: 2
 const quoteOpen: PageRecord[] = open.map(record => record.type === 'reset' ? { ...record, items: [{ kind: 'assistant', seq: 0, revision: 0, at: stamp, final: true, blocks: [{ type: 'text', text: 'Keep the composer in this pane.\n\nA second quote follows the text that you type.' }], stop: 'stop', error: '' }] } : record);
 
 export const scenarios: Scenarios = {
+  ReaderImageRemount: () => ({ open, steps: [], files: {} }),
+  ExplicitRowExtents: () => ({ open, steps: [], files: {} }),
   ReloadKeepsView: () => ({ open: [...open].reverse(), steps: [], files: {} }),
   testKoaWebviewPlaceInset: () => {
     const name = parseTopicName('inset');

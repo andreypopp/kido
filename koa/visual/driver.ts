@@ -212,7 +212,7 @@ async function takeKoaSnapshot(name: string, appearance: string, scenario: Scena
   else await context.pageSnapshot(capture, "testKoaWebviewMockupStates()");
 }
 async function scrollPage(module: string, key: string, condition = ""): Promise<Page> {
-  const initial = paneFocus + "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[1700000012000]))}static now(){return 1700000012000}};window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};";
+  const initial = paneFocus + "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[1700000012000]))}static now(){return 1700000012000}};" + (key === 'ExplicitRowExtents' ? '' : 'window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;') + "const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};";
   const web = await context.start(browser, module, key, replayRoot(), { width: 680, height: 557 }, [initial, hideLatest]);
   await webviewUntil(web, `window.composer&&${condition}${koaIdle}&&document.querySelector('#items').childElementCount>0`);
   return web;
@@ -887,6 +887,93 @@ async function testKoaWebviewScrollbarJumpMountsHistory() {
         requireLess(result.rows, 60, JSON.stringify(result))
         equal(result.usable, true, JSON.stringify(result))
         requireLess(result.top, result.start - 20 * result.viewport, JSON.stringify(result))
+    }
+async function testKoaWebviewExplicitRowExtents() {
+        const web = await scrollPage("scroll-follow", "ExplicitRowExtents")
+        await web.emulateMedia({ reducedMotion: 'reduce' })
+        await webviewJS(web, "(async()=>{" + followHelpers + `
+          window.extentReads=[];window.observedRows=[];
+          const observe=ResizeObserver.prototype.observe;ResizeObserver.prototype.observe=function(target,...args){if(target.matches('[data-seq]')||target.closest('#items>[data-seq]'))observedRows.push(target.outerHTML.slice(0,120));return observe.call(this,target,...args)};
+          const height=Object.getOwnPropertyDescriptor(HTMLElement.prototype,'offsetHeight');
+          Object.defineProperty(HTMLElement.prototype,'offsetHeight',{configurable:true,get(){if(this.parentElement?.id==='items'&&this.dataset.seq!==undefined)extentReads.push(Number(this.dataset.seq));return height.get.call(this)}});
+          window.extentRows=Array.from({length:80},(_,seq)=>({kind:'assistant',seq,revision:0,at:1700000000000,final:seq!==77,blocks:[{type:'text',text:'Row '+seq+' '+Array(seq===79?12:1).fill('A stable reader paragraph. '.repeat(12)).join('\\n\\n')}],stop:'stop',error:''}));
+          push(view(root,[root]));push({type:'reset',epoch:'extents',more:false,items:extentRows});
+          window.extentFrames=async()=>{for(let i=0;i<6;i++)await new Promise(requestAnimationFrame)};
+          await extentFrames();document.querySelector('#latest').click();
+          await until(()=>document.querySelector('#items>[data-seq="79"]')&&gap()<=1,5000);
+          if(!document.querySelector('#items>[data-seq="79"]'))throw Error('Tail not mounted '+JSON.stringify({top:s.scrollTop,height:s.scrollHeight,rows:[...document.querySelectorAll('#items>[data-seq]')].map(row=>row.dataset.seq)}));
+          await extentFrames();moveTo(s.scrollTop-120);await extentFrames();window.extentReads=[];
+          await extentFrames();window.idleExtentReads=extentReads.slice();
+          moveTo(s.scrollTop-12);await extentFrames();window.scrollExtentReads=extentReads.slice();
+          window.extentAnchor=document.querySelector('#items>[data-seq="78"]');window.extentOffset=()=>extentAnchor.getBoundingClientRect().top-s.getBoundingClientRect().top;
+          moveTo(s.scrollTop+extentOffset());await extentFrames();moveTo(s.scrollTop+2);await extentFrames();
+          const viewportTop=s.getBoundingClientRect().top,previous=document.querySelector('#items>[data-seq="77"]').getBoundingClientRect(),reader=extentAnchor.getBoundingClientRect();
+          if(previous.bottom>viewportTop-1||reader.top>viewportTop||reader.bottom<=viewportTop)throw Error('Reader setup bounds '+JSON.stringify({previousBottom:previous.bottom,top:viewportTop,readerTop:reader.top,readerBottom:reader.bottom}));
+          window.extentBefore=extentOffset();window.extentReads=[];
+          push({type:'item',item:{...extentRows[77],revision:1,final:true,blocks:[{type:'text',text:extentRows[77].blocks[0].text+'\\n\\nAn added paragraph above the reader.'}]}});
+          window.mutationFrame=await new Promise(resolve=>requestAnimationFrame(()=>resolve(extentOffset())));
+          await until(()=>document.querySelector('#items>[data-seq="77"]')?.textContent.includes('An added paragraph'),3000);if(!document.querySelector('#items>[data-seq="77"]')?.textContent.includes('An added paragraph'))throw Error('Revision missing '+JSON.stringify({rows:[...document.querySelectorAll('#items>[data-seq]')].map(row=>[row.dataset.seq,row.textContent.slice(0,100)])}));await extentFrames();
+          window.extentAfter=extentOffset();return true;
+        })()`)
+        const result = await webviewJS<{ idle:number[]; scroll:number[]; observed:string[]; revision:number[]; before:number; after:number; frame:number }>(web, "({idle:idleExtentReads,scroll:scrollExtentReads,observed:observedRows,revision:extentReads,before:extentBefore,after:extentAfter,frame:mutationFrame})")
+        console.log('ExplicitRowExtents', JSON.stringify(result))
+        near(result.frame, result.before, 1, 'Mutation frame keeps reader anchor before ResizeObserver delivery')
+        near(result.after, result.before, 1, 'Revision above reader keeps anchor')
+        equal(result.observed.length, 0, 'Rows and their contents have no resize observation')
+        equal(result.idle.length, 0, 'Idle does not measure complete rows')
+        equal(result.scroll.length, 0, 'Plain scrolling does not measure complete rows')
+        equal(result.revision.includes(77), true, 'Revision measures its owner')
+        await webviewJS(web, '(()=>{window.extentReads=[];return true})()')
+        await web.setViewportSize({ width: 590, height: 557 })
+        await webviewUntil(web, 'extentReads.length>0')
+        const width = await webviewJS<boolean>(web, '[...document.querySelectorAll("#items>[data-seq]")].every(row=>extentReads.includes(Number(row.dataset.seq)))')
+        equal(width, true, 'Width change measures mounted rows')
+        const jobFrames = await webviewJS<number>(web, '(async()=>{' + followHelpers + `
+          window.jobFrames=0;const request=window.requestAnimationFrame.bind(window);window.requestAnimationFrame=callback=>{if(callback.name==='tick')jobFrames++;return request(callback)};
+          const id='extent-job',snapshot={name:'idle',command:'true',service:false,startedAt:1700000000000,place:{type:'mac'},log:'/tmp/idle.log',state:{type:'ended',end:{type:'exit',code:0},at:1700000000001}};
+          push({...view(root,[root]),view:{id,path:[root,{id,name:'idle',type:'job'}],type:'job',job:snapshot,record:'jobs/'+id}});
+          await extentFrames();const requested=jobFrames;await extentFrames();if(requested===0)throw Error('Frame counter did not see the job transition');return jobFrames-requested;
+        })()`)
+        equal(jobFrames, 0, 'Idle job view stops requesting frames')
+    }
+async function testKoaWebviewReaderImageRemount() {
+        const web = await scrollPage("scroll-follow", "ReaderImageRemount")
+        let release = () => {}
+        const gate = new Promise<void>(resolve => { release = resolve })
+        await web.route('**/images/reserved-*', async route => {
+            await gate
+            const dimensions = requireValue(route.request().url().match(/reserved-(\d+)-(\d+)/))
+            await route.fulfill({ contentType: 'image/svg+xml', body: `<svg xmlns="http://www.w3.org/2000/svg" width="${dimensions[1]}" height="${dimensions[2]}"><rect width="100%" height="100%" fill="red"/></svg>` })
+        })
+        try {
+            await webviewJS(web, "(async()=>{" + followHelpers + `
+              const reservationItems=[{kind:'user',seq:0,revision:0,at:1700000000000,final:true,text:'Image row',attachments:[],images:[...[[1200,500],[100,400],[32,24],[800,800]].map(([width,height])=>({id:'reserved-'+width+'-'+height,revision:0,bytes:1,mimeType:'image/svg+xml',width,height})),{id:'reserved-60-40-unknown',revision:0,bytes:1,mimeType:'image/svg+xml'}]},{kind:'assistant',seq:1,revision:0,at:1700000000000,final:true,blocks:[{type:'text',text:'Reader anchor'}],stop:'stop',error:''}];
+              push(view(root,[root]));push({type:'reset',epoch:'reservation',more:false,items:reservationItems});
+              await until(()=>document.querySelectorAll('.thumb img').length===5);
+              window.reservedRow=document.querySelector('#items>[data-seq="0"]');
+              window.readerAnchor=document.querySelector('#items>[data-seq="1"]');
+              window.reservation=()=>({height:reservedRow.getBoundingClientRect().height,anchor:readerAnchor.getBoundingClientRect().top});
+              window.boxes=()=>[...reservedRow.querySelectorAll('img')].map(image=>{const r=image.getBoundingClientRect();return [r.width,r.height]});
+              window.reservedBoxes=[];
+              for(const large of [false,true]){reservedRow.querySelector('.thumbs').classList.toggle('large',large);reservedBoxes.push(boxes())}
+              reservedRow.querySelector('.thumbs').classList.remove('large');
+              const unknown=reservedRow.querySelector('.thumb:last-child').getBoundingClientRect();if(unknown.width!==120||unknown.height!==80)throw Error('Unknown reservation '+unknown.width+'x'+unknown.height);
+              const original=reservation(),image=reservedRow.querySelector('img');image.dispatchEvent(new Event('error'));const failed=reservation();if(failed.height!==original.height)throw Error('Failure changed row height');if(image.closest('.thumb').title!=='Image unavailable'||image.closest('.thumb').getAttribute('role')!=='img')throw Error('Failure semantics missing');
+              push({type:'reset',epoch:'retry',more:false,items:reservationItems.map(item=>item.kind==='user'?{...item,revision:1,images:item.images.map(image=>({...image,revision:1}))}:item)});
+              await until(()=>document.querySelector('.thumb img')?.getAttribute('src').includes('r=1'));window.reservedRow=document.querySelector('#items>[data-seq="0"]');window.readerAnchor=document.querySelector('#items>[data-seq="1"]');if(reservation().height!==original.height)throw Error('Retry changed row height');
+              window.beforeRemount=reservation();const replacement=reservedRow.cloneNode(true);reservedRow.replaceWith(replacement);window.reservedRow=replacement;window.afterRemount=reservation();return true;
+            })()`)
+            release()
+            await webviewJS(web, "Promise.all([...reservedRow.querySelectorAll('img')].map(image=>image.decode())).then(()=>true)")
+            const result = await webviewJS<{ before: {height:number;anchor:number}; remount: {height:number;anchor:number}; decoded: {height:number;anchor:number}; reserved: number[][][]; loaded: number[][][] }>(web, "(()=>{const unknown=reservedRow.querySelector('.thumb:last-child').getBoundingClientRect();if(unknown.width!==120||unknown.height!==80)throw Error('Loaded unknown size changed');const decoded=reservation(),loaded=[];for(const large of [false,true]){reservedRow.querySelector('.thumbs').classList.toggle('large',large);loaded.push(boxes())}return {before:beforeRemount,remount:afterRemount,decoded,reserved:reservedBoxes,loaded}})()")
+            near(result.remount.height, result.before.height, 0.5, 'Remount keeps row height')
+            near(result.remount.anchor, result.before.anchor, 0.5, 'Remount keeps reader anchor')
+            near(result.decoded.height, result.before.height, 0.5, 'Decode keeps row height')
+            near(result.decoded.anchor, result.before.anchor, 0.5, 'Decode keeps reader anchor')
+            for (let limit = 0; limit < 2; limit++) for (let shape = 0; shape < 4; shape++) for (let axis = 0; axis < 2; axis++) {
+                near(result.loaded[limit][shape][axis], result.reserved[limit][shape][axis], 0.5, `Reserved image box ${limit}/${shape}/${axis}`)
+            }
+        } finally { release() }
     }
 async function testKoaWebviewRhythm() {
         const web = await scrollPage( "rhythm", "testKoaWebviewRhythm")
@@ -1840,6 +1927,8 @@ const entries: Record<string, () => Promise<void>> = {
   "Dots": testKoaWebviewDots,
   "RunStepsTransitions": testKoaWebviewRunStepsTransitions,
   "ScrollbarJumpMountsHistory": testKoaWebviewScrollbarJumpMountsHistory,
+  "ReaderImageRemount": testKoaWebviewReaderImageRemount,
+  "ExplicitRowExtents": testKoaWebviewExplicitRowExtents,
   "BangCompletion": () => koaWebview("BangCompletion", 960, 397, "bang", true, ["bang-tab"]),
   "Bang": () => koaWebview("Bang", 960, 217, "bang", true, ["bang"]),
   "ComposerFootResponsive": () => koaWebview("testKoaWebviewComposerFootResponsive", 656, 297, "composer", false, ["foot-responsive"]),

@@ -483,10 +483,10 @@ stream. `koa/page/reveal.ts` and the reveal settings in
 `koa/page/page.ts` define the units and limits.
 
 Record application schedules a frame rather than rebuilding DOM for
-every token. The frame reads needed geometry before its writes and
-renders each changed item once. ResizeObserver supplies measurements
-for later work. Hidden pages use a timer because WebKit pauses their
-animation frames. A visibility change transfers pending work between
+every token. The frame reads the geometry for its scroll decision
+before its writes, measures after them only the rows that it marked, and renders each
+changed item once. Hidden pages use a timer because WebKit pauses
+their animation frames. A visibility change transfers pending work between
 these mechanisms; pagehide cancels it.
 
 The working mark belongs to the turn, not a Markdown block. It moves
@@ -505,6 +505,31 @@ Runs that span items mount as a unit. A position table retains measured
 extents after rows unmount and estimates unseen extents. A width or
 line-height change invalidates measurements. Padding and gap boxes
 stand for absent rows. Mount work is time-bounded per frame.
+
+A row is sized once. Its height is known when it is inserted, and
+koa measures it then, because only layout knows the height of
+wrapped text. Nothing inside a row changes its height by itself, so
+no observer remeasures rows: an unexpected change would move the
+reader's anchor, and no later correction could hide that frame. Every
+element whose box could change on its own has its size before
+insertion. An image thumbnail reserves its scaled box from the
+width and height that koa reads from the image's header when it
+publishes the item (`imageInfo` in `koa/koa-image.ts`); an image
+without them gets a fixed box, and a failed load keeps the box
+(`app/design/koa/NOTES.md`, images). The page has no remote fonts,
+embeds or asynchronous highlighting. The first rows mount after
+`document.fonts.ready`.
+
+The only later height changes are koa's own: a revised or streaming
+item, a reveal step and its grow animation, a fold, a fence
+expansion, rhythm and working-mark moves, a topic chip edit, a
+change of the transcript's width or line height, and a change of the
+page's font settings. The code that makes such a change marks its row
+(`dirtyExtent` in `koa/page/page.ts`); the frame measures the marked
+rows once and corrects the reader in the same frame, before it
+paints. A grow animation is measured on each frame only for its own
+rows, until it ends. Scrolling reads row positions to find the
+reader's anchor but never measures an extent.
 
 `koa/page/scroll.ts` is the one scroll owner for transcripts and job
 logs. It is a pure state machine. DOM code supplies events and
@@ -693,7 +718,8 @@ Aborted or idle uploads release their files and quota. Used files
 cannot be deleted or moved back to queued by a late acknowledgement.
 Take-back restores queued files. Live sends keep typed text and chips
 separate; a rebuild without that send record shows pi's saved path
-lines and thumbnails.
+lines and thumbnails. A thumbnail reserves its box before its image
+loads ("Windowing, scrolling, find and copy").
 
 `koa/koa-http.ts` serves only checked regular files within its size
 bound, with nosniff, a restrictive file CSP and a disposition name.
