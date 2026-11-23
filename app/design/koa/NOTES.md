@@ -647,9 +647,25 @@ other skills are the user's. Renders: `/tmp/koa-shots/complete-<state>-<theme>-<
   path lines of its file attachments in the terminal font at .92em
   in the muted tone, one per line. The time stays at the right of
   the first line.
-- An image that is gone (404, 410): a dashed `--hair2` box, 120×80pt,
-  radius 6pt, "Image unavailable" in the faint prose at .8em; not a
-  button.
+- A thumbnail's box is reserved before the image loads (user,
+  2026-11-23: a transcript row is sized once; nothing in it changes
+  its height after insertion): from the feed's pixel width and
+  height, scaled to the row's maximum (160pt in a user message, 240pt
+  in a step; the width at most the row's), so the loaded image is
+  pixel-identical to its box. Unknown dimensions (no width and
+  height in the feed: a malformed header, an APNG or another format
+  koa's parser does not read): a fixed 120×80pt box, the `--well`
+  fill, the `--hair` border and 6pt radius as any thumbnail, the
+  image drawn inside with `object-fit: contain`, centred; it is a
+  button like any thumbnail, and the preview shows the whole image.
+- An image that is gone (404, 410, a load failure): the box keeps
+  its reserved size (the image's scaled size, or the 120×80pt of
+  unknown dimensions); the border becomes dashed `--hair2`, the
+  fill the `--well`, the radius 6pt; "Image unavailable" in the
+  faint prose at .8em, centred, on one line, hidden with
+  `overflow: hidden` when the box is too small for it (under about
+  110pt wide or 24pt tall; the box's `title` carries the text, so
+  it stays readable); not a button, the default cursor.
 
 **Attachments.** A chip row above the field, inside the dock,
 6pt gaps, wrapping. A chip is 28pt tall, radius 7pt, a `--hair2`
