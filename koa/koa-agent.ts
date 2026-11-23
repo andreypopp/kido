@@ -1665,7 +1665,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   let settled = true;
   let turnEndedByControl = false;
   let workGeneration = 0;
-  const queuedInput: { type: "user" | typeof MESSAGE_CUSTOM_TYPE | typeof STEER_CUSTOM_TYPE; text: string }[] = [];
+  const queuedInput: { type: "user" | typeof MESSAGE_CUSTOM_TYPE | typeof STEER_CUSTOM_TYPE; text: string; work: boolean }[] = [];
 
   type Ending =
     | { kind: "awaiting-first-turn" }
@@ -1715,7 +1715,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   const deliverAgentMessage = (agent: AgentRef, relation: Relation, text: string, work: boolean, runtime?: string, returnTo?: { session: string; pane: string }): void => {
     const from = agent.name, header = senderHeader(from, relation, runtime, returnTo);
-    if (work) queuedInput.push({ type: MESSAGE_CUSTOM_TYPE, text });
+    queuedInput.push({ type: MESSAGE_CUSTOM_TYPE, text, work });
     pi.sendMessage(
       { customType: MESSAGE_CUSTOM_TYPE, content: `${header}\n${text}`, display: true, details: { ...relationshipTopic(agent), from, work, agent, body: text, inbound: { form: 'message', relation, ...(runtime ? { runtime } : {}) } } satisfies MessageDetails },
       { deliverAs: "followUp", triggerTurn: true },
@@ -1728,6 +1728,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   const deliverMessage = (held: Held): void => {
     if (!held.text) return;
     if (!held.relation) {
+      queuedInput.push({ type: "user", text: held.text, work: true });
       deliver(held.text);
       return;
     }
@@ -1747,7 +1748,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     switch (m.kind) {
       case "user":
         if (m.text) {
-          queuedInput.push({ type: "user", text: m.text });
+          queuedInput.push({ type: "user", text: m.text, work: true });
           deliver(m.text);
         }
         return;
@@ -1757,7 +1758,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       case "steer": {
         if (!m.text) return;
         const from = m.agent.name;
-        if (m.relation === "parent") queuedInput.push({ type: STEER_CUSTOM_TYPE, text: m.text });
+        queuedInput.push({ type: STEER_CUSTOM_TYPE, text: m.text, work: m.relation === "parent" });
         workStarted();
         // pi drains followUp only once the agent has decided to stop; steer joins the run under way.
         pi.sendMessage(
@@ -2110,20 +2111,20 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   };
 
   pi.on("input", (event) => {
-    if (event.source !== "extension" && event.streamingBehavior) queuedInput.push({ type: "user", text: event.text });
+    if (event.source !== "extension" && event.streamingBehavior) queuedInput.push({ type: "user", text: event.text, work: true });
   });
 
   pi.on("message_start", (event) => {
     const m = event?.message;
     if (!ownSessionId) return;
     const details = isRecord(m) && isRecord(m.details) ? m.details : undefined;
-    if (m?.role === "user" || details?.work === true) {
+    if (m?.role === "user" || (m?.role === "custom" && (m.customType === MESSAGE_CUSTOM_TYPE || m.customType === STEER_CUSTOM_TYPE) && typeof details?.body === "string")) {
       const type = m.role === "user" ? "user" : m.role === "custom" ? m.customType : undefined;
       const text = m.role === "user" ? contentText(m.content, "") : details?.body;
-      const index = queuedInput.findIndex(input => input.type === type && (input.type === "user" && typeof text === "string" ? text.startsWith(input.text) : input.text === text));
+      const index = queuedInput.findIndex(input => input.type === type && (input.type === "user" && typeof text === "string" ? text.startsWith(input.text) : input.text === text && input.work === (details?.work === true)));
       if (index !== -1) queuedInput.splice(index, 1);
-      host.self.parent?.extension?.markWork(ownSessionId);
     }
+    if (m?.role === "user" || details?.work === true) host.self.parent?.extension?.markWork(ownSessionId);
   });
 
   // ---- tools ----
@@ -2795,7 +2796,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     const generation = workGeneration;
     if (ownLiveWork()) return;
     if (turnEndedByControl || generation !== workGeneration || parent.childState(ownSessionId).text !== prior.text) return;
-    parent.receiveReport({ session: ownSessionId, name: self.name }, text, queuedInput.length > 0);
+    parent.receiveReport({ session: ownSessionId, name: self.name }, text, queuedInput.some(input => input.work));
   };
 
   pi.on("agent_settled", async (event: { aborted?: boolean }, ctx: { isIdle(): boolean }) => {

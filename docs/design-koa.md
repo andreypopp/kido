@@ -1022,17 +1022,20 @@ Work includes text sent by the user in the child's page view.
 A child reports the final text of a turn that ends without a tool
 call, when it has work to report, no non-service job running and no
 live own child that owes a report. It reports when the run settles. A
-turn's end also reports when external input is queued: a message
-from the parent, or a steer or follow-up that the user typed in the
+turn's end also reports when external input is queued, whoever sent
+it: a message or steer from the parent, a sibling, a peer or an agent
+with no relation, or a steer or follow-up that the user typed in the
 child's page. pi starts the next turn in the same run and settles
 only after that turn, so the earlier result would be lost. Each
 queued input is consumed only when that input starts. That turn's own
-final text is a further report. A report made while input is still
-queued is interim: the parent records and shows it, but it does not
-cover the work, so the child still owes a report and stays live work
-for its parent until a report made with no input queued. Otherwise
-the parent would end its own turn and report while the child still
-works on the queued input. Input that the child queues for itself, such as
+final text is a further report. A report made while work input is
+still queued (the parent's, the user's or an agent's plain text) is
+interim: the parent records and shows it, but it does not cover the
+work, so the child still owes a report and stays live work for its
+parent until a report made with no work input queued. Otherwise the
+parent would end its own turn and report while the child still works
+on the queued input. A sibling's or peer's message is not work for
+the parent, so a report that only it released is complete. Input that the child queues for itself, such as
 a job's notice or output, a child's report or a system notice,
 continues its own work: its turn's end waits for the settle. Aborted or
 interrupted turns do not report. Provider errors send an error notice

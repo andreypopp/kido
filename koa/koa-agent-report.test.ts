@@ -112,6 +112,26 @@ test("a child reports completed work only before queued parent input or after se
   } finally { await fx.restore(); }
 });
 
+test("a child preserves its report before a queued sibling message", async () => {
+  const fx = makeFixture();
+  try {
+    await child(fx, async (s, ledger, channel) => {
+      const extension = channel.host.extension;
+      assert.ok(extension);
+      await s.emit("agent_start");
+      await extension.receive({ kind: "message", agent: { name: "sib", session: "sib-session" }, relation: "sibling", text: "hi" });
+      await s.emit("turn_end", { message: assistant("stop", "A"), toolResults: [] });
+      assert.deepEqual(ledger.reports, ["A"]);
+      await s.emit("turn_start");
+      await s.emit("message_start", { message: { role: "custom", customType: "ko-message", details: { work: false, body: "hi" } } });
+      await s.emit("turn_end", { message: assistant("stop", "B"), toolResults: [] });
+      await s.emit("agent_end", { messages: [assistant("stop", "B")] });
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      assert.deepEqual(ledger.reports, ["A", "B"]);
+    });
+  } finally { await fx.restore(); }
+});
+
 test("a child that owes its own parent a report holds the report until it has reported", async () => {
   const fx = makeFixture();
   try {
