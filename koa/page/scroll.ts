@@ -27,7 +27,7 @@ type Common = {
 export type State = Common & (
   | { kind: 'following'; positioning?: boolean; glide?: Glide }
   | { kind: 'reader'; anchor?: Anchor; travel?: Travel }
-  | { kind: 'restoring'; target: Extract<Saved, { anchor: Anchor }>; waiting: boolean }
+  | { kind: 'restoring'; target: Extract<Saved, { anchor: Anchor }>; waiting: 'none' | 'snapshot' | 'catchup' }
 );
 type Cause = 'layout' | 'instant';
 export type ScrollEvent =
@@ -43,6 +43,7 @@ export type ScrollEvent =
   | { type: 'reset' }
   | { type: 'filter'; active: boolean; topic?: string }
   | { type: 'restore-result'; generation: number; found: boolean }
+  | { type: 'catchup'; generation: number; pending: boolean }
   | { type: 'navigate'; anchor: Anchor };
 export type Row = { item: ItemId; top: number; bottom: number; windowTop?: number; leading?: number };
 export type Lookup =
@@ -238,7 +239,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         instant = true; newInstant = true;
         filtering = event.type === 'filter';
         state = target && 'anchor' in target && target.scope.sessionId === scope.sessionId
-          ? { ...common(state), kind: 'restoring', target, waiting: event.type === 'switch' && !event.loaded }
+          ? { ...common(state), kind: 'restoring', target, waiting: event.type === 'filter' || event.filtered ? 'catchup' : !event.loaded ? 'snapshot' : 'none' }
           : { ...common(state), kind: 'following', positioning: true };
         force = state.kind === 'following';
         if (filtering && !target) state = { ...common(state), kind: 'reader' };
@@ -254,11 +255,14 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         instant = true;
         force = state.kind === 'following';
         if (state.kind === 'following') state.positioning = true;
-        if (state.kind === 'restoring') state = { ...state, waiting: false };
+        if (state.kind === 'restoring') state = { ...state, waiting: 'none' };
+        break;
+      case 'catchup':
+        if (state.kind === 'restoring' && event.generation === state.generation) state = { ...state, waiting: event.pending ? 'catchup' : 'none' };
         break;
       case 'restore-result':
         if (state.kind === 'restoring' && event.generation === state.generation) {
-          if (event.found) state = { ...state, waiting: false };
+          if (event.found) state = { ...state, waiting: state.waiting === 'catchup' ? 'catchup' : 'none' };
           else follow();
           instant = true;
         }
@@ -300,7 +304,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     if (first) reader({ item: { kind: 'message', seq: first.seq, row: first.candidate.row }, offset: 0, edge: 'divider' });
     else follow();
   }
-  if (state.kind === 'restoring' && !state.waiting) {
+  if (state.kind === 'restoring' && state.waiting === 'none') {
     const target = state.target;
     const found = m.lookup(target.anchor.item);
     if (found.kind === 'mounted') {

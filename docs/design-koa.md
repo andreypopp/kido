@@ -575,6 +575,9 @@ filter's history reload arrives. Then the page installs the rows,
 changes the projection and lands in one move, so the switch lands
 once. A response for a filter that a later switch replaced is
 dropped. Anchor restoration loads the anchor's history when needed.
+A saved topic reader also loads unfiltered history from the reset window back
+to its saved last sequence before restoration completes, so topic badges
+include replies that arrived while the reader was away.
 A view not visited before opens at the divider above the first unread
 row that the filter shows, or follows the bottom when it shows none.
 Unread state belongs to the row, not to the filter: a row that the

@@ -1029,6 +1029,59 @@ test('topic badges count an unread reply once per topic and clear across filters
     [before,badges,grown,active,counts()];
   `);
   assert.deepEqual(JSON.parse(JSON.stringify(values)), [[1,1],2,[1,1],0,[]]);
+  const restored = await app.run(`(async()=>{
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};
+    topics.debug.scopeData(topics.scope()).filter='one';
+    const scope={view:'root',sessionId:'s',topic:'one'};
+    scrolling=scrollInitial({view:'',sessionId:undefined},[{scope,anchor:{item:{kind:'message',seq:2},offset:0,edge:'row'},last:5}]);
+    decide({type:'switch',scope,loaded:false,filtered:true});
+    const reply=(seq,topic)=>({kind:'assistant',seq,revision:1,at:1,final:true,stop:'stop',error:'',blocks:[{type:'text',topic,text:'Reply '+seq}]});
+    rendered=async()=>{decide(undefined,{...measure(),focused:false,lookup:()=>({kind:'mounted',row:{item:{kind:'message',seq:2},top:0,bottom:20}})});};
+    fetch=async url=>{
+      const pages={
+        '/items?before=9007199254740991&topic=one&sessionId=s':{more:false,items:[reply(2,'one')]},
+        '/items?before=20&sessionId=s':{more:true,items:[reply(8,'two')]},
+        '/items?before=8&sessionId=s':{more:false,items:[reply(4,'two')]},
+      };
+      const result=pages[String(url)];if(!result)throw Error('Unexpected history URL: '+url);
+      return {ok:true,json:async()=>({type:'reset',epoch:'restore',...result})};
+    };
+    const catchUp=transcriptHistory.catchUp;let caught;
+    transcriptHistory.catchUp=last=>(caught=catchUp(last));
+    apply({type:'reset',epoch:'restore',more:true,items:[reply(20,'one')]});
+    await transcriptHistory.reload();
+    await caught;
+    await rendered();
+    return [topicUnread().get('two')??0,scrolling.candidates.get(4)?.values().next().value?.unread,scrolling.kind];
+  })()`);
+  assert.deepEqual(Array.from(restored), [1,false,'reader']);
+  const filtered = await app.run(`(async()=>{
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};
+    const scope={view:'root',sessionId:'s',topic:'one'};
+    scrolling=scrollInitial({view:'root',sessionId:'s'},[{scope,anchor:{item:{kind:'message',seq:2},offset:0,edge:'row'},last:5}]);
+    const reply=(seq,topic)=>({kind:'assistant',seq,revision:1,at:1,final:true,stop:'stop',error:'',blocks:[{type:'text',topic,text:'Reply '+seq}]});
+    rendered=async()=>{decide(undefined,{...measure(),focused:false,lookup:()=>({kind:'mounted',row:{item:{kind:'message',seq:2},top:0,bottom:20}})});};
+    fetch=async url=>{
+      const pages={
+        '/items?before=9007199254740991&topic=one&sessionId=s':{more:false,items:[reply(2,'one')]},
+        '/items?before=20&sessionId=s':{more:true,items:[reply(8,'two')]},
+        '/items?before=8&sessionId=s':{more:false,items:[reply(4,'two')]},
+      };
+      const result=pages[String(url)];if(!result)throw Error('Unexpected history URL: '+url);
+      return {ok:true,json:async()=>({type:'reset',epoch:'filter-restore',...result})};
+    };
+    const catchUp=transcriptHistory.catchUp;let caught;
+    transcriptHistory.catchUp=last=>(caught=catchUp(last));
+    apply({type:'reset',epoch:'filter-restore',more:true,items:[reply(20,'one')]});
+    await rendered();
+    topics.debug.scopeData(topics.scope()).filter='one';
+    await transcriptHistory.reload('filter');
+    await rendered();
+    await caught;
+    await rendered();
+    return [topicUnread().get('two')??0,scrolling.candidates.get(4)?.values().next().value?.unread,scrolling.kind];
+  })()`);
+  assert.deepEqual(Array.from(filtered), [1,false,'reader']);
 });
 
 test('reply sections carry interactive topic chips or a plain time with no marks or edges', async () => {

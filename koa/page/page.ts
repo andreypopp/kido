@@ -554,10 +554,12 @@ function applyScroll(decision: Decision) {
 }
 function decide(event?: ScrollEvent, measurement = measure()) {
   if (event) scrollEvents.push(event);
-  const result = scrollUpdate(scrolling, scrollEvents.splice(0), measurement);
+  const events = scrollEvents.splice(0);
+  const result = scrollUpdate(scrolling, events, measurement);
   const previousTop = scrollDecision.windowTop, previousDivider = scrollDecision.divider?.seq, previousRow = scrollDecision.divider?.row;
   const unreadChanged = scrolling.candidates !== result.state.candidates;
   scrolling = result.state; scrollDecision = result.decision;
+  if (events.some(event => event.type === 'filter')) catchUpReader();
   if (unreadChanged) topics.render();
   if (previousTop !== scrollDecision.windowTop) windowDirty = true;
   if (previousDivider !== scrollDecision.divider?.seq || !sameRow(previousRow, scrollDecision.divider?.row)) { if (previousDivider !== undefined) extents.delete(previousDivider); if (scrollDecision.divider?.seq !== undefined) extents.delete(scrollDecision.divider?.seq); table = undefined; dividerPx = undefined; windowDirty = true; }
@@ -1644,8 +1646,20 @@ function applyPatch(record: Patch, buffer: boolean) {
   }
   accept(item);
 }
+let readerCatchup: object | undefined;
+function catchUpReader() {
+  if (scrolling.kind !== 'restoring' || scrolling.target.scope.sessionId !== state.sessionId) return;
+  const operation = readerCatchup = {};
+  const generation = scrolling.generation, session = state.sessionId, view = state.view.id, origin = epoch;
+  if (!topics.filter() || !transcriptHistory.needsCatchUp(scrolling.target.last)) { enqueue({ type: 'catchup', generation, pending: false }); return; }
+  enqueue({ type: 'catchup', generation, pending: true });
+  void transcriptHistory.catchUp(scrolling.target.last).then(outcome => {
+    if (readerCatchup === operation && outcome !== 'cancelled' && epoch === origin && state.sessionId === session && state.view.id === view) enqueue({ type: 'catchup', generation, pending: false });
+  });
+}
 function apply(record: PageRecord) {
   if (record.type === 'reset') {
+    readerCatchup = undefined;
     topics.cancel();
     pathWarnings.clear(); pathWarningEpoch++;
     editor.resetCompletion();
@@ -1657,6 +1671,7 @@ function apply(record: PageRecord) {
     refreshTopicItems();
     acceptHistory(record.items);
     transcriptHistory.reset(record);
+    catchUpReader();
     if (topics.filter()) void transcriptHistory.reload();
     else void rendered().then(() => { if (epoch === record.epoch) transcriptHistory.fill(); });
     schedule();
@@ -1686,6 +1701,7 @@ function apply(record: PageRecord) {
     topics.update(record, previousScope);
     if (scopeChanged) transcriptHistory.cancel('scope');
     if (scopeChanged) decide({ type: 'switch', scope: { view: record.view.id, sessionId: record.sessionId, topic: topics.filter() }, loaded, filtered: topics.filter() !== undefined });
+    if (scopeChanged && loaded) catchUpReader();
     topics.render();
     if (scopeChanged) { refreshTopicItems(); if (epoch && record.view.type === 'root' && (previousFilter !== topics.filter() || topics.filter() !== undefined)) void transcriptHistory.reload(); }
     if (workingChanged && previousFilter === shownFilter && shownFilter && priorInput?.kind === 'user') accept({ ...priorInput });
