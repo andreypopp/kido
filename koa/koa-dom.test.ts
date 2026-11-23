@@ -1012,6 +1012,46 @@ test('an open topic panel keeps its scroll through state updates and closes by E
   assert.equal(ui.panel().hidden, true);
 });
 
+test('new-message counts and topic badges exclude run steps and count messages once', async () => {
+  const app = await page();
+  const values = app.run(`
+    state={...state,sessionId:'s',topics:[{name:'one'}]};
+    scrolling={...scrolling,kind:'reader'};
+    const measurement={...measure(),focused:false,visible:true,top:0,dock:100,max:1000,lookup:item=>({kind:'unmounted',row:{item,top:800,bottom:900}})};
+    const base={revision:0,at:1,final:true,topic:'one'};
+    const tool={type:'tool',id:'t',name:'bash',topic:'one',args:{text:'{}'},state:{type:'done',error:false,result:{text:'output',images:[]}}};
+    const incoming=[
+      {...base,seq:1,kind:'user',text:'Remote request',images:[],attachments:[]},
+      {...base,seq:2,kind:'assistant',blocks:[{type:'text',text:'First',topic:'one'},tool,{type:'text',text:'Second',topic:'one'},{type:'text',text:'Third',topic:'one'}]},
+      {...base,seq:3,kind:'assistant',blocks:[tool]},
+      {...base,seq:4,kind:'agent',direction:'in',from:{name:'worker'},inbound:{form:'report'},text:{text:'Report',cut:0}},
+      {...base,seq:5,kind:'job',job:{id:'j',name:'build',log:'/tmp/build.log',service:false},event:{type:'stream',batch:{text:'log',cut:0},omitted:0,cut:false}},
+    ];
+    for(const item of incoming) accept(item);
+    scrollEvents.length=0;
+    for(const item of incoming) changedItem(item.seq,true);
+    decide(undefined,measurement);
+    const before=[scrollDecision.latest.count,topicUnread().get('one'),scrollDecision.divider?.seq];
+    decide({type:'submit'},measurement);
+    accept({...base,seq:6,kind:'user',text:'Own request',images:[],attachments:[]});
+    changedItem(6,true);decide(undefined,measurement);
+    const own=[scrolling.kind,scrolling.candidates.has(6),topicUnread().get('one')??0];
+    state={...state,topics:[{name:'one'},{name:'two'}]};
+    shownFilter='one';
+    decide({type:'filter',active:true,topic:'one'},measurement);
+    scrolling={...scrolling,kind:'reader'};
+    accept({...base,seq:7,kind:'user',topic:'two',text:'',images:[],attachments:[{kind:'file',path:'/tmp/input'}]});
+    accept({...base,seq:8,kind:'assistant',blocks:[{type:'text',text:'Only in one',topic:'one'},{...tool,topic:'two'}]});
+    changedItem(7,true);changedItem(8,true);decide(undefined,measurement);
+    const hidden=[topicUnread().get('one'),topicUnread().get('two'),scrollDecision.latest.count];
+    shownFilter='two';projections.clear();
+    decide({type:'filter',active:true,topic:'two'},measurement);
+    changedItem(7,false);changedItem(8,false);decide(undefined,measurement);
+    [before,own,hidden,[scrollDecision.latest.count,scrollDecision.divider?.seq,topicUnread().get('two')]];
+  `);
+  assert.deepEqual(JSON.parse(JSON.stringify(values)), [[2,2,1],['following',false,0],[1,1,1],[1,7,1]]);
+});
+
 test('topic badges count an unread reply once per topic and clear across filters', async () => {
   const app = await page();
   const values = app.run(`
@@ -3158,29 +3198,30 @@ test('an assistant item with nothing to show gets no divider and no count', asyn
   assert.equal(page.latest(), '↓ Latest,true');
 });
 
-test('a step that joins the run above gets no divider of its own, and the divider stays above the run', async () => {
+test('steps that join a run create no unread divider', async () => {
   const page = await latestPage();
   page.add(page.text(0)); page.add(page.own(1));
   page.scroll(0);
   page.add(think(2));
-  assert.equal(page.dividers(), '0,1,divider,2');
+  assert.equal(page.dividers(), '0,1,2');
   page.add(think(3));
-  assert.equal(page.dividers(), '0,1,divider,2,3');
-  assert.equal(page.latest(), '↓ 1 new,true');
+  assert.equal(page.dividers(), '0,1,2,3');
+  assert.equal(page.latest(), '↓ Latest,true');
 });
 
-test('mixed idle steps preserve one unread run and a stable divider', async () => {
+test('mixed idle steps create no unread messages or divider', async () => {
   const page = await latestPage();
   page.add(page.text(0)); page.scroll(0); page.add(think(1));
-  const divider = page.evaluate('divider');
   const report = (seq: number) => ({seq,revision:0,at:seq,kind:'agent',final:true,direction:'in',from:{name:'worker'},text:{text:'Report',cut:0},inbound:{form:'report'}});
   page.add(report(2));
   page.add({seq:3,revision:0,at:3,kind:'job',final:true,job:{id:'j',name:'build',service:false,log:'/tmp/build.log'},event:{type:'ended',end:{type:'exit',code:0},tail:{text:'PASS',cut:0}}});
   page.add(think(4));
+  assert.equal(page.latest(), '↓ Latest,true');
+  assert.equal(page.evaluate('scrollDecision.divider'), undefined);
+  page.add(page.text(5));
+  const divider = page.evaluate('divider');
+  page.add(report(6));
   assert.equal(page.latest(), '↓ 1 new,true');
-  assert.equal(page.evaluate('divider'), divider);
-  page.add(page.text(5)); page.add(report(6));
-  assert.equal(page.latest(), '↓ 3 new,true');
   assert.equal(page.evaluate('divider'), divider);
 });
 
@@ -3236,18 +3277,18 @@ test('an empty item that arrived while following and gets its first content afte
 
 const card = (seq: number) => ({ seq, revision: 0, kind: 'assistant', final: true, blocks: [{ type: 'tool', id: 'c' + seq, name: 'spawn_agent', args: { text: '{}' }, state: { type: 'done', error: false, result: { text: '', images: [] } }, agent: { direction: 'out', to: { name: 'worker', session: 'w' }, text: { text: 'Check the module', cut: 0 }, call: { tool: 'spawn', fork: false }, outcome: { ok: true } } }] });
 
-test('an agent run counts once while an error notice and blank text do not count', async () => {
+test('an agent run, error notice and blank text do not count', async () => {
   const page = await latestPage();
   page.add(page.text(0));
   page.scroll(0);
   page.add(card(1));
   page.add({ ...page.text(2), blocks: [], stop: 'error', error: 'boom' });
   page.add({ ...page.text(3), blocks: [{ type: 'text', text: ' \n ' }] });
-  assert.equal(page.dividers(), '0,divider,1,2');
-  assert.equal(page.latest(), '↓ 1 new,true');
+  assert.equal(page.dividers(), '0,1,2');
+  assert.equal(page.latest(), '↓ Latest,true');
   page.add({ ...page.text(4), blocks: [{ type: 'text', text: ' ' }, { type: 'text', text: 'words' }] });
-  assert.equal(page.dividers(), '0,divider,1,2');
-  assert.equal(page.latest(), '↓ 2 new,true');
+  assert.equal(page.evaluate('scrollDecision.divider.seq'), 4);
+  assert.equal(page.latest(), '↓ 1 new,true');
 });
 
 test('nonblank text counts as new while its reveal is still closed, and a card item that gains text arrives once', async () => {
@@ -3260,17 +3301,17 @@ test('nonblank text counts as new while its reveal is still closed, and a card i
   assert.equal(page.dividers(), '0,divider,1,2');
   page.add({ ...card(2), revision: 1, blocks: [...card(2).blocks, { type: 'text', text: 'done' }] });
   assert.equal(page.dividers(), '0,divider,1,2');
-  assert.equal(page.latest(), '↓ 3 new,true');
+  assert.equal(page.latest(), '↓ 2 new,true');
 });
 
-test('an item that owns no shown step is not new, and the item that takes over the run is', async () => {
+test('taking over a run does not make a step item unread', async () => {
   const page = await latestPage();
   page.add(page.text(0));
   page.scroll(0);
   page.add(think(2));
   page.add(think(1));
-  assert.equal(page.dividers(), '0,divider,1,2');
-  assert.equal(page.latest(), '↓ 1 new,true');
+  assert.equal(page.dividers(), '0,1,2');
+  assert.equal(page.latest(), '↓ Latest,true');
 });
 
 

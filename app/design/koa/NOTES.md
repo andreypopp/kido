@@ -1612,15 +1612,18 @@ Open WebUI): the scroll has two states and one animation.
   old position with the divider and the button, and it resumes
   following only by the three ways above. Browser mode: the same,
   the focus the browser window's.
-- **New items** (user, 2026-11-15): an item is new only if it is an
-  assistant message with visible content (text, or a run with at
-  least one step shown). Nothing else counts and nothing else places
-  the divider: not the user's own items, not agent cards, job rows,
-  notices, command results, summaries or `!` output. Counted once at
-  first append; streaming growth adds nothing. The divider and the
-  count follow the same rule, so the divider stands above the first
-  new assistant message, and the rows between it and the previous
-  content (a notice, a job row) are above the rule.
+- **New items** (user, 2026-11-15; narrowed 2026-11-23): an item is
+  new only if it is a message with visible content: an assistant
+  message with visible text, or a user message (text, images or
+  attachments) that is not the page's own send. Nothing else counts
+  and nothing else places the divider: not tool calls or runs, agent
+  reports, job events, notices, command results, summaries or `!`
+  output. Counted once at first append; streaming growth adds
+  nothing. "↓ N new" counts messages, not their text blocks. The
+  divider, the count and the topic badges follow the same rule, so
+  the divider stands above the first new message, and the rows
+  between it and the previous content (a run, a job row) are above
+  the rule.
 - **The divider.** One rule across the transcript's text width: a
   1px line in the accent at 35%, the label "new messages" centred in
   a 6pt gap, prose .8em 500 in the accent, 14pt above and below. It
@@ -2158,8 +2161,8 @@ light and dark in the gallery.
   right-most place, where the age is: the badge replaces the age
   (the age is not kept beside it; a row without unread items shows
   the age as before). What counts: the divider's rule, one unread
-  state per item: an assistant message with visible content, once
-  at its append, not streaming growth; a topic's count is its own
+  state per item: the "New items" rule of the auto-scroll section,
+  once at its append, not streaming growth; a topic's count is its own
   items (a multi-section reply counts once for each of its topics).
   Clearing: an item is seen when its view reaches the bottom
   focused or scrolls it into view (the divider's rule), in All

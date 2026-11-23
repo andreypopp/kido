@@ -595,10 +595,15 @@ Unread state belongs to the row, not to the filter: a row that the
 filter hides keeps it, so the row is still unread in a later view
 that shows it. The count and the divider cover only the shown rows.
 This state is in memory only, not in the page's history state. `pagehide` saves the memory
-before its last scroll update. New-content counts use
-visible assistant prose and runs, not patches, metadata or each step
-that joins a run. `koa/page/extent.ts` and the scroll reducer share
-that unit of content.
+before its last scroll update. Unread state covers only messages:
+the visible text blocks of an assistant item and a user item that is
+not the page's own send; runs, agent reports and job events never
+become unread. The divider, the new-item count and the topic badges
+all read this one state, so they cannot disagree; the count and the
+badges count messages, not blocks. A topic badge counts an item only
+when that topic's projection shows one of its unread messages, so a
+topic that holds only an item's tool steps gets no badge. The page's
+own send resumes following and its item is never unread.
 
 Native find cannot search unmounted DOM. Under Kido the page's find
 hook searches its model, loads older history, opens the required folds,

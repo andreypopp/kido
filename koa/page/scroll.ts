@@ -37,7 +37,7 @@ export type ScrollEvent =
   | { type: 'layout'; cause: 'toggle'; anchor: Anchor }
   | { type: 'submit' }
   | { type: 'send-result'; result: PromptResult['disposition'] | 'failed' }
-  | { type: 'item'; seq: number; kind: 'user' | 'assistant' | 'other'; visible: boolean; appended: boolean; rows?: { row: RowId; visible: boolean }[] }
+  | { type: 'item'; seq: number; kind: 'user' | 'assistant' | 'other'; visible: boolean; appended: boolean; rows?: { row?: RowId; visible: boolean }[] }
   | { type: 'focus' | 'visibility' | 'frame' | 'resize' | 'latest' | 'history' }
   | { type: 'switch'; scope: Scope; loaded: boolean; filtered: boolean }
   | { type: 'reset' }
@@ -187,8 +187,9 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
           state.forceItem = { seq: event.seq };
           state.pendingSend = undefined;
           follow();
+          break;
         }
-        if (event.kind !== 'assistant') break;
+        if (event.kind === 'other') break;
         const rows = event.rows?.length ? event.rows : [{ row: undefined, visible: event.visible }];
         const known = state.candidates.get(event.seq);
         const baseline = !event.appended && !known && state.kind !== 'restoring';
@@ -196,7 +197,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         for (const [key, candidate] of known ?? []) if (!keys.has(key) && (candidate.visible || candidate.unread)) candidates(event.seq).set(key, { ...candidate, visible: false, unread: state.filtered && candidate.unread });
         rows.forEach(({ row, visible }, index) => {
           const key = row ? rowKey(row) : '', before = known?.get(key);
-          const arrived = event.rows?.length ? !Array.from(known?.values() ?? []).some(candidate => candidate.row) : !before?.visible;
+          const arrived = event.rows?.length ? event.kind === 'user' ? !known?.size : !Array.from(known?.values() ?? []).some(candidate => candidate.row) : !before?.visible;
           const unread = (before ? before.unread : Array.from(known?.values() ?? []).some(candidate => candidate.unread)) && (state.filtered || visible) || (!!event.rows?.length || event.visible) && arrived && !baseline && !filtering && !(state.kind === 'following' && focused && visible) && (state.kind !== 'restoring' || event.seq > state.target.last);
           if (before?.visible !== visible || before?.unread !== unread || before?.index !== index) candidates(event.seq).set(key, { row, index, visible, unread });
           if (unread && visible && state.kind === 'following' && !state.positioning) reader();
@@ -358,14 +359,14 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
       if (found.kind === 'mounted' && found.row.top >= top && found.row.bottom <= top + m.dock) for (const [key, item] of rows) if (item.unread) candidates(seq).set(key, { ...item, unread: false });
     }
   }
-  let count = 0;
+  const counted = new Set<number>();
   let divider: Decision['divider'], dividerIndex = Infinity;
   for (const [seq, rows] of state.candidates) for (const candidate of rows.values()) {
     if (!candidate.unread || !candidate.visible) continue;
     const { row, index } = candidate;
     if (!divider || seq < divider.seq || seq === divider.seq && index < dividerIndex) { divider = { seq, row }; dividerIndex = index; }
     const found = m.lookup({ kind: 'message', seq, row });
-    if ((found.kind === 'mounted' || found.kind === 'unmounted') && found.row.top >= top + m.dock) count++;
+    if ((found.kind === 'mounted' || found.kind === 'unmounted') && found.row.top >= top + m.dock) counted.add(seq);
   }
   if (state.forceItem && m.lookup({ kind: 'message', seq: state.forceItem.seq }).kind === 'mounted') state.forceItem = undefined;
   if (!newInstant && events.some(event => event.type === 'frame') && !request && state.kind !== 'restoring') {
@@ -385,7 +386,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     decision: {
       scrollTop,
       minHeight,
-      latest: { show: state.kind === 'reader' && (count > 0 || state.threshold), count },
+      latest: { show: state.kind === 'reader' && (counted.size > 0 || state.threshold), count: counted.size },
       divider,
       windowTop,
       request,
