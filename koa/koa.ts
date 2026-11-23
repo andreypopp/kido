@@ -285,10 +285,10 @@ Everything after -- is message text.
         status: (value, message, dialog) => {
           if (first) {
             const encoded = Buffer.from(cleanLine(dialog ?? message, 2048)).toString("base64");
-            process.stdout.write(`\x1b]7501;state=${value === "clear" ? value : dialog ? "blocked" : value}${value === "clear" ? "" : `:app=koa${dialog ? ":kind=question" : ""}:msg=${encoded}`}\x1b\\`);
+            process.stdout.write(`\x1b]7501;state=${value === "clear" ? value : dialog ? "blocked" : value}${value === "clear" ? "" : `:app=koa${dialog ? ":kind=question" : ""}${encoded ? `:msg=${encoded}` : ""}`}\x1b\\`);
           }
         },
-        title: own => { if (first) process.stdout.write(`\x1b]0;${utf8Prefix(replaceControlCharacters(`koa - ${own.name} - ${basename(own.cwd)}`), 2048)}\x1b\\`); },
+        title: (own, name) => { if (first) process.stdout.write(`\x1b]0;${utf8Prefix(replaceControlCharacters(name === undefined ? "koa" : `koa - ${name} - ${basename(own.cwd)}`), 2048)}\x1b\\`); },
         closed: () => stopping,
         cancelEditor: () => { if (tree.selected() === agentRef()) void edits.cancel(); },
         shutdown: () => { if (first) background(quit()); },

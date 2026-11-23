@@ -71,7 +71,7 @@ test("an ordinary spawn is an agent of koa's own process: no pane, a view of its
   const cursor = app.count();
   assert.equal((await app.post("view", { id: kid })).status, 200);
   const switched = await app.until(ofType("state", record => record.view.id === kid), cursor);
-  assert.deepEqual(switched.view.path.map(node => node.name), ["pi", "kid"]);
+  assert.deepEqual(switched.view.path.map(node => node.name), ["koa", "kid"]);
   const reset = await app.until(ofType("reset", record => items(record).includes("kid done")), cursor);
   assert.ok(!items(reset).includes("spawn one"));
   await pollUntil(async () => (await app.statusRevisions()).some(revision => revision.status.records.some(record => record.id === "agents/kid" && record.state === "done")), 5000, "the child's first done record");
@@ -111,7 +111,7 @@ test("root-only commands are refused in a subagent's view with a warning line", 
   await app.post("view", { id: kid });
   await app.until(ofType("state", record => record.view.id === kid));
   assert.equal((await send(app, "/new")).status, 200);
-  await app.until(ofType("item", record => record.item.kind === "notify" && record.item.text.text === "/new: only in @pi's view"));
+  await app.until(ofType("item", record => record.item.kind === "notify" && record.item.text.text === "/new: only in @koa's view"));
   assert.equal((await app.post("sessions/new")).status, 409);
   assert.equal((await app.post("quit")).status, 409);
 });

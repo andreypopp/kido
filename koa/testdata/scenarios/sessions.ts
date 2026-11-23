@@ -84,7 +84,7 @@ export const scenarios: Scenarios = {
           stateWithAbortedAndNameSecond(dir),
         ], reply: { status: 200, json: { cancelled: false } }, after: [
           { type: "reset", epoch: "epoch4", items: [], more: false },
-          { ...stateIdleFourth(dir), name: "pi", sessionId: "01a1c671-f700-74e1-b629-76b5af5a18dd", sessionFile: `${dir}/home/sessions/2026-11-10T17-12-00-000Z_01a1c671-f700-74e1-b629-76b5af5a18dd.jsonl`, context: { tokens: 0, window: 200000, percent: 0 } },
+          { ...stateIdleFourth(dir), name: "koa", sessionId: "01a1c671-f700-74e1-b629-76b5af5a18dd", sessionFile: `${dir}/home/sessions/2026-11-10T17-12-00-000Z_01a1c671-f700-74e1-b629-76b5af5a18dd.jsonl`, context: { tokens: 0, window: 200000, percent: 0 } },
           { type: "item", item: { seq: 0, revision: 1, at: 1794330720000, final: true, kind: "notify", level: "info", text: { text: "new session", cut: 0 } } },
         ] }),
     ],

@@ -107,7 +107,7 @@ test("an edit with exit 0 replaces the draft, does not send it and leaves nothin
   assert.deepEqual(pane.command, [join(f.dir, "ko"), "shell", "--", "myeditor", "--flag", file]);
   assert.equal(pane.parent, "pane_1");
   assert.equal(pane.close, "on_exit");
-  assert.equal(pane.fixed_title, "Draft for @pi");
+  assert.equal(pane.fixed_title, "Draft for @koa");
   assert.equal(pane.close_confirm, "never");
   assert.deepEqual({ ...pane.float }, { x: 8, y: 2, cols: 64, rows: 19, z: 0, border: true, title: "" });
   assert.match(file, /koa-draft-pane_1\.md$/);
