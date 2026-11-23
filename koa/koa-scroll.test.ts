@@ -58,21 +58,21 @@ test('seeing a later row under one filter does not mark another filters hidden u
   assert.deepEqual([result.state.kind,result.decision.scrollTop,result.decision.divider?.seq], ['reader',500,10]);
 });
 
-test('scrolling a normal view keeps its existing unread divider and offscreen count', () => {
+test('scrolling an unread item into a normal view clears it', () => {
   const f = fixture();
   f.step([intent,item(10)], {top:100,rows:[row(1,100),row(10,600)],loaded:[{kind:'message',seq:1},{kind:'message',seq:10}],anchor:{item:{kind:'message',seq:1},offset:0,edge:'row'}});
   const result=f.step([scroll], {top:550,anchor:{item:{kind:'message',seq:10},offset:50,edge:'row'}});
-  assert.deepEqual([result.decision.divider?.seq,result.decision.latest], [10,{show:true,count:0}]);
+  assert.deepEqual([result.decision.divider?.seq,result.decision.latest], [undefined,{show:true,count:0}]);
 });
 
-test('hidden arrivals and reply sections stay unread when switching to their topic or all topics', () => {
+test('hidden arrivals stay unread across filters but streaming sections do not add unread items', () => {
   for (const active of [true,false]) for (const section of [false,true]) {
     const f = fixture();
     f.step([{type:'filter',active:true,topic:'initial'}]);
     if (section) f.step([{type:'item',seq:10,kind:'assistant',visible:true,appended:false,rows:[{row:{kind:'text' as const,source:{kind:'block' as const,seq:10,index:0}},visible:true}]}]);
     f.step([{type:'item',seq:10,kind:'assistant',visible:section,appended:!section,rows:[...(section?[{row:{kind:'text' as const,source:{kind:'block' as const,seq:10,index:0}},visible:true}]:[]),{row:{kind:'text' as const,source:{kind:'block' as const,seq:10,index:1}},visible:false}]}]);
     const result=f.step([{type:'filter',active,topic:active?'other':undefined},{type:'item',seq:10,kind:'assistant',visible:true,appended:false,rows:[{row:{kind:'text' as const,source:{kind:'block' as const,seq:10,index:1}},visible:true}]}], {rows:[{item:{kind:'message',seq:10,row:{kind:'text',source:{kind:'block',seq:10,index:1}}},top:500,bottom:600}],loaded:[{kind:'message',seq:10}]});
-    assert.deepEqual([result.state.kind,result.decision.divider?.seq,result.decision.divider?.row,result.decision.scrollTop], active ? ['reader',10,{kind:'text',source:{kind:'block',seq:10,index:1}},500] : ['following',undefined,undefined,900]);
+    assert.deepEqual([result.state.kind,result.decision.divider?.seq,result.decision.divider?.row,result.decision.scrollTop], active && !section ? ['reader',10,{kind:'text',source:{kind:'block',seq:10,index:1}},500] : ['following',undefined,undefined,900]);
   }
 });
 

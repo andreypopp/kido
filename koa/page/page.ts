@@ -98,7 +98,17 @@ const pathWarnings = new Map<number, string>();
 let pathWarningEpoch = 0;
 let state: State = { pathEditor: false, view: { id: '', path: [], type: 'root' }, topics: [], agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, dialogs: [] };
 let shownFilter: TopicName | undefined;
+function topicUnread(): Map<TopicName, number> {
+  const counts = new Map<TopicName, number>();
+  if (!('topics' in state)) return counts;
+  for (const [seq, rows] of scrolling.candidates) {
+    if (!Array.from(rows.values()).some(row => row.unread)) continue;
+    for (const topic of state.topics) if (projectTopic(topicContext, seq, topic.name)) counts.set(topic.name, (counts.get(topic.name) ?? 0) + 1);
+  }
+  return counts;
+}
 const topics = createTopics({
+  unread: topicUnread,
   state: () => state, items, element, node, timestamp, refreshComposer, layout: dirtyExtent, focus: () => editor.focus(),
   filterChanged() {
     transcriptHistory.cancel('scope'); topics.close(); topics.render(); refreshComposer();
@@ -545,7 +555,9 @@ function decide(event?: ScrollEvent, measurement = measure()) {
   if (event) scrollEvents.push(event);
   const result = scrollUpdate(scrolling, scrollEvents.splice(0), measurement);
   const previousTop = scrollDecision.windowTop, previousDivider = scrollDecision.divider?.seq, previousRow = scrollDecision.divider?.row;
+  const unreadChanged = scrolling.candidates !== result.state.candidates;
   scrolling = result.state; scrollDecision = result.decision;
+  if (unreadChanged) topics.render();
   if (previousTop !== scrollDecision.windowTop) windowDirty = true;
   if (previousDivider !== scrollDecision.divider?.seq || !sameRow(previousRow, scrollDecision.divider?.row)) { if (previousDivider !== undefined) extents.delete(previousDivider); if (scrollDecision.divider?.seq !== undefined) extents.delete(scrollDecision.divider?.seq); table = undefined; dividerPx = undefined; windowDirty = true; }
   const stored = applyScroll(scrollDecision);
@@ -1001,6 +1013,7 @@ function accept(item: WireItem) {
   for (const seq of views.keys()) {
     if (seq > item.seq) dirty.add(seq);
   }
+  if (item.kind === 'topics' || item.kind === 'assistant' && old?.kind === 'assistant' && item.blocks.some((block, index) => block.topic !== old.blocks[index]?.topic)) topics.render();
   if (priorInput?.kind === 'user' && priorInput.seq !== item.seq) accept({ ...priorInput });
   if (shownFilter && changedRun) {
     let from = item.seq, to = item.seq;

@@ -139,8 +139,8 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     return rows;
   };
   const clear = () => {
-    for (const [seq, rows] of state.candidates) for (const [key, candidate] of rows) {
-      if (candidate.unread && candidate.visible) candidates(seq).set(key, { ...candidate, unread: false });
+    for (const [seq, rows] of state.candidates) if (Array.from(rows.values()).some(candidate => candidate.unread && candidate.visible)) {
+      for (const [key, candidate] of rows) if (candidate.unread) candidates(seq).set(key, { ...candidate, unread: false });
     }
     state.threshold = false;
   };
@@ -207,8 +207,8 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         for (const [key, candidate] of known ?? []) if (!keys.has(key) && (candidate.visible || candidate.unread)) candidates(event.seq).set(key, { ...candidate, visible: false, unread: state.filtered && candidate.unread });
         rows.forEach(({ row, visible }, index) => {
           const key = row ? rowKey(row) : '', before = known?.get(key);
-          const arrived = event.rows?.length ? !before : !before?.visible;
-          const unread = !!before?.unread && (state.filtered || visible) || (!!event.rows?.length || event.visible) && arrived && !baseline && !filtering && !(state.kind === 'following' && focused && visible) && (state.kind !== 'restoring' || event.seq > state.target.last);
+          const arrived = event.rows?.length ? !Array.from(known?.values() ?? []).some(candidate => candidate.row) : !before?.visible;
+          const unread = (before ? before.unread : Array.from(known?.values() ?? []).some(candidate => candidate.unread)) && (state.filtered || visible) || (!!event.rows?.length || event.visible) && arrived && !baseline && !filtering && !(state.kind === 'following' && focused && visible) && (state.kind !== 'restoring' || event.seq > state.target.last);
           if (before?.visible !== visible || before?.unread !== unread || before?.index !== index) candidates(event.seq).set(key, { row, index, visible, unread });
           if (unread && visible && state.kind === 'following' && !state.positioning) reader();
         });
@@ -363,11 +363,11 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
   if (state.kind !== 'reader') state.threshold = false;
   else if (distance > m.viewport / 3) state.threshold = true;
   else if (distance < m.viewport / 4) state.threshold = false;
-  if (sawScroll && focused && state.filtered && !filtering) {
-    for (const [seq, rows] of state.candidates) for (const [key, candidate] of rows) {
+  if (sawScroll && focused && !filtering) {
+    for (const [seq, rows] of state.candidates) for (const candidate of rows.values()) {
       if (!candidate.visible || !candidate.unread) continue;
       const found = m.lookup({ kind: 'message', seq, row: candidate.row });
-      if (found.kind === 'mounted' && found.row.top >= top && found.row.bottom <= top + m.dock) candidates(seq).set(key, { ...candidate, unread: false });
+      if (found.kind === 'mounted' && found.row.top >= top && found.row.bottom <= top + m.dock) for (const [key, item] of rows) if (item.unread) candidates(seq).set(key, { ...item, unread: false });
     }
   }
   let count = 0;

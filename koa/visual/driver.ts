@@ -139,6 +139,9 @@ function captureTarget(name: string, scenario: Scenario): { selector: string; pa
       return { selector: "#items>.drop-target", padding: { top: 8, left: 8, bottom: 8, right: 8 } };
     case "topics/topics-pending":
       return { selector: "#queue", padding: { top: 8, left: 8, bottom: 8, right: 8 } };
+    case "topics/topics-unread-line":
+    case "topics/topics-unread-block":
+      return { selector: "#topics, .topic-panel:not([hidden])", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
     case "topics/topics-many":
     case "topics/topics-many-narrow":
       return { selector: ".topic-capsule", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
@@ -310,6 +313,7 @@ async function settleKoa(web: Page, measured: boolean) {
     }
 async function prepareCapture(name: string, scenario: Scenario, measured: boolean, latestText: string) {
         const web = requireValue(context.browser)
+        if (name.startsWith('topics-unread-')) { await settleKoa(web, measured); return }
         if (scenario == "topics") {
             let ready: string;
             switch (name) {
@@ -1146,6 +1150,20 @@ echo release
             await webviewUntil(web, `${koaIdle}&&document.querySelector('#model-name').textContent==='claude-opus-5-5'`)
         }
         await webviewJS(web, `(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[${stamp + 12000}]))}static now(){return ${stamp + 12000}}};const style=document.createElement('style');style.textContent='.caret,.dot.on,.cm-cursorLayer${scenario == "reveal" ? "" : ",.grow"}{animation:none!important}${scenario == "reveal" ? ".grow{animation-play-state:paused!important;animation-delay:-110ms!important}" : ""}.info .chev,#latest{transition:none!important}#transcript{transform:none!important}';document.head.append(style);return true})()`)
+        if (key == "TopicsUnread") {
+            await webviewJS(web, "(()=>{window.koaFocused=false;window.dispatchEvent(new Event('blur'));return true})()")
+            await advance()
+            await webviewUntil(web, "document.querySelector('.topic-unread')?.textContent==='3'")
+            await web.locator('.topic-overflow').click()
+            await settleKoa(web, measured)
+            await capture('topics-unread-line')
+            await web.setViewportSize({width:1280,height:557})
+            await webviewUntil(web, "document.querySelector('#topics').dataset.mode==='block'")
+            await web.mouse.move(0, 0)
+            await settleKoa(web, measured)
+            await capture('topics-unread-block')
+            return
+        }
         if (scenario == "topics") {
             await driveTopics(web, phases, capture, advance)
             return
@@ -1949,6 +1967,7 @@ const entries: Record<string, () => Promise<void>> = {
   "Exit": () => koaWebview("testKoaWebviewExit", 960, 557, "exit", false, ["times"]),
   "Failed": () => koaWebview("Failed", 960, 557, "failed", true, ["exited"]),
   "Rhythm": testKoaWebviewRhythm,
+  "TopicsUnread": () => koaWebview("TopicsUnread", 960, 557, "topics", false, []),
   "Topics": () => koaWebview("Topics", 960, 557, "topics", false, ["topics-two", "topics-many", "topics-marks", "topics-marks-narrow"]),
   "TopicsGeometry": () => koaWebview("TopicsGeometry", 960, 557, "topics", false, ["topic-create-placement-geometry", "topic-create-hover-geometry", "topic-create-filter-block", "topic-create-filter-panel", "topic-create-filter-capsule", "topic-create-drag-geometry"]),
   "TopicsFilterRestored": () => koaWebview("TopicsFilterRestored", 960, 557, "topics", false, ["topic-create-filter-restored"]),

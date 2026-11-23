@@ -2066,7 +2066,7 @@ light and dark in the gallery.
   count; an item unread in one view stays unread in the other until
   it is seen. The transcript
   shows the topic's items only; every reply keeps its pill, but
-  with the time alone, in the faint style of an untopiced reply
+  with the time alone, in the faint style of an without a topic reply
   (the name would say the same on every row; the filter names the
   topic), plus a pending user
   message, one whose reply the agent is still working on and that
@@ -2175,7 +2175,7 @@ light and dark in the gallery.
   an existing message: hovering a message's
   header row shows a "+ topic" chip only when the message has no
   topic (user, 2026-11-22; for a multi-section reply: none when
-  any section has a topic); a topiced message shows no "+
+  any section has a topic); a message with a topic shows no "+
   topic", and its topic changes by a drag of a topic row from
   the widget onto the message ("The classifier MVP, reviewed"). The
   chip's metrics with a 1px dashed edge at 30% of
@@ -2190,6 +2190,34 @@ light and dark in the gallery.
   name of an existing topic moves the turn there instead; Escape,
   the × or a click outside drops it. The row's existing chip stays
   until the move lands; then it is replaced. No slash command.
+- **Unread counts in the widget** (user, 2026-11-23; header.html
+  section 2e). Each topic row shows its unread count in the
+  right-most place, where the age is: the badge replaces the age
+  (the age is not kept beside it; a row without unread items shows
+  the age as before). What counts: the divider's rule, one unread
+  state per item: an assistant message with visible content, once
+  at its append, not streaming growth; a topic's count is its own
+  items (a multi-section reply counts once for each of its topics).
+  Clearing: an item is seen when its view reaches the bottom
+  focused or scrolls it into view (the divider's rule), in All
+  topics or in the topic's own view alike: one state, seen in
+  either view clears it in both, so a topic's badge goes when its
+  items are seen anywhere. The badge: 16px high, min 16px wide,
+  0/5px padding, 999px radius, the terminal's red (`--ko-color-1`,
+  both themes) with white text at 600, 10px, tabular numerals,
+  centred; "99+" over 99. On hover of the row the × (archive,
+  restore) takes the slot and the badge hides, as the age does. The
+  active topic's row (the current filter) shows no badge and the
+  age again: its items are the shown transcript, where the divider
+  and "↓ N new" say what is new; "All topics" shows no badge. An
+  archived row keeps its badge at full strength (not dimmed with
+  the row: the one thing a dimmed row must still say). Line mode:
+  the capsule's "# name" entries carry the count as a smaller red
+  circle after the name (14px high, min 14px, 0/4px padding, 9px
+  text, 4px gap), counted in the fit rule like the name; "+N" shows
+  no count; the panel's rows as block mode. A click on a badge is a
+  click on its row (it filters). The count is the page's (the
+  transcript's unread state), not koa's: nothing is written.
 - **Archiving a topic** (user, 2026-11-21, approved; header.html
   section 2c). Every topic row of the widget
   (the panel's rows and block mode's rows) has an × at its right,

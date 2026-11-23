@@ -25,6 +25,7 @@ export const fixtures: { name: string; captures: Record<string, Policy> }[] = [
   {"name": "Exit", "captures": {"times": "light"}},
   {"name": "Failed", "captures": {"exited": "light", "narrow-exited": "geometry"}},
   {"name": "Rhythm", "captures": {}},
+  {"name": "TopicsUnread", "captures": {"topics-unread-line": "both", "topics-unread-block": "both"}},
   {"name": "Topics", "captures": {"topics-many": "both", "topics-many-narrow": "both", "topics-marks": "both", "topics-marks-narrow": "geometry", "topics-two": "geometry"}},
   {"name": "TopicsFilterRestored", "captures": {"topic-create-filter-restored": "geometry"}},
   {"name": "TopicsGeometry", "captures": {"topic-create-placement-geometry": "geometry", "topic-create-hover-geometry": "geometry", "topic-create-filter-block": "geometry", "topic-create-filter-panel": "geometry", "topic-create-filter-capsule": "geometry", "topic-create-drag-geometry": "geometry"}},

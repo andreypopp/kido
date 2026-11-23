@@ -13,7 +13,7 @@ export function topicsMemory(stored: unknown): stored is TopicsMemory {
   return isRecord(stored) && ['filters', 'composerTopics'].every(key => { const entries = stored[key]; return Array.isArray(entries) && entries.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && (key === 'composerTopics' ? isRecord(entry[1]) && (entry[1].type === 'dropped' || entry[1].type === 'topic' && parseTopicName(entry[1].name) !== undefined) : parseTopicName(entry[1]) !== undefined)); });
 }
 export function createTopics(deps: {
-  state(): State; items: ReadonlyMap<number, WireItem>;
+  state(): State; items: ReadonlyMap<number, WireItem>; unread(): ReadonlyMap<TopicName, number>;
   element(id: string): HTMLElement;
   node<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string): HTMLElementTagNameMap[K];
   timestamp(at: number): string; refreshComposer(): void; focus(): void; layout(element: HTMLElement): void;
@@ -249,6 +249,11 @@ export function createTopics(deps: {
     const minutes = Math.max(0, Math.floor((now - at) / 60000));
     return minutes < 1 ? 'now' : minutes < 60 ? minutes + 'm' : minutes < 1440 ? Math.floor(minutes / 60) + 'h' : Math.floor(minutes / 1440) + 'd';
   }
+  let unread: ReadonlyMap<TopicName, number> = new Map();
+  function unreadBadge(name: TopicName) {
+    const count = name === topicFilter() ? 0 : unread.get(name) ?? 0;
+    return count ? node('span', count > 99 ? '99+' : String(count), 'topic-unread') : undefined;
+  }
   function fitTopics(width = document.documentElement.clientWidth) {
     const capsule = topicCapsule;
     if (!capsule || capsule.selected || capsule.width === width) return;
@@ -257,6 +262,7 @@ export function createTopics(deps: {
     button.classList.remove('single');
     const children: HTMLElement[] = [], labels = capsule.names.map(name => {
       const label = topicName(name); label.setAttribute('role', 'button'); label.tabIndex = -1;
+      const badge = unreadBadge(name); if (badge) label.append(badge);
       label.onclick = () => setTopic(name);
       label.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setTopic(name); } };
       if (children.length) children.push(node('span', '·', 'topic-separator'));
@@ -286,6 +292,9 @@ export function createTopics(deps: {
   }
   function renderTopics() {
     if (interaction.rename) return;
+    const nextUnread = deps.unread(), unreadChanged = unread.size !== nextUnread.size || Array.from(nextUnread).some(([name, count]) => unread.get(name) !== count);
+    unread = nextUnread;
+    if (unreadChanged && topicCapsule) topicCapsule.width = undefined;
     const host = element('topics'), filter = topicFilter();
     host.hidden = current.state.view.type !== 'root' || !('topics' in current.state) || !current.state.topics.length;
     const column = element('transcript').getBoundingClientRect(), width = document.documentElement.clientWidth;
@@ -322,6 +331,8 @@ export function createTopics(deps: {
         const time = node('time', topicAge(topic.last.at, Date.now())); time.dateTime = new Date(topic.last.at).toISOString();
         entry.append(node('span', markdownLine(topic.last.summary), 'topic-summary')); age.append(time);
       }
+      const badge = unreadBadge(topic.name);
+      if (badge) age.replaceChildren(badge);
       const archive = node('button', topic.archived ? '↺' : '×', 'topic-archive'); archive.type = 'button'; archive.setAttribute('aria-label', topic.archived ? 'Restore topic' : 'Archive topic');
       archive.onpointerdown = event => { if (interaction.naming?.target.kind === 'message') finishTopicNaming(false); event.stopPropagation(); };
       archive.onclick = event => { event.stopPropagation(); void deps.correct({ kind: 'archive', sessionId: current.state.sessionId, name: topic.name, archived: !topic.archived }).catch(() => {}); };

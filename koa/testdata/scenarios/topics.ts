@@ -1,7 +1,7 @@
 import { parseTopicName, type TopicName } from '../../records.ts';
 import type { Block, Topic, WireItem } from '../../koa-records.ts';
 import { stateIdle } from '../scenario-parts.ts';
-import { expect, same, sequence, type Scenario, type Scenarios } from '../scenario.ts';
+import { expect, next, same, sequence, type Scenario, type Scenarios } from '../scenario.ts';
 
 function scene(dir: string, kind: 'two' | 'many' | 'marks' | 'marks-narrow' | 'filter', withoutTopic = false): Scenario {
   const names = ['sidebar', 'palette', 'remote-mtls-pairing-ios', 'release-0-32', 'koa-virtual-transcript', 'float-win', 'topics', 'docs-cleanup-after-the-sessions', 'ci-linux-flake'].map(value => {
@@ -81,6 +81,13 @@ if (!paletteName) throw Error('Invalid palette topic');
 const order: (keyof typeof phases)[] = ['testKoaWebviewTopicsTwo', 'testKoaWebviewTopicsMany', 'testKoaWebviewTopicsMarks', 'testKoaWebviewTopicsMarksNarrow'];
 
 export const scenarios: Scenarios = {
+  TopicsUnread: dir => {
+    const result = scene(dir, 'many'), state = result.open.find(record => record.type === 'state'), reset = result.open.find(record => record.type === 'reset');
+    if (!state || !('topics' in state) || !reset) throw Error('Missing unread fixture state');
+    state.topics[3].archived = true;
+    result.steps.push(next(Array.from({ length: 100 }, (_, index) => ({ type: 'item' as const, item: { kind: 'assistant' as const, seq: reset.items.length + index, revision: 1, final: true, at: Date.parse('2026-11-10T22:46:12Z'), stop: 'stop' as const, error: '', blocks: state.topics.slice(0, 4).flatMap((topic, topicIndex) => index < [3, 12, 1, 100][topicIndex] ? [{ type: 'text' as const, topic: topic.name, text: 'Unread update ' + (index + 1) }] : []) } }))));
+    return result;
+  },
   TopicsFilterRestored: dir => scene(dir, 'filter'),
   TopicsGeometry: dir => sequence(['placement','hover','block','panel','capsule','drag'].map(phase => {
     const result = scene(dir, phase === 'placement' ? 'many' : phase === 'hover' || phase === 'drag' ? 'marks-narrow' : 'filter', phase === 'hover' || phase === 'drag');

@@ -1012,6 +1012,25 @@ test('an open topic panel keeps its scroll through state updates and closes by E
   assert.equal(ui.panel().hidden, true);
 });
 
+test('topic badges count an unread reply once per topic and clear across filters', async () => {
+  const app = await page();
+  const values = app.run(`
+    state={...state,sessionId:'s',topics:[{name:'one'},{name:'two',archived:true}]};
+    const measurement={...measure(),focused:false,visible:true};
+    put({seq:1,revision:0,at:1,kind:'assistant',final:false,blocks:[{type:'text',text:'One',topic:'one'},{type:'text',text:'Two',topic:'two'}]});
+    scrollEvents.length=0; changedItem(1,true); decide(undefined,measurement);
+    const counts=()=>Array.from(topicUnread().values());
+    const before=counts(), badges=element('topics').querySelectorAll('.topic-panel>.topic-entry>.topic-age>.topic-unread').length;
+    put({...items.get(1),revision:1,blocks:[...items.get(1).blocks,{type:'text',text:'More',topic:'one'}]});
+    decide(undefined,measurement); const grown=counts();
+    topics.debug.scopeData(topics.scope()).filter='one'; topics.render();
+    const active=element('topics').querySelector('.topic-panel').children.find(row=>row.dataset.topic==='one').querySelector('.topic-age').children.filter(child=>child.classList.contains('topic-unread')).length;
+    decide({type:'latest'},{...measurement,focused:true});
+    [before,badges,grown,active,counts()];
+  `);
+  assert.deepEqual(JSON.parse(JSON.stringify(values)), [[1,1],2,[1,1],0,[]]);
+});
+
 test('reply sections carry interactive topic chips or a plain time with no marks or edges', async () => {
   const app = await page();
   const result = app.run(`(()=>{
