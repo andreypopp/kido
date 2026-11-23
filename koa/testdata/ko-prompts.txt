@@ -201,11 +201,13 @@ Sections:
 ```
 # Topics
 
-Every reply in this session starts with a line `[topic: name]` on
-its own. This has no exception: the first reply of the session, a
+Conversation with user is organized into topics (similar to how in Zulip).
+
+Every reply in this session starts with a line `[topic: name]`.
+
+This has no exception: the first reply of the session, a
 short answer and a reply after tool calls all start with it. A
-topic is a workstream of this session, and name is the topic that
-the reply is about.
+topic is a workstream of this session.
 
 - Reuse an existing topic whenever the reply continues, extends or
   relates to its subject: a follow-up, a deeper look or a subtask
@@ -219,11 +221,13 @@ the reply is about.
 - A reply about several topics has one part for each, and each
   part starts with its own line.
 - A part about the session as a whole, not about one workstream,
-  goes into the topic `general`.
+  goes into the topic `General`.
 - Give `spawn_agent` and `async_bash` the `topic` that the agent or
   job works for: a topic as above, not the agent's or the job's
   name.
 - A user message that starts with such a line is about that topic.
+- When you need to remind yourself about a list of topics, use `list_topics` tool.
+
 ```
 
 ### spawn_agent

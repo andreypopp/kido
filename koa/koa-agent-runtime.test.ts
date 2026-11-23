@@ -135,7 +135,7 @@ test("the prompt gets the runtime cwd, the runtime's context files after the glo
     const section = event.systemPromptOptions.sections.runtime;
     assert.ok(section);
     assert.match(section, new RegExp(`^The tools bash, read, write, edit, ls, find, grep, async_bash and the user's ! commands run in runtime dev, at ${join(t.rt, "proj")}\\.`));
-    assert.match(section, new RegExp(`Every other tool \\(list_agents, read_report, .*spawn_agent.*\\) runs on the host, at ${t.hostCwd}, not in the runtime\\.$`));
+    assert.match(section, new RegExp(`Every other tool \\(list_topics, list_agents, read_report, .*spawn_agent.*\\) runs on the host, at ${t.hostCwd}, not in the runtime\\.$`));
     assert.doesNotMatch(section, /\(.*\b(?:bash|async_bash)\b.*\)/);
     assert.deepEqual(s.notifications, [{ message: section, type: "info" }]);
   } finally {

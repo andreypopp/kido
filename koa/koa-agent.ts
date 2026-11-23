@@ -1177,6 +1177,18 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     return topic ? { topic: topicIndex().resolve(topic) } : { error: 'topic must be a topic of 1 to 200 characters, without `]` or control characters' };
   };
   if (topicSupport.type === 'root') {
+    pi.registerTool({
+      name: "list_topics",
+      label: "List Topics",
+      description: "List active topics in this session, most recently used first.",
+      promptSnippet: "list_topics() - list active topics, most recently used first",
+      promptGuidelines: ["Use list_topics to recall existing topics before choosing a topic for related work."],
+      parameters: Type.Object({}),
+      async execute() {
+        const index = topicIndex(), names = index.recent.filter(name => !index.archived(name));
+        return { content: [{ type: "text", text: names.length ? "Active topics, most recent first:\n" + names.map(name => "- " + name).join("\n") : "No active topics yet." }], details: {} };
+      },
+    });
     let reminder: 'none' | 'pending' = 'none';
     pi.on('agent_start', () => { reminder = 'none'; });
     pi.on('agent_end', event => {
@@ -1203,7 +1215,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       if (names.length) pi.sendMessage({ customType: 'koa.topics', content: 'Topics in this session:\n' + names.map(name => '- ' + name).join('\n'), display: false }, { triggerTurn: false });
     });
     pi.on('before_agent_start', event => {
-      event.systemPromptOptions.sections.topics = "# Topics\n\nEvery reply in this session starts with a line `[topic: name]` on\nits own. This has no exception: the first reply of the session, a\nshort answer and a reply after tool calls all start with it. A\ntopic is a workstream of this session, and name is the topic that\nthe reply is about.\n\n- Reuse an existing topic whenever the reply continues, extends or\n  relates to its subject: a follow-up, a deeper look or a subtask\n  belongs to the topic that it grew from.\n- Start a new topic only for a subject that no existing topic\n  covers. Name it like a Zulip topic: a short, clear, sentence-like\n  topic of its broad subject, not of the current task, so that later\n  work fits it, for example `Reload UI open items` or\n  `Pane resize bug`. A name has at most 60 characters and no `]`.\n- To continue a topic, repeat its name exactly as it was written.\n- A reply about several topics has one part for each, and each\n  part starts with its own line.\n- A part about the session as a whole, not about one workstream,\n  goes into the topic `general`.\n- Give `spawn_agent` and `async_bash` the `topic` that the agent or\n  job works for: a topic as above, not the agent's or the job's\n  name.\n- A user message that starts with such a line is about that topic.";
+      event.systemPromptOptions.sections.topics = "# Topics\n\nConversation with user is organized into topics (similar to how in Zulip).\n\nEvery reply in this session starts with a line `[topic: name]`.\n\nThis has no exception: the first reply of the session, a\nshort answer and a reply after tool calls all start with it. A\ntopic is a workstream of this session.\n\n- Reuse an existing topic whenever the reply continues, extends or\n  relates to its subject: a follow-up, a deeper look or a subtask\n  belongs to the topic that it grew from.\n- Start a new topic only for a subject that no existing topic\n  covers. Name it like a Zulip topic: a short, clear, sentence-like\n  topic of its broad subject, not of the current task, so that later\n  work fits it, for example `Reload UI open items` or\n  `Pane resize bug`. A name has at most 60 characters and no `]`.\n- To continue a topic, repeat its name exactly as it was written.\n- A reply about several topics has one part for each, and each\n  part starts with its own line.\n- A part about the session as a whole, not about one workstream,\n  goes into the topic `General`.\n- Give `spawn_agent` and `async_bash` the `topic` that the agent or\n  job works for: a topic as above, not the agent's or the job's\n  name.\n- A user message that starts with such a line is about that topic.\n- When you need to remind yourself about a list of topics, use `list_topics` tool.\n";
     });
   }
   let routed: Routed | { refusal: string } | null = null;

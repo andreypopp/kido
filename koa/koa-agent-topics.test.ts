@@ -19,8 +19,8 @@ test('root indexes markers once on the branch and supplies names only after comp
     const guidelines: string[] = [], sections: Record<string, string> = {};
     const event = { systemPromptOptions: { promptGuidelines: guidelines, sections } };
     await s.emit('before_agent_start', event);
-    assert.match(sections.topics, /^# Topics\n\nEvery reply in this session starts/);
-    assert.ok(sections.topics.includes('the topic `general`'));
+    assert.match(sections.topics, /^# Topics\n\nConversation with user is organized into topics/);
+    assert.ok(sections.topics.includes('the topic `General`'));
     assert.equal(guidelines.some(rule => rule.includes('[topic: name]')), false);
     assert.equal(s.messages.some(({ message }) => message.customType === 'koa.topics'), false);
     await s.emit('session_compact_failed', { aborted: true });

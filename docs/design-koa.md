@@ -845,7 +845,9 @@ into the filtered topic appears in place. The page that renames a topic moves it
 to the target; another page with a filter on the old name clears it.
 
 The root's prompt requires a marker and reuse of an existing topic
-for related work. Its branch stores a name index, not a second copy
+for related work. The root-only `list_topics` tool recalls active topics in
+most-recent-use order, derived from branch messages and topic entries.
+Its branch stores a name index, not a second copy
 of each text label. Compaction sends the names in a hidden message
 for the next run rather than changing the system prompt cache.
 A missing marker produces a hidden correction for the next turn.
