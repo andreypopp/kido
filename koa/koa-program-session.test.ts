@@ -68,7 +68,7 @@ test("startup UI of an extension survives /new", { timeout: 30000 }, async t => 
 test("/name sets and reports the session name; an empty /name only reports", { timeout: 30000 }, async t => {
   const app = await realFixture(t, { replies: [] });
   await send(app, "/name");
-  await app.until(note("Usage: /name"));
+  await app.until(note("Session name: koa"));
   await send(app, "/name  renamed ");
   await app.until(note("Session name set: renamed"));
   assert.equal(state(app).name, "renamed");

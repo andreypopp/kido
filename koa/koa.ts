@@ -288,7 +288,7 @@ Everything after -- is message text.
             process.stdout.write(`\x1b]7501;state=${value === "clear" ? value : dialog ? "blocked" : value}${value === "clear" ? "" : `:app=koa${dialog ? ":kind=question" : ""}${encoded ? `:msg=${encoded}` : ""}`}\x1b\\`);
           }
         },
-        title: (own, name) => { if (first) process.stdout.write(`\x1b]0;${utf8Prefix(replaceControlCharacters(name === undefined ? "koa" : `koa - ${name} - ${basename(own.cwd)}`), 2048)}\x1b\\`); },
+        title: own => { if (first) process.stdout.write(`\x1b]0;${utf8Prefix(replaceControlCharacters(`koa - ${own.name} - ${basename(own.cwd)}`), 2048)}\x1b\\`); },
         closed: () => stopping,
         cancelEditor: () => { if (tree.selected() === agentRef()) void edits.cancel(); },
         shutdown: () => { if (first) background(quit()); },
@@ -816,7 +816,7 @@ Everything after -- is message text.
     if (!view) throw new Error("koa requires a Kido pane or --browser");
     teardown.push(() => view.close(!reloading).catch(error => { process.stderr.write(`koa: close: ${errorText(error)}\n`); }));
     if (!stopping) {
-      root().view.status("idle", rootName());
+      root().view.status("idle", "");
       background((async () => {
         if (!await startRoot()) return;
         if (reloaded !== undefined) root().view.feed.notify(reloaded ? `restarted · ${reloaded} ${reloaded === 1 ? "subagent" : "subagents"} ended` : "reloaded", "info");

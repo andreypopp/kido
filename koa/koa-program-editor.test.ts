@@ -36,11 +36,11 @@ async function editing(t: TestContext, env: NodeJS.ProcessEnv = {}, args: string
   };
   const dead = (pane: string, cause: object) => appendFile(feed, JSON.stringify({ type: "dead", pane, dead: { at: 1, cause } }) + "\n");
   const closed = (pane: string) => pollUntil(async () => (await api()).some(call => call.method === "DELETE" && call.path === `/panes/${pane}`) && !(await rows()).some(row => row.id === pane), 5000, "the float is deleted");
-  const sent = (method: string) => pollUntil(async () => (await api()).some(call => call.method === method), 5000, `a ${method} reaches ko`);
+  const layout = () => pollUntil(async () => (await api()).some(call => call.method === "PUT" && call.path === "/layout"), 5000, "a PUT /layout reaches ko");
   const reopen = async (text: string) => { let last = await open(text); await pollUntil(async () => { if (last.body.error === "The editor is busy") last = await open(text); return last.body.error !== "The editor is busy"; }, 5000, "the editor is idle"); return last; };
   const notified = (text: string) => f_notified(app, text);
   const gone = (path: string) => pollUntil(() => stat(path).then(() => false, () => true), 5000, `${path} is removed`);
-  return { dir, app, api, rows, float, open, path, dead, closed, gone, sent, reopen, notified, panes, gate: join(dir, "put-gate") };
+  return { dir, app, api, rows, float, open, path, dead, closed, gone, layout, reopen, notified, panes, gate: join(dir, "put-gate") };
 }
 
 test('a routed path uses the runtime editor, home and cwd and opens a runtime pane', { timeout: 15000 }, async t => {
@@ -163,7 +163,7 @@ test("a second open reuses the float, and a stale revision is retried", { timeou
   const first = await f.open("one");
   assert.equal(first.status, 200);
   assert.deepEqual(await f.open("one"), { status: 200, body: first.body });
-  assert.deepEqual((await f.api()).filter(call => call.method === "PUT").map(call => call.path), ["/layout", "/layout"]);
+  assert.deepEqual((await f.api()).filter(call => call.method === "PUT" && call.path !== "/panes/pane_1/vars/koa.name").map(call => call.path), ["/layout", "/layout"]);
   assert.equal((await f.rows()).filter(row => row.float).length, 1);
 });
 
@@ -219,8 +219,8 @@ test("a refused delete of the float gives a notice", { timeout: 15000 }, async t
 test("koa shutdown while the float is being placed deletes the float that the placement made", { timeout: 15000 }, async t => {
   const f = await editing(t, { KO_FAKE_PUT_GATE: "gate" });
   const opening = f.open("racing").catch(() => undefined);
-  await f.sent("PUT");
-  const put = (await f.api()).find(call => call.method === "PUT");
+  await f.layout();
+  const put = (await f.api()).find(call => call.method === "PUT" && call.path === "/layout");
   const dir = /(\/[^"\\]*koa-editor-[^"\\/]*)\/koa-draft/.exec(put?.body ?? "")?.[1];
   assert.ok(dir);
   await f.app.post("quit");
@@ -234,7 +234,7 @@ test("koa shutdown while the float is being placed deletes the float that the pl
 test("a session change while the float is being placed cancels the edit", { timeout: 15000 }, async t => {
   const f = await editing(t, { KO_FAKE_PUT_GATE: "gate" });
   const opening = f.open("racing");
-  await f.sent("PUT");
+  await f.layout();
   assert.equal((await f.app.post("sessions/new")).status, 200);
   await writeFile(f.gate, "");
   assert.equal((await opening).status, 409);
@@ -245,7 +245,7 @@ test("a session change while the float is being placed cancels the edit", { time
 test("an observer lost while the float is being placed deletes the float", { timeout: 15000 }, async t => {
   const f = await editing(t, { KO_FAKE_PUT_GATE: "gate" });
   const opening = f.open("racing");
-  await f.sent("PUT");
+  await f.layout();
   await writeFile(join(f.dir, "client-drop"), "");
   await pollUntil(async () => !(await stat(join(f.dir, "client-drop")).then(() => true, () => false)), 5000, "the observer ends");
   await writeFile(f.gate, "");
@@ -258,6 +258,6 @@ test("two opens at once make one draft and one float", { timeout: 15000 }, async
   const [one, two] = await Promise.all([f.open("a"), f.open("b")]);
   assert.equal(one.status, 200);
   assert.ok(two.status === 409 || two.body.pane === one.body.pane);
-  assert.equal((await f.api()).filter(call => call.method === "PUT").length, 1);
+  assert.equal((await f.api()).filter(call => call.method === "PUT" && call.path === "/layout").length, 1);
   assert.equal((await f.rows()).filter(row => row.float).length, 1);
 });

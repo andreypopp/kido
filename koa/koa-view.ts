@@ -13,7 +13,6 @@ import type { Life, State, StateData, Dialog, Bash, CommandResult, Attachment, T
 import type { TopicName } from "./records.ts";
 
 const FLUSH_MS = 50;
-const UNNAMED = "koa";
 
 type DialogAnswer = { cancelled: true } | { confirmed: boolean } | { value: string };
 type Root = { value: "idle" | "working" | "done" | "error"; message: string };
@@ -33,7 +32,7 @@ type ViewOptions = {
   branch(): readonly SessionEntry[];
   compose(own: Own, topics?: Topic[]): State;
   status(value: Root["value"] | "clear", message: string, dialog: string | undefined): void;
-  title(own: Own, name: string | undefined): void;
+  title(own: Own): void;
   closed(): boolean;
   cancelEditor(): void;
   shutdown(): void;
@@ -61,7 +60,7 @@ export function createView(options: ViewOptions) {
   let life: Life = { type: "starting" };
   let closed = false;
   const stopping = () => closed || options.closed();
-  const state: Omit<Own, "life" | "queue"> = { bash: [], get compaction() { return compaction ? "running" : "idle"; }, working: false, aborted: false, name: options.name ?? UNNAMED, levels: [], cwd: options.cwd, home: options.home, dialogs: [], statuses: {} };
+  const state: Omit<Own, "life" | "queue"> = { bash: [], get compaction() { return compaction ? "running" : "idle"; }, working: false, aborted: false, name: options.name ?? "", levels: [], cwd: options.cwd, home: options.home, dialogs: [], statuses: {} };
   const queue = () => {
     const queued = pendingPrompts.view();
     const resolved = <T extends { topic?: TopicName }>(list: readonly T[]): T[] => list.map(prompt => prompt.topic ? { ...prompt, topic: feed.resolveTopic(prompt.topic) } : prompt);
@@ -69,8 +68,10 @@ export function createView(options: ViewOptions) {
   };
   const own = (): Own => ({ ...state, queue: queue(), life });
   let root: Root = { value: "idle", message: "" };
-  let sessionName = options.name;
-  const rename = (name: string | undefined) => { sessionName = options.name ?? name; state.name = sessionName ?? UNNAMED; };
+  const nameSession = (session: AgentSession) => {
+    if (options.name === undefined && !session.sessionName) session.setSessionName("koa");
+    state.name = options.name ?? session.sessionName ?? "";
+  };
   let lastText = "";
   const publish = (dialogsChanged = false, topics?: Topic[]) => {
     options.changed();
@@ -151,13 +152,13 @@ export function createView(options: ViewOptions) {
     if (life.type === "failed" || stopping()) return;
     if (life.type !== "switching" && life.type !== "reloading") life = { type: "starting" };
     const { session, runtime } = options.agent();
-    state.sessionId = session.sessionId; rename(session.sessionName);
+    state.sessionId = session.sessionId; nameSession(session);
     restoreMessage();
     state.model = session.model; state.thinking = session.thinkingLevel; state.sessionFile = session.sessionFile;
     rebuild(); levels(false);
     const count = stats(false);
     state.cwd = runtime.cwd;
-    options.title(own(), sessionName);
+    options.title(own());
     if (life.type === "starting" || life.type === "switching" || life.type === "reloading") { life = { type: "ready" }; publish(); }
     return count;
   };
@@ -222,7 +223,7 @@ export function createView(options: ViewOptions) {
         break;
       case "queue_update": pendingPrompts.update({ steering: event.steering, followUp: event.followUp }); publish(); break;
       case "thinking_level_changed": state.thinking = event.level; publish(); break;
-      case "session_info_changed": rename(event.name); options.title(own(), sessionName); publish(); break;
+      case "session_info_changed": nameSession(options.agent().session); options.title(own()); publish(); break;
       case "compaction_end":
         if (event.result) {
           const entry = options.agent().session.sessionManager.getBranch().findLast(entry => entry.type === 'compaction');
@@ -279,7 +280,7 @@ export function createView(options: ViewOptions) {
         feed.notify(kind === "new" ? "new session" : `session: ${state.name} · ${count ?? 0} messages`, "info");
       } catch (error) {
         feed.rebuild([], state.sessionId); feed.notify(errorText(error), "error");
-        life = { type: "ready" }; options.title(own(), sessionName); publish();
+        life = { type: "ready" }; options.title(own()); publish();
       }
     } else { life = { type: "ready" }; publish(); }
     replaySwitching();
@@ -296,7 +297,7 @@ export function createView(options: ViewOptions) {
     onEvent: event,
     rebind: (session: AgentSession) => {
       cancelDialogs(); newSessionScope(); resetSession();
-      state.sessionId = session.sessionId; state.cwd = session.sessionManager.getCwd(); rename(undefined);
+      state.sessionId = session.sessionId; state.cwd = session.sessionManager.getCwd();
       delete state.sessionFile; delete state.model; delete state.thinking; state.levels = [];
     },
     replacing: () => { cancelDialogs(); newSessionScope(); switchingUI = []; life = { type: "switching" }; publish(); },
@@ -318,7 +319,7 @@ export function createView(options: ViewOptions) {
     settleWait: () => new Promise<void>(resolve => { settleWaiter = resolve; }),
     clearSettleWait: () => { settleWaiter = undefined; },
     nextBash: () => String(++bashSerial),
-    title: () => options.title(own(), sessionName),
+    title: () => options.title(own()),
     publish, status, background, running, stopping, newSessionScope, cancelDialogs, removeDialog, finishCompaction, fail, stats, levels, rebuild, refresh, resetSession,
     replaySwitching, setModel, announce, serial, queue, reloadBusy, settleBash, dropBash,
     clearBashTimer: () => { clearTimeout(bashTimer); bashTimer = undefined; },
