@@ -119,7 +119,7 @@ export class Context {
   async until(page: Page, condition: string, seconds = 10): Promise<void> {
     try { await page.waitForFunction(condition, undefined, { polling: 100, timeout: seconds * 1000 }); }
     catch (error) {
-      const details = await js(page, "({field:document.querySelector('#prompt .cm-placeholder')?.textContent,items:(document.querySelector('#items')?.textContent||'').slice(-400)})").catch(() => undefined);
+      const details = await js(page, "({latest:document.querySelector('#latest')?.textContent,field:document.querySelector('#prompt .cm-placeholder')?.textContent,items:(document.querySelector('#items')?.textContent||'').slice(-400)})").catch(() => undefined);
       throw Error(`Webview condition deadline: ${condition} | ${JSON.stringify(details)}`, { cause: error });
     }
   }

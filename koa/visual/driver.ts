@@ -311,6 +311,9 @@ async function settleKoa(web: Page, measured: boolean) {
         if (!(measured)) { return }
         await webviewJS(web, "new Promise((resolve,reject)=>{let previous,stable=0,frame;const timer=setTimeout(()=>{cancelAnimationFrame(frame);reject(Error('Koa capture did not settle'))},5000);function sample(){const cursor=document.querySelector('#prompt .cm-cursor')?.getBoundingClientRect();const state=JSON.stringify([document.querySelector('#scroll').scrollTop,document.querySelector('#dock').getBoundingClientRect().height,cursor?[cursor.x,cursor.y,cursor.width,cursor.height]:null]);stable=koaPendingFrames.size===0&&state===previous?stable+1:0;previous=state;if(stable>=2){clearTimeout(timer);resolve(true)}else frame=requestAnimationFrame(sample)}frame=requestAnimationFrame(sample)})")
     }
+function topicCreateFilterReady(name: string): string {
+        return `!document.querySelector('#presentation')&&${name.endsWith('-restored') ? "document.querySelector('.topic-entry.current')?.dataset.topic==='sidebar'" : "document.querySelector('.topic-entry.current,.topic-capsule .topic-clear')===null"}&&${koaIdle}`
+    }
 async function prepareCapture(name: string, scenario: Scenario, measured: boolean, latestText: string) {
         const web = requireValue(context.browser)
         if (name.startsWith('topics-unread-')) { await settleKoa(web, measured); return }
@@ -328,7 +331,7 @@ async function prepareCapture(name: string, scenario: Scenario, measured: boolea
             break;
             default:
                 if (name === 'topic-create-placement-geometry') { ready = "document.querySelector('#items').textContent.includes('Then the save step stays as mocked: four rows, the session row last.')"; break; }
-                if (name.startsWith('topic-create-filter-')) { ready = "document.querySelector('#items').textContent.includes('Verification passed; I merge the unit next.')"; break; }
+                if (name.startsWith('topic-create-filter-')) { ready = topicCreateFilterReady(name); break; }
                 if (name.startsWith('topic-create-')) { ready = "document.querySelector('#items').textContent.includes('A fix is in the test’s wait.')"; break; }
                 if (name.startsWith('topic-archive-')) { ready = "document.querySelector('#items').textContent.includes('Then the save step stays as mocked: four rows, the session row last.')"; break; }
                 require(false, `No topic capture phase for ${name}`)
@@ -350,7 +353,7 @@ async function prepareCapture(name: string, scenario: Scenario, measured: boolea
         await webviewJS(web, `(()=>{if(!document.querySelector('.topic-input')&&!document.querySelector('.topic-rename')&&!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');if(${stopFollowing})scroll.dispatchEvent(new WheelEvent('wheel',{deltaY:-1,bubbles:true}));scroll.scrollTop=${initialScroll};if(${ordered})document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()`)
         await webviewUntil(web, "(()=>{const dock=document.querySelector('#dock');return Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===dock.getBoundingClientRect().height})()")
         const latestAtTop = top || scenario == "latest" && name.endsWith("new")
-        const scrollPosition = latestAtTop ? "0" : scenario == "latest" ? "document.querySelector('.newmsgs').offsetTop-300" : aboveBottom ? "0" : "scroll.scrollHeight"
+        const scrollPosition = latestAtTop ? "0" : scenario == "latest" ? "scroll.scrollTop" : aboveBottom ? "0" : "scroll.scrollHeight"
         const dispatchScroll = scenario == "latest" || aboveBottom ? "scroll.dispatchEvent(new Event('scroll'));" : ""
         const scrollReady = latestAtTop ? "scroll.scrollTop===0" : scenario == "latest" ? "true" : aboveBottom ? "document.querySelector('#latest').classList.contains('show')" : "scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1"
         const latestLabel = JSON.stringify(latestText)
@@ -451,7 +454,7 @@ async function driveTopics(web: Page, phases: string[], capture: (name: string) 
             }
         }
         if (name.startsWith('topic-create-filter-')) {
-            await webviewUntil(web, "document.querySelector('#items').textContent.includes('Verification passed; I merge the unit next.')")
+            await webviewUntil(web, topicCreateFilterReady(name))
             await koaMeasured(web, '#topics')
             if (name.endsWith('-block')) {
                 await web.setViewportSize({ width: 1280, height: 557 })
@@ -480,7 +483,7 @@ async function driveTopics(web: Page, phases: string[], capture: (name: string) 
             if (!name.endsWith('-restored')) {
                 const step = await webviewJS<number>(web, "fetch('/replay/status').then(r=>r.json()).then(s=>s.step)")
                 await web.locator('.topic-all').click()
-                await webviewUntil(web, `fetch('/replay/status').then(r=>r.json()).then(s=>s.step>${step})`)
+                await webviewUntil(web, `fetch('/replay/status').then(r=>r.json()).then(s=>s.step>${step}&&s.mismatches===0)`)
             }
         } else if (name === 'topic-create-placement-geometry') {
             equal(await web.locator('.topic-capsule').evaluate(node => node.getBoundingClientRect().top), 8, 'Line capsule stays at 8px')
@@ -1328,8 +1331,9 @@ echo release
             await webviewUntil(web, "document.querySelector('#latest').textContent==='↓ 3 new'")
             latestText = "↓ 3 new"
             await capture(prefix + "new")
-            await webviewJS(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=document.querySelector('.newmsgs').offsetTop-300;scroll.dispatchEvent(new Event('scroll'));return true})()")
-            await webviewUntil(web, "document.querySelector('#latest').textContent!=='↓ 3 new'")
+            await webviewJS(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=Math.round(document.querySelector('.newmsgs').offsetTop-300);scroll.dispatchEvent(new Event('scroll'));return true})()")
+            await webviewJS(web, "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))")
+            await webviewUntil(web, "document.querySelector('#latest').textContent==='↓ 1 new'")
             latestText = "↓ 1 new"
             await capture(prefix + "divider")
             return
