@@ -31,7 +31,6 @@ function message(error: unknown): string {
 }
 try {
   for (const fixture of fixtures) {
-    if (fixture.name === "ScrollbarJumpMountsHistory" && !selected.has(fixture.name)) continue;
     if (selected.size && !selected.has(fixture.name)) continue;
     await new Promise<void>(resolve => process.stdout.write(`FIXTURE ${fixture.name}\n`, () => resolve()));
     const context = new Context(root, fixture.name, selected.get(fixture.name), pixels);
