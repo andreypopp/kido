@@ -1184,15 +1184,15 @@ function flushExtents() {
   for (const row of rows) {
     if (!row.isConnected || row.hidden || row.dataset.seq === undefined) continue;
     const seq = Number(row.dataset.seq), after = next(row), joined = after instanceof HTMLElement && after.dataset.seq !== undefined;
-    const earlier = extents.get(seq), height = row.offsetHeight;
-    const px = joined ? after.offsetTop - row.offsetTop : height + (parseFloat(getComputedStyle(row).marginBottom) || 0);
+    const earlier = extents.get(seq), bounds = row.getBoundingClientRect();
+    const px = joined ? after.getBoundingClientRect().top - bounds.top : bounds.height + (parseFloat(getComputedStyle(row).marginBottom) || 0);
     changed ||= earlier?.kind !== 'measured' || earlier.px !== px;
     if (earlier?.kind === 'measured' && earlier.px === px && earlier.width === width && earlier.lh === lh) continue;
     extents.set(seq, { kind: 'measured', width, lh, px });
     if (table) patched.add(seq);
     windowDirty = true;
   }
-  const after = divider && next(divider), gapPx = after instanceof HTMLElement && after.dataset.seq !== undefined && divider ? after.offsetTop - divider.offsetTop : undefined;
+  const after = divider && next(divider), gapPx = after instanceof HTMLElement && after.dataset.seq !== undefined && divider ? after.getBoundingClientRect().top - divider.getBoundingClientRect().top : undefined;
   if (gapPx !== undefined && gapPx !== dividerPx) {
     dividerPx = gapPx; windowDirty = true; changed = true;
     if (table?.divider) { table.divider.px = gapPx; patched.add(table.divider.before); }

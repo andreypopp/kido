@@ -894,8 +894,8 @@ async function testKoaWebviewExplicitRowExtents() {
         await webviewJS(web, "(async()=>{" + followHelpers + `
           window.extentReads=[];window.observedRows=[];
           const observe=ResizeObserver.prototype.observe;ResizeObserver.prototype.observe=function(target,...args){if(target.matches('[data-seq]')||target.closest('#items>[data-seq]'))observedRows.push(target.outerHTML.slice(0,120));return observe.call(this,target,...args)};
-          const height=Object.getOwnPropertyDescriptor(HTMLElement.prototype,'offsetHeight');
-          Object.defineProperty(HTMLElement.prototype,'offsetHeight',{configurable:true,get(){if(this.parentElement?.id==='items'&&this.dataset.seq!==undefined)extentReads.push(Number(this.dataset.seq));return height.get.call(this)}});
+          const bounds=Element.prototype.getBoundingClientRect;
+          Element.prototype.getBoundingClientRect=function(){if(this.parentElement?.id==='items'&&this.dataset.seq!==undefined&&new Error().stack.includes('flushExtents'))extentReads.push(Number(this.dataset.seq));return bounds.call(this)};
           window.extentRows=Array.from({length:80},(_,seq)=>({kind:'assistant',seq,revision:0,at:1700000000000,final:seq!==77,blocks:[{type:'text',text:'Row '+seq+' '+Array(seq===79?12:1).fill('A stable reader paragraph. '.repeat(12)).join('\\n\\n')}],stop:'stop',error:''}));
           push(view(root,[root]));push({type:'reset',epoch:'extents',more:false,items:extentRows});
           window.extentFrames=async()=>{for(let i=0;i<6;i++)await new Promise(requestAnimationFrame)};
