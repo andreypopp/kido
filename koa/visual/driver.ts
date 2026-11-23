@@ -395,12 +395,15 @@ async function driveTopics(web: Page, phases: string[], capture: (name: string) 
             const wrapping = await webviewJS(web, "(()=>{const host=document.querySelector('.assistant>.reply-section>.msg');if(!host)throw Error('Missing prose with a topic');const token='identifier'.repeat(100),p=document.createElement('p'),pre=document.createElement('pre'),table=document.createElement('table');p.textContent=pre.textContent=token;table.innerHTML='<tr><td>'+token+'</td></tr>';host.append(p,pre,table);try{return [p.scrollWidth<=p.clientWidth,getComputedStyle(pre).overflowWrap,getComputedStyle(table).overflowWrap,pre.scrollWidth>pre.clientWidth]}finally{p.remove();pre.remove();table.remove()}})()")
             equal(wrapping, [true,"normal","normal",true], "With a topic prose wraps an unbroken token; code and tables keep horizontal scrolling")
         }
+        const tailGap = () => webviewJS<number>(web, "(()=>{const transcript=document.querySelector('#transcript'),box=transcript.getBoundingClientRect(),style=getComputedStyle(transcript);return box.bottom-parseFloat(style.paddingBottom)-document.querySelector('#items').lastElementChild.getBoundingClientRect().bottom})()")
+        const allTailGap = name === 'topics-filter' ? await tailGap() : undefined
         if (name.startsWith("topics-filter")) {
             await webviewJS(web, "(()=>{document.querySelector('.topic-overflow').click();document.querySelector('.topic-entry[data-topic=sidebar]').click();return true})()")
             await webviewUntil(web, `document.querySelector('.composer-topic .topic-clear')!==null&&document.querySelector('.user')!==null&&document.querySelector('#items .topic-chip:not(.topic-new)')===null&&${koaIdle}`)
             const filtered = await webviewJS(web, "document.querySelector('#items .topic-chip:not(.topic-new)')===null&&document.querySelector('#topic-cell')===null&&document.querySelector('.composer-topic .topic-name').textContent==='#sidebar'&&document.querySelector('.topic-capsule .topic-clear')!==null")
             equal(filtered, true, "Filtered messages have time-only headers and the composer owns the chip")
             if (name === 'topics-filter') {
+                equal(await tailGap(), allTailGap, 'Filtered and All views have the same permanent tail space')
                 const height = () => web.locator('#composer').evaluate(node => node.getBoundingClientRect().height)
                 const choose = async (topic: string) => {
                     await web.locator('.composer-topic .topic-new').click()
@@ -763,6 +766,8 @@ async function testKoaWebviewDots() {
             await patch(base, "running")
             const retained = await webviewJS(web, "document.querySelector('.run')===window.dotRow&&window.dotRow.querySelector('.line')===window.dotLine")
             equal(retained, true, "The bare row and its line become the run")
+            const noTail = await webviewJS(web, "(()=>{const slot=document.querySelector('#tail-slot'),transcript=document.querySelector('#transcript');return slot.hidden&&slot.getBoundingClientRect().height===0&&transcript.getBoundingClientRect().bottom-parseFloat(getComputedStyle(transcript).paddingBottom)===document.querySelector('#items').getBoundingClientRect().bottom})()")
+            equal(noTail, true, 'A run ending uses its own last line, with no blank ending row')
             const tool = await measure()
             if (name == "light") { await webviewPageSnapshot("light-tool", ".run", { top: 4, left: 4, bottom: 4, right: 4 }, "testKoaWebviewDots()") }
             await patch(base + 1, "done")
@@ -783,6 +788,21 @@ async function testKoaWebviewDots() {
             equal(after["time"], true, `${name}: the time stays at the right`)
             for (const row of [live, after, ...(empty ? [empty] : [])]) { near(requireValue(row["gap"]), 0, 1.5, `${name}: the dots are centred on the x-height: ${row}`) }
         }
+        for (const size of ['13px', '19px']) {
+            await webviewJS(web, `document.documentElement.style.setProperty('--ko-font-size','${size}')`)
+            const heights: number[] = []
+            for (const working of [false, true, false]) {
+                await webviewJS(web, "(()=>{" + followHelpers + `push(view(root,[root],{working:${working},since:1699999990000}));return true})()`)
+                await webviewUntil(web, `document.querySelectorAll('#tail-slot>.working').length===${working ? 1 : 0}&&!document.querySelector('#items .hold,#items .grow')&&Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===document.querySelector('#dock').getBoundingClientRect().height`)
+                heights.push(await webviewJS<number>(web, "document.querySelector('#transcript').offsetHeight"))
+                if (working) {
+                    const bottoms = await webviewJS<number[]>(web, "(()=>{const slot=document.querySelector('#tail-slot'),row=slot.firstElementChild;return [row.getBoundingClientRect().bottom+parseFloat(getComputedStyle(row).marginBottom),slot.getBoundingClientRect().bottom]})()")
+                    equal(bottoms[0], bottoms[1], `${size}: the bare row and its rhythm fill the slot exactly`)
+                }
+            }
+            equal(heights, [heights[0], heights[0], heights[0]], `${size}: turn start and end keep the transcript height`)
+        }
+        await webviewJS(web, "document.documentElement.style.removeProperty('--ko-font-size')")
         await webviewJS(web, "(()=>{" + followHelpers + `          push(view(root,[root],{working:true,since:1699999990000}));
           push({type:'item',item:{kind:'assistant',seq:1,revision:0,at:1700000001000,final:false,blocks:[{type:'text',text:'Reading the sweep.'}],stop:'',error:''}});
           return true})()

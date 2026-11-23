@@ -2352,7 +2352,7 @@ test('the tail renders whole under a clip that opens at whole lines once the cap
   fixture.patch(2, ' more', true);
   fixture.step(0);
   assert.equal(fixture.evaluate("texts.get('0:0').view.children.some(child => child.className.includes('reveal'))"), false);
-  assert.deepEqual([fixture.evaluate("revealing.size"), fixture.evaluate("element('items').lastChild?.className.includes('working')")], [0, true]);
+  assert.deepEqual([fixture.evaluate("revealing.size"), fixture.evaluate("element('tail-slot').lastChild?.className.includes('working')")], [0, true]);
 });
 
 test('a duplicate revision repeats nothing and a replaced block restarts its own reveal', async () => {
@@ -2826,9 +2826,9 @@ test('parallel completion abort and same-turn reset retain adopted working row',
 test('bare row becomes the same run node', async () => {
   const fixture = await revealPage(200), ev = fixture.evaluate;
   ev("state={...state,working:true,since:1699999990000}; reconcileWorking()");
-  const row = ev("element('items').lastChild"), line = ev("element('items').lastChild.firstElementChild");
+  const row = ev("element('tail-slot').lastChild"), line = ev("element('tail-slot').lastChild.firstElementChild");
   ev("put({seq:1,revision:0,at:0,kind:'assistant',final:false,stop:'',error:'',blocks:[{type:'text',text:'Reading'}]})");
-  assert.equal(ev("element('items').lastChild"), row, 'text grows before the same bare row');
+  assert.equal(ev("element('tail-slot').lastChild"), row, 'text grows before the same bare row');
   ev("put({seq:1,revision:0,at:0,kind:'assistant',final:false,stop:'',error:'',blocks:[{type:'text',text:'Reading'},{type:'thinking',text:'Checking',started:1}]})");
   assert.equal(ev("views.get(1).slots.get('1:1').view.firstElementChild"), row, 'the bare row is adopted, not replaced');
   assert.equal(ev("views.get(1).slots.get('1:1').view.firstElementChild.firstElementChild"), line, 'its line is retained');
@@ -3402,10 +3402,11 @@ async function flowPage(margin = 0) {
   const starts = new Map<unknown, number>(), now = () => Number(app.context.performance.now());
   const grown = (node: { className: string }) => { if (node.className.includes('hold')) return 0; if (!node.className.includes('grow')) return 1; if (!starts.has(node)) starts.set(node, now()); return Math.min(1, (now() - Number(starts.get(node))) / 220); };
   type Box = { tagName: string; className: string; children: Box[]; parent?: Box; style: Record<string, string>; dataset: Record<string, string> };
-  const count = (node: Box): number => (node.tagName === 'P' || node.tagName === 'PRE' ? 100 * grown(node) : 0) + (node.children ?? []).reduce((total, child) => total + (!(node.className ?? '').split(' ').includes('open') && (child.className ?? '').split(' ').some(name => ['detail', 'steps', 'bd'].includes(name)) ? 0 : count(child)), 0);
+  const count = (node: Box): number => (node.tagName === 'P' || node.tagName === 'PRE' ? 100 * grown(node) : (node.className ?? '').split(' ').includes('run') ? 33 : 0) + (node.children ?? []).reduce((total, child) => total + (!(node.className ?? '').split(' ').includes('open') && (child.className ?? '').split(' ').some(name => ['detail', 'steps', 'bd'].includes(name)) ? 0 : count(child)), 0);
   const isBox = (value: unknown): value is Box => typeof value === 'object' && value !== null && 'children' in value;
   const size = (seq: number) => { const view = evaluate(`views.get(${seq}).view`); assert.ok(isBox(view)); return count(view) + (extra.get(seq) ?? 0); };
-  const list = doc.getElementById('items');
+  const list = doc.getElementById('items'), slot = doc.getElementById('tail-slot');
+  slot.offsetHeight = 33;
   assert.ok(isBox(list));
   Object.defineProperty(list, 'offsetTop', { get: () => origin.value });
   const px = (value: unknown) => parseFloat(String(value ?? '')) || 0;
@@ -3415,10 +3416,9 @@ async function flowPage(margin = 0) {
       if (child === until) return y;
       if (child.dataset.seq !== undefined) { if (Number(child.dataset.seq) === until) return y; y += size(Number(child.dataset.seq)) + (child.hidden ? 0 : margin); }
       else if (child.className.includes('gap')) y += px(child.style.height);
-      else if (child.className.includes('working')) y += 38;
       else if (child.className.includes('newmsgs')) y += margin ? 16 + margin : 48;
     }
-    return until === undefined ? y + px(list.style.paddingBottom) + pad.value : y;
+    return until === undefined ? y + px(list.style.paddingBottom) + pad.value + (slot.hidden ? 0 : slot.offsetHeight) : y;
   };
   const above = (seq: number) => flow(seq);
   layout.height = flow;
@@ -3440,7 +3440,7 @@ async function flowPage(margin = 0) {
   const reveal = (seq: number, text: string) => ({ type: 'item', item: { seq, revision: 0, kind: 'assistant', final: false, blocks: [{ type: 'text', text }], stop: '', error: '' } });
   const suffix = (seq: number, revision: number, text: string, final = false) => ({ type: 'patch', seq, baseRevision: revision - 1, revision, final, stop: '', error: '', blocks: [{ index: 0, suffix: text }] });
   const top = () => Number(evaluate("element('scroll').scrollTop"));
-  const bottom = () => Number(evaluate("element('scroll').scrollHeight - element('scroll').clientHeight"));
+  const bottom = () => Math.max(0, Number(evaluate("element('scroll').scrollHeight - element('scroll').clientHeight")));
   const settle = (frames = 120) => { for (let frame = 0; frame < frames; frame++) page.step(16); };
   const reader = (value: number) => evaluate(`decide({type:'input',direction:${value}<element('scroll').scrollHeight-element('scroll').clientHeight?'up':'down'});element('scroll').scrollTop=${value};element('scroll').onscroll()`);
   const offset = (seq: number) => Number(evaluate(`views.get(${seq}).view.getBoundingClientRect().top`));
@@ -3451,6 +3451,38 @@ async function flowPage(margin = 0) {
   const wheel = (deltaY: number) => evaluate(`element('scroll').handlers.get('wheel')?.({deltaY:${deltaY},deltaX:0})`);
   return { ...page, pad, extra, origin, seqs, reveal, suffix, top, bottom, settle, reader, wheel, offset, open, gate, settled, trace };
 }
+
+test('the tail slot contains only bare dots in filtered and All views', async () => {
+  const fixture = await flowPage(), { evaluate } = fixture;
+  evaluate("state={...state,sessionId:'tail',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]}");
+  fixture.open([{seq:0,at:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{type:'text',text:'Reply',topic:'one'}]}]);
+  for (const filter of [undefined, 'one', undefined]) {
+    evaluate(`topics.debug.scopeData(topics.scope()).filter=${JSON.stringify(filter)};refreshTopicItems();renderDirty();state={...state,working:true,since:1700000000000};reconcileWorking()`);
+    assert.equal(evaluate("!element('tail-slot').hidden&&element('tail-slot').firstChild===working.place.row"), true);
+    assert.equal(evaluate("measure().naturalHeight"), 133);
+    evaluate("put({seq:1,at:1,kind:'assistant',final:false,stop:'',error:'',blocks:[{type:'thinking',text:'Checking',topic:'one',started:1}]})");
+    assert.equal(evaluate("working.place.kind==='run'&&element('tail-slot').hidden&&element('tail-slot').children.length===0"), true);
+    assert.equal(evaluate("measure().naturalHeight"), 133);
+    evaluate("put({seq:2,at:2,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{type:'text',text:'After the run',topic:'one'}]})");
+    assert.equal(evaluate("element('tail-slot').hidden"), false);
+    assert.equal(evaluate("measure().naturalHeight"), 266);
+    evaluate("items.delete(2);refreshTopicItems();resetting=true;renderDirty()");
+    evaluate("state={...state,working:false};reconcileWorking()");
+    assert.equal(evaluate("element('tail-slot').hidden&&element('tail-slot').children.length===0"), true);
+    evaluate("items.delete(1);refreshTopicItems();resetting=true;renderDirty()");
+    assert.equal(evaluate("element('tail-slot').hidden"), false);
+    assert.equal(evaluate("measure().naturalHeight"), 133);
+  }
+  evaluate("put({seq:0,at:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{type:'thinking',text:'Checking',topic:'one',started:1,ended:2},{type:'text',text:'Other topic',topic:'two'}]});topics.debug.scopeData(topics.scope()).filter='one';refreshTopicItems();resetting=true;renderDirty()");
+  assert.equal(evaluate("element('tail-slot').hidden"), true);
+  assert.equal(evaluate("measure().naturalHeight"), 33);
+  evaluate("state={...state,working:true,since:1700000000000};reconcileWorking()");
+  assert.equal(evaluate("!element('tail-slot').hidden&&working.place.kind==='bare'"), true);
+  evaluate("state={...state,working:false};reconcileWorking();put({seq:3,at:3,kind:'user',final:true,text:'Hidden later message',topic:'two',images:[],attachments:[]})");
+  assert.equal(evaluate("element('tail-slot').hidden"), true);
+  evaluate("topics.debug.scopeData(topics.scope()).filter=undefined;refreshTopicItems();resetting=true;renderDirty()");
+  assert.equal(evaluate("element('tail-slot').hidden"), false);
+});
 
 test('every transcript fold holds the clicked header in following and reader windows', async () => {
   const cards = [
@@ -3792,7 +3824,7 @@ test('the working row of a turn that ends goes in one frame without moving the f
   page.deliver(page.suffix(0, 1, '', true));
   page.evaluate("apply({...state,type:'state',working:false})");
   page.step(16);
-  assert.equal(page.evaluate("!!element('items').lastChild?.className.includes('working')"), false);
+  assert.equal(page.evaluate("!!element('tail-slot').lastChild?.className.includes('working')"), false);
   assert.deepEqual([page.top(), page.top() - page.bottom()], [settled, 0]);
 });
 
@@ -3853,6 +3885,7 @@ test('a reader sub-pixel scroll through the page is never written back', async (
 
 test('wheel up without scroll range keeps following and adds no unread divider', async () => {
   const page = await flowPage();
+  page.evaluate("element('scroll').clientHeight=300");
   page.open([page.text(0)]);
   page.settle();
   assert.equal(page.bottom(), 0);
@@ -4158,8 +4191,8 @@ test('a failed earlier-output request for a job that was left does not mark the 
   assert.deepEqual(f.lines(), ['other']);
 });
 
-const FIND_DOTS = "(function find(n){return n.className==='dots'?n:n.children.map(c=>c.children?find(c):undefined).find(Boolean)})(element('items'))";
-const dotsCount = "(function f(n){return (n.className==='dots'?1:0)+n.children.reduce((t,c)=>t+(c.children?f(c):0),0)})(element('items'))";
+const FIND_DOTS = "(function find(n){return n.className==='dots'?n:n.children.map(c=>c.children?find(c):undefined).find(Boolean)})({children:[element('items'),element('tail-slot')]})";
+const dotsCount = "(function f(n){return (n.className==='dots'?1:0)+n.children.reduce((t,c)=>t+(c.children?f(c):0),0)})({children:[element('items'),element('tail-slot')]})";
 test('working dots: the dots in the page keep their node through patches, reveal, replacements, rebuilds and hide', async () => {
   const fixture = await revealPage(200), ev = fixture.evaluate;
   ev("state={...state,working:true,since:1699999990000}");
@@ -4190,7 +4223,7 @@ test('working dots: the dots in the page keep their node through patches, reveal
 test('working dots: one indicator in every frame, a bare row or a running mark, never both and never neither', async () => {
   const fixture = await revealPage(200), ev = fixture.evaluate;
   const marks = () => Number(ev(dotsCount));
-  const bare = () => Boolean(ev("!!element('items').lastChild?.className.includes('working')"));
+  const bare = () => Boolean(ev("!!element('tail-slot').lastChild?.className.includes('working')"));
   const tool = (id: string, state: string) => ({ type: 'tool', id, name: 'bash', args: { text: '{}' }, state: { type: state, ...(state === 'done' ? { error: false, result: { text: 'ok', images: [] } } : {}) } });
   const show = (blocks: object[], final = false, stop = '') => ev('put(' + JSON.stringify({ seq: 1, revision: 0, at: 0, kind: 'assistant', final, stop, error: '', blocks }) + ')');
   const where = () => String(ev("(function(){const d=" + FIND_DOTS + ";return d.parent.className+'|'+d.parent.parent.parent.className})()"));
@@ -4225,7 +4258,7 @@ test('working dots: the mark sits in the last visible element, a run row or a ba
   const fixture = await revealPage(200), ev = fixture.evaluate;
   const marks = () => Number(ev(dotsCount));
   const rows = () => Number(ev("element('items').children.length"));
-  const bare = () => Boolean(ev("element('items').children.some(c=>c.className.includes('working'))"));
+  const bare = () => Boolean(ev("element('tail-slot').children.some(c=>c.className.includes('working'))"));
   const node = () => ev(FIND_DOTS);
   const tool = (id: string, state: string) => ({ type: 'tool', id, name: 'bash', args: { text: '{}' }, state: { type: state, ...(state === 'done' ? { error: false, result: { text: 'ok', images: [] } } : {}) } });
   const show = (seq: number, blocks: object[], final = false, stop = '') => ev('put(' + JSON.stringify({ seq, revision: 0, at: 0, kind: 'assistant', final, stop, error: '', blocks }) + ')');
@@ -4250,7 +4283,7 @@ test('working dots: the mark sits in the last visible element, a run row or a ba
   assert.deepEqual([bare(), marks(), where().startsWith('sum|line|step'), rows() === before, node() === first], [false, 1, true, true, true], 'a new call joins: the same mark moves to the step');
   show(1, [{ type: 'thinking', text: 'x', started: 1, ended: 2 }, tool('a', 'done'), tool('b', 'done'), tool('c', 'done')]);
   show(2, [{ type: 'text', text: 'reply' }]);
-  assert.deepEqual([bare(), marks(), node() === first, ev("element('items').lastChild.className.includes('working')")], [true, 1, true, true], 'text starts after the run: the same mark is the bare row under it');
+  assert.deepEqual([bare(), marks(), node() === first, ev("element('tail-slot').lastChild?.className.includes('working')")], [true, 1, true, true], 'text starts after the run: the same mark is the bare row under it');
   show(2, [{ type: 'text', text: 'reply' }], true);
   show(3, [tool('d', 'done')]);
   assert.deepEqual([bare(), marks(), node() === first, where().startsWith('sum|line|run')], [false, 1, true, true], 'a run after final text takes the mark');
@@ -4287,7 +4320,7 @@ test('working dots: active thinking is a live step, the mark follows it and the 
 async function dotsWatch() {
   const page = await latestPage(), watch = frameWatch(page);
 
-  const attached = () => page.evaluate("(()=>{for(let node=working?.primary;node;node=node.parent)if(node===element('items'))return true;return false})()") === true;
+  const attached = () => page.evaluate("(()=>{for(let node=working?.primary;node;node=node.parent)if(node===element('items')||node===element('tail-slot'))return true;return false})()") === true;
   page.evaluate("state={...state,life:{type:'ready'},working:true,since:1700000000000}");
   return { page, removals: () => watch.counts.removals, attached, reset: () => { watch.counts.removals = 0; } };
 }
@@ -4328,7 +4361,7 @@ test('the working dots are never detached while a turn runs, and move once when 
   page.step(16);
   assert.ok(removals() <= 1, `end: ${removals()}`);
   assert.equal(page.evaluate("liveMarks.size"), 0);
-  assert.equal(page.evaluate("element('items').lastChild.className.includes('working')"), false);
+  assert.equal(page.evaluate("!!element('tail-slot').lastChild?.className.includes('working')"), false);
   assert.equal(page.evaluate("(()=>{const run=views.get(1).slots.get('1:0').view.firstElementChild;return runMarks.get(run).summary.children.includes(working.primary)})()"), true);
 });
 
@@ -4444,7 +4477,7 @@ test('assistant items and text patches in one turn never take the dots out of th
     for (let revision = 1; revision <= 3; revision++) { page.deliver(patchOf(seq, revision, ' more ' + revision)); page.step(16); }
   }
   assert.equal(watch.counts.removals, 0);
-  assert.equal(page.evaluate("element('items').lastChild.className.includes('working')"), true);
+  assert.equal(page.evaluate("element('tail-slot').lastChild?.className.includes('working')"), true);
 });
 
 test('a new reveal tail is prepared in its rendering frame', async () => {
@@ -4630,7 +4663,7 @@ test('a reader window keeps the live tail connected', async () => {
     assert.equal(page.evaluate("texts.get('300:0')"), memo);
     assert.equal(page.evaluate('views.get(300).view'), row);
     assert.equal(page.evaluate('working.primary'), dots);
-    assert.deepEqual([page.evaluate("element('items').contains(texts.get('300:0').reveal.tail.view)"), page.evaluate("element('items').contains(working.primary)"), page.evaluate("element('items').contains(views.get(300).view)")], [true, true, true]);
+    assert.deepEqual([page.evaluate("element('items').contains(texts.get('300:0').reveal.tail.view)"), page.evaluate("element('tail-slot').contains(working.primary)"), page.evaluate("element('items').contains(views.get(300).view)")], [true, true, true]);
   }
   assert.ok(page.seqs().length < 60 && page.seqs()[0] === 0);
 });
@@ -4818,7 +4851,7 @@ test('the table total includes row margins with a divider and a reader window', 
   page.origin.value = 30;
   page.open(page.rows(0, 300));
   page.settle(8);
-  const total = () => [page.evaluate("element('scroll').scrollHeight"), page.evaluate('table.starts[order.length] + geometry().origin')];
+  const total = () => [page.evaluate("element('scroll').scrollHeight"), page.evaluate("table.starts[order.length] + geometry().origin + (element('tail-slot').hidden ? 0 : element('tail-slot').offsetHeight)")];
   page.reader(3000);
   page.settle(8);
   assert.ok(page.padding() > 0 && page.seqs().length < 40);
@@ -5067,7 +5100,7 @@ test('a pinned selection, the window and the live tail are three ranges with a g
   page.settle(8);
   assert.equal(page.evaluate("element('items').children.filter(child => child.className.includes('gap')).length"), 2);
   assert.ok(page.seqs().includes(300) && page.seqs().includes(0) && page.seqs().includes(near[1]));
-  assert.equal(page.evaluate('table.starts[order.length] + geometry().origin + 38'), page.evaluate("element('scroll').scrollHeight"), 'the table and the layout agree, the working row apart');
+  assert.equal(page.evaluate("table.starts[order.length] + geometry().origin + (element('tail-slot').hidden ? 0 : element('tail-slot').offsetHeight)"), page.evaluate("element('scroll').scrollHeight"), 'the table and the layout agree');
 });
 
 test('Select All never pins the rows between the window and a distant tail', async () => {
@@ -5144,7 +5177,7 @@ test('a topic switch keeps its presentation until history arrives and lands once
   assert.equal(page.evaluate('visible(395)?.seq'), 395);
   release();
   const after = []; for (let turn=0;turn<20;turn++) { await page.settled(); page.step(16); after.push(sample()); }
-  assert.deepEqual(after.map(({ first, offset }) => ({ first, offset })), after.map(() => ({ first: 192, offset: 0 })));
+  assert.deepEqual(after.map(({ first, offset }) => ({ first, offset })), after.map(() => ({ first: 192, offset: -Number(page.evaluate("element('tail-slot').offsetHeight")) })));
 });
 
 test('filtered history installs 400 summary rows with a linear topic index', async () => {

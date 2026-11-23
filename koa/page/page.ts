@@ -849,11 +849,18 @@ function clearWorking() {
 function lastRun() { const source = trailingOwner(); return source ? openers.get(rowKey({ kind: 'run', source }))?.view : undefined; }
 function reconcileWorking() {
   const since = state.working && state.view.type !== 'job' && state.compaction !== 'running' ? state.since : undefined;
+  const tail = since === undefined ? undefined : lastRun();
+  let endsInRun = false;
+  for (const seq of [...order].reverse()) {
+    const shown = visible(seq), part = shown && runParts(shown, shown).at(-1);
+    if (part) { endsInRun = part.kind !== 'boundary'; break; }
+  }
+  element('tail-slot').hidden = state.view.type === 'job' || endsInRun && !(since !== undefined && !tail);
   if (since === undefined) { clearWorking(); return; }
   if (working?.view !== state.view.id || working.since !== since) {
     clearWorking(); working = { view: state.view.id, since, primary: dots(), place: bareRun(), extra: new Map() };
   }
-  const turn = working, spots: Spot[] = [], tail = lastRun();
+  const turn = working, spots: Spot[] = [];
   if (tail) {
     if (turn.place.kind === 'bare' && turn.place.row !== tail) removeRow(turn.place.row);
     turn.place = { kind: 'run', owner: tail };
@@ -865,8 +872,8 @@ function reconcileWorking() {
     if (!spots.length) { const marks = runMarks.get(tail); if (marks) spots.push({ key: 'sum:' + marks.key, parent: marks.summary, before: null }); }
   } else {
     if (turn.place.kind !== 'bare') turn.place = bareRun();
-    const { row, sum } = turn.place, items = element('items');
-    if (row.parentNode !== items || items.lastChild !== row) { removeRow(row); items.append(row); rhythmPending.add(row); }
+    const { row, sum } = turn.place, slot = element('tail-slot');
+    if (row.parentNode !== slot) { removeRow(row); slot.append(row); }
     spots.push({ key: 'bare', parent: sum, before: null });
   }
   const place = (mark: HTMLElement, { parent, before }: Omit<Spot, 'key'>) => {
@@ -1151,7 +1158,7 @@ function renderItem(item: WireItem) {
   views.set(item.seq, { view, item, warning, slots, filter, runs });
   if (!previous) {
     const container = element('items'), next = [...views.keys()].filter(seq => seq > item.seq).sort((a, b) => a - b)[0];
-    container.insertBefore(view, views.get(next)?.view ?? (working?.place.kind === 'bare' && working.place.row.parentNode === container ? working.place.row : null));
+    container.insertBefore(view, views.get(next)?.view ?? null);
     if (view.previousElementSibling) dirtyExtent(view.previousElementSibling);
   }
   dirtyExtent(view);

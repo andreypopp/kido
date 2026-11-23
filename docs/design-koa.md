@@ -494,7 +494,15 @@ between its own row and a running step without being rebuilt for each
 token. Run rows are patched in place. Keeping the node attached lets
 WebKit's compositor animate it while the main thread is busy. The
 bare row's height is not removed mid-turn merely because a tool
-starts. Reduced motion makes the dots static and disables grow and
+starts. A transcript that ends with a message ends in an ending row
+of the bare row's height: blank while idle, the bare row while the
+turn works. A transcript whose last visible element is a run has
+none; the run's last line takes its place, and a run that arrives
+occupies it. The exception is a filtered view whose run is followed
+by hidden content of a working turn: the bare row then stands under
+the run, and the floor holds its height at the turn's end. So a
+turn's start and end never change the transcript's height, in every
+view; a job view has no ending row. Reduced motion makes the dots static and disables grow and
 scroll travel; it does not disable chunking or fence folds.
 
 ### Windowing, scrolling, find and copy
@@ -552,14 +560,16 @@ bottom in the same frame. While following, the written scroll
 position never decreases. The following state keeps a floor, the
 largest natural transcript height seen, and the page applies it as
 the minimum height of the transcript's clipping wrapper before it
-writes the scroll. So a shrink at the tail (a revised reveal slice,
-a working row that goes, merged run rows, the typing dots, the
-unread divider) leaves a blank reserve under the content instead of
-an upward jump, and later growth consumes the reserve. Turn end does
-not release it. A reader keeps only the part of it that the current
-position needs, so leaving following causes no clamp, and the part
-goes as the reader moves up; a reset, a switch, a filter or a resize
-clears it. Each frame measures fresh geometry after the
+writes the scroll. So a shrink at the tail (a folded run's parallel
+step lines that go, a revised reveal slice, rows merging into a run,
+the unread divider) leaves a blank reserve under the content instead
+of moving visible content, and later growth consumes the reserve.
+The ending row keeps the turn's end from shrinking, so the floor is
+not the space under a finished turn. A reader keeps only the part of
+it that the current position needs, so leaving following causes no
+clamp, and the part goes as the reader moves up. The floor goes only
+at a full re-landing (a reset, a view or session switch, a filter
+switch, a resize, a reload), never during a turn or at its end. Each frame measures fresh geometry after the
 render and reveal writes, and the divider and rhythm changes are
 applied and measured once more before the frame's one scroll write,
 so no write uses a stale height.

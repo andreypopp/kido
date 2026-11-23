@@ -39,7 +39,7 @@ test('following reserves transient tail shrink', () => {
   let peak = 0;
   for (const [stage, naturalHeight] of [
     ['streaming', 1200], ['slice replacement', 1100], ['run merging', 1080],
-    ['dots movement', 1060], ['regrowth', 1150], ['growth past reserve', 1250], ['turn end', 1230],
+    ['unread divider removal', 1060], ['regrowth', 1150], ['growth past reserve', 1250], ['turn end', 1250],
   ] as const) {
     const measurement: Measure = {
       now: 1000, top, max: Math.max(naturalHeight, reserve) - 300,

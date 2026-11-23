@@ -1669,25 +1669,44 @@ Open WebUI): the scroll has two states and one animation.
   above what arrived meanwhile and "↓ N new"; `following` restored at
   the end, no divider and no button.
 - **The typing dots at the turn's end** go in one frame; the text
-  stays where it is and the dots' space stays as blank reserve (see
-  "The tail reserve"). The one animation is "↓ Latest".
+  stays where it is and the dots' row stays, blank (see "The ending
+  row"). The one animation is "↓ Latest".
 - **Kept animated, and why.** Only "↓ Latest" scrolls animated: it
   is the reader's request to travel, and a jump would lose where
   they were. Everything the layout does under a following reader is
   instant in the scroll, because an animated follow and a streaming
   layout fight each other.
-- **The tail reserve.** While following, the scroll never moves up.
-  Content that grows is at the new bottom in the same frame, with no
-  slide. Content that shrinks at the tail (a revealed slice revised
-  to fewer lines, a working row that goes, run rows that merge, the
-  typing dots, the unread divider) does not pull the text down and
-  then back up: the transcript keeps the largest height it had while
-  following, and the difference stays as blank space under the last
-  content. New content fills that space first; the scroll moves
-  again only when the content passes it. The end of a turn keeps
-  the space. Scrolling up does not make the text jump: the space
-  goes as the reader moves up past it. A reset, a view or session
-  switch, a filter or a resize clears it.
+- **The ending row** (user, 2026-11-23). A transcript that ends
+  with a message (the user's or the agent's) ends in one row of the
+  bare working row's height, with the same space above it as that
+  row has. With nothing running the row is blank; while the turn
+  runs it shows the dots (it is the bare row). A transcript that
+  ends with a run has no row under the run: the run's last line is
+  the ending row, and the dots stay on the running step's line or
+  the summary. (In a topic filter, a turn whose text is hidden
+  still shows its dots row under the last visible run.) So a turn's
+  start and end change only the row's
+  content, a run takes the row's place when it arrives, and a
+  message after a run adds itself and a new ending row: the
+  transcript only grows. The same in every view (All, a topic
+  filter, an agent), following or reading, after a restore or a
+  reload. A job page has no ending row.
+- **The tail reserve** (user, 2026-11-23: nothing visible moves
+  when content shrinks). While following, the scroll never moves
+  up. Content that grows is at the new bottom in the same frame,
+  with no slide. Content that still shrinks at the tail (a folded
+  run's parallel step lines that go when the calls end, a revealed
+  slice revised to fewer lines, rows that merge into a run, the
+  unread divider) does not pull the text down: the transcript keeps
+  the largest height it had while following, and the difference
+  stays as blank space under the ending row. The ending row removes
+  the common case, the turn's end, so the reserve is rare. New
+  content fills that space first; the scroll moves again only when
+  the content passes it. A reader's visible content also stays
+  still on a shrink: the space goes only as the reader moves up past
+  it. The reserve goes only at a full re-landing (a reset, a view or
+  session switch, a topic filter switch, a resize, a reload), never
+  during a turn or at its end.
 
 ## The job page (job.html; 2026-11-15, approved)
 

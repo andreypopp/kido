@@ -7,8 +7,8 @@ import { js, snapshot, type Insets } from "./capture.ts";
 import type { Pixels, References } from "./pixels.ts";
 import { deadline } from "./deadline.ts";
 
-export const koaIdle = "!document.querySelector('#field').inert&&document.querySelector('#items [aria-label=working]')===null";
-export const koaWorking = "document.querySelector('#items [aria-label=working]')!==null";
+export const koaIdle = "!document.querySelector('#field').inert&&document.querySelector('#transcript [aria-label=working]')===null";
+export const koaWorking = "document.querySelector('#transcript [aria-label=working]')!==null";
 export const paneFocus = "window.koaFocused=true;";
 export const hideLatest = "document.addEventListener('DOMContentLoaded',()=>{const style=document.createElement('style');style.textContent='#latest{display:none!important}';document.head.append(style)});";
 export function require(condition: unknown, message = "Condition failed"): asserts condition { if (!condition) throw Error(message); }
