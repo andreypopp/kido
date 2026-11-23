@@ -27,7 +27,7 @@ test('root indexes markers once on the branch and supplies names only after comp
     assert.equal(s.messages.some(({ message }) => message.customType === 'koa.topics'), false);
     await s.emit('session_compact', {});
     const messages = s.messages.filter(({ message }) => message.customType === 'koa.topics');
-    assert.equal(messages.length, 1); assert.match(messages[0].message.content, /copied.*fresh/s);
+    assert.equal(messages.length, 1); assert.equal(messages[0].message.content, 'Active topics, most recent first:\n- fresh\n- copied\nOther topics you might remember are archived if they are not on that list');
     assert.deepEqual(messages[0].opts, { triggerTurn: false });
     assert.equal(get(messages[0].message, 'display'), false);
     s.entries.splice(0);

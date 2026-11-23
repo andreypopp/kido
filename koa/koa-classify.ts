@@ -76,7 +76,7 @@ export function parseClassification(reply: string): TopicName | undefined {
 export async function classify(runtime: ModelRuntime, model: { provider: string; id: string }, topics: TopicContext, others: TopicName[], text: string, signal: AbortSignal): Promise<TopicName> {
   const found = runtime.getModel(model.provider, model.id);
   if (!found) throw Error(`unknown topic model ${model.provider}/${model.id}`);
-  const reply = await runtime.completeSimple(found, classifierPrompt(topics, others, text), { reasoning: 'low', maxRetries: 0, signal });
+  const reply = await runtime.completeSimple(found, classifierPrompt(topics, others, text), { maxRetries: 0, signal });
   if (signal.aborted) throw signal.reason;
   if (reply.stopReason === 'error' || reply.stopReason === 'aborted') throw Error(reply.errorMessage ?? reply.stopReason);
   const answer = contentText(reply.content), name = parseClassification(answer);

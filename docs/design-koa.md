@@ -803,7 +803,7 @@ without a model call; this works also when the classifier is off.
 Otherwise a small model classifies the message
 (`koa/koa-classify.ts`) from the newest topics and their newest
 messages. The setting `koa.topics.model` in pi's global settings is
-`provider/id` or `off`; the default is on. The call has low reasoning,
+`provider/id` or `off`; the default is on. The classifier runs without reasoning,
 no tools and a 15 s deadline, and the parser accepts the usual
 wrappings of a name. A failure sends the message without a marker
 and shows one warning for each process, with the raw reply in its
