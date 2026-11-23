@@ -56,7 +56,21 @@ const bar = (dir: string): Scenario => ({
   files: {},
 });
 
+const atomic = (dir: string): Scenario => {
+  const history = Array.from({ length: 100 }, (_, seq) => assistant(seq, `Reader row ${seq}. ` + 'A measured paragraph keeps its saved place. '.repeat(16)));
+  return {
+    open: [viewState(dir, [root, reviewer]), reset('atomic1', history)],
+    steps: [
+      switchTo(dir, reviewer, root, [root], 'atomic2', rootItems, { agents: links(reviewer) }),
+      expect({ on: { method: 'POST', path: '/view' }, reply: { status: 200, json: {} }, after: [viewState(dir, [root, reviewer]), { type: 'reset', epoch: 'atomic3', more: true, items: history.slice(90) }] }),
+      expect({ on: { method: 'GET', path: '/items' }, reply: { status: 200, json: { epoch: 'atomic3', more: false, items: history.slice(0, 90) }, hold: 'atomic-history' } }),
+    ],
+    files: {},
+  };
+};
+
 export const scenarios: Scenarios = {
+  ViewSwitchAtomic: atomic,
   SubagentView: subagent,
   ViewBar: bar,
 };

@@ -1,5 +1,6 @@
 type Policy = "geometry" | "light" | "dark" | "both";
 export const fixtures: { name: string; captures: Record<string, Policy> }[] = [
+  {"name": "ViewSwitchAtomic", "captures": {}},
   {"name": "ReloadKeepsView", "captures": {}},
   {"name": "Dots", "captures": {}},
   {"name": "RunStepsTransitions", "captures": {}},

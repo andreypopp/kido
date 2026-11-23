@@ -106,6 +106,9 @@ export function scrollWindow(state: State, position: (item: ItemId, edge: 'row' 
   const y = anchor && position(anchor.item, anchor.edge);
   return y !== undefined && anchor ? y - anchor.offset : state.kind === 'restoring' ? bottom : top;
 }
+export function scrollRollback(state: State): State {
+  return { ...state, last: undefined, written: undefined };
+}
 export function scrollStored(state: State, top: number): State {
   return { ...state, written: { top, echo: true }, last: state.last && { ...state.last, top } };
 }

@@ -1551,9 +1551,10 @@ breadcrumb; app/design/pane/NOTES.md, the capsule family).
   click switches); then ellipsize the remaining ancestors' names to
   60pt each; then the viewed name; if the viewed name would have
   under 40pt, drop the back control's label last. Depth is at most 8.
-- **The switch**: instant, no animation; the new view's transcript
-  replaces the old at its end (follow-bottom); the bar appears or
-  goes with it. The sidebar's click, an `@name` link and the bar's
+- **The switch**: no animation; the old view stays on screen until
+  the new view is rendered and at its place (its end, or its saved
+  reader position), then the new view replaces it in one frame, with
+  the bar, the dock and the composer; nothing moves after the swap. The sidebar's click, an `@name` link and the bar's
   buttons all go through the same switch.
 - **The composer** targets the viewed agent (the plan): its
   placeholder names it, "Message @reviewer…" / "Steer @reviewer…";

@@ -23,7 +23,7 @@ import { realFixture } from './koa-program-fixture.ts';
 import { ofType } from './koa-agent-fixture.ts';
 import { jobEndText, parseTopicName } from "./records.ts";
 import type { PromptMode } from "./koa-records.ts";
-import { scrollInitial, scrollMemory, scrollStored, scrollUpdate, scrollWindow } from "./page/scroll.ts";
+import { scrollInitial, scrollMemory, scrollRollback, scrollStored, scrollUpdate, scrollWindow } from "./page/scroll.ts";
 
 async function pageMarkup() {
   const html = await readFile(new URL('page/page.html', import.meta.url), 'utf8');
@@ -192,6 +192,17 @@ async function page() {
     onscroll?: () => void;
     onclick?: () => void;
     onkeydown?: (event: unknown) => void;
+    animations: { currentTime: number; playState: string; pause(): void }[] = [];
+    getAnimations() { return this.animations; }
+    shadowRoot?: Node;
+    attachShadow() { return this.shadowRoot = new Node(); }
+    cloneNode(deep = false): Node {
+      const clone = new Node(); clone.tagName = this.tagName; clone.hidden = this.hidden; clone.textContent = this.textContent;
+      clone.attributes = new Map(this.attributes); clone.classes = new Set(this.classes); clone.dataset = { ...this.dataset };
+      clone.animations = this.animations.map(() => ({ currentTime: 0, playState: 'running', pause() { this.playState = 'paused'; } }));
+      if (deep) clone.append(...this.childNodes.map(child => child.cloneNode(true)));
+      return clone;
+    }
     attributes = new Map<string, string>();
     setAttribute(name: string, value: string) { this.attributes.set(name, value); } getAttribute(name: string) { return this.attributes.get(name) ?? null; } removeAttribute(name: string) { this.attributes.delete(name); } focus() { for (let node: Node | undefined = this; node; node = node.parent) if (node.inert) return; document.activeElement = this; } setSelectionRange() {} handlers = new Map<string, (event?: unknown) => void>(); addEventListener(type: string, handler: (event?: unknown) => void) { this.handlers.set(type, handler); } scrollIntoView() {} getBoundingClientRect(): { left?: number; top: number; bottom?: number; height?: number; width?: number } { return { left: 0, top: this.offsetTop, bottom: this.offsetTop + this.offsetHeight, height: this.offsetHeight, width: this.classes.has('topic-capsule') || this.classes.has('topic-open') ? this.clientWidth : undefined }; } getClientRects() { return this.rects; }
     closest(selector: string): Node | null { if (selector === 'a') return this.tagName === 'A' ? this : this.parent?.closest(selector) ?? null; return ['INPUT', 'TEXTAREA', 'SELECT', ...(selector.includes('button') ? ['BUTTON'] : [])].includes(this.tagName) || (this.attributes.has('role') && selector.includes(`[role=${this.attributes.get('role')}]`)) ? this : null; }
@@ -200,6 +211,7 @@ async function page() {
     querySelector(selector: string): Node | undefined { const match = selector.match(/^\.([\w-]+)(?::not\(\.([\w-]+)\))?$/); if (!match) return undefined; const find = (node: Node): Node | undefined => { for (const child of node.children) { if (!(child instanceof Node)) continue; if (child.classes.has(match[1]) && !(match[2] && child.classes.has(match[2]))) return child; const found = find(child); if (found) return found; } }; return find(this); }
     matches(selector: string) { return [...selector.matchAll(/\.([\w-]+)/g)].some(match => this.classes.has(match[1])); }
     querySelectorAll(selector = ''): Node[] {
+      if (selector === '*') return this.children.flatMap(child => child instanceof Node ? [child, ...child.querySelectorAll('*')] : []);
       return selector.split(/,(?![^(]*\))/).flatMap(part => part.replace(':scope>', '').split('>').reduce<Node[]>((nodes, step) => nodes.flatMap(node => node.children.filter((child): child is Node => child instanceof Node && (/^[a-z][\w-]*$/.test(step) ? child.tagName === step.toUpperCase() : [...step.matchAll(/\.([\w-]+)/g)].some(match => child.classes.has(match[1]))))), [this]));
     }
     get isConnected(): boolean { return this === document.body || this === document.documentElement || [...elements.values()].includes(this) || this.parent?.isConnected === true; }
@@ -222,10 +234,10 @@ async function page() {
   const elements = new Map<string, Node>();
   const observers: { callback: (entries: unknown[]) => void; targets: Set<Node>; fresh: Set<Node> }[] = [];
   class ResizeObserver { private state: (typeof observers)[number]; constructor(callback: (entries: unknown[]) => void) { this.state = { callback, targets: new Set(), fresh: new Set() }; observers.push(this.state); } observe(target: Node) { if (!this.state.targets.has(target)) { this.state.targets.add(target); this.state.fresh.add(target); } } unobserve(target: Node) { this.state.targets.delete(target); this.state.fresh.delete(target); } }
-  const listeners = new Map<string, (event: unknown) => void>();
+  const listeners = new Map<string, (event: unknown) => void>(), captures = new Map<string, (event: unknown) => void>();
   const windowListeners = new Map<string, (event?: unknown) => void>();
   let activeElement: Node | undefined;
-  const document = { timeline: { currentTime: 100000 }, hidden: false, visibilityState: 'visible', documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { if (activeElement === node) return; const previous = activeElement; activeElement = node; if (previous) listeners.get('focusout')?.({ target: previous }); if (node) listeners.get('focusin')?.({ target: node }); }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : selector === '.lightbox' ? document.body.children.find(node => node.classList.contains('lightbox')) ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); if (id === 'composer') node.hidden = false; } return node; }, createElement: (tag: string) => { const node = new Node(); node.hidden = false; node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: (): Node[] => [] };
+  const document = { timeline: { currentTime: 100000 }, hidden: false, visibilityState: 'visible', documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { if (activeElement === node) return; const previous = activeElement; activeElement = node; if (previous) listeners.get('focusout')?.({ target: previous }); if (node) listeners.get('focusin')?.({ target: node }); }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : selector === '.lightbox' ? document.body.children.find(node => node.classList.contains('lightbox')) ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); if (id === 'composer') node.hidden = false; } return node; }, createElement: (tag: string) => { const node = new Node(); node.hidden = false; node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void, options?: { capture?: boolean }) { (options?.capture ? captures : listeners).set(type, handler); }, querySelectorAll: (): Node[] => [] };
   type Handlers = { input(user: boolean): void; send(mode: PromptMode): void; quit(): void };
   let handlers: Handlers | undefined;
   let text = () => '';
@@ -253,7 +265,7 @@ async function page() {
     };
   };
   const history: { state: unknown; replaceState(state: unknown): void } = { state: null, replaceState(state) { this.state = state; } };
-  const context = { history, topicTurn, parseTopicName, ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', fontFamily: 'sans-serif', fontSize: '13px', getPropertyValue: () => '', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, pathToken, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { history, topicTurn, parseTopicName, ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ [Symbol.iterator]: function* () {}, display: 'block', lineHeight: '20px', fontFamily: 'sans-serif', fontSize: '13px', getPropertyValue: () => '', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, pathToken, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, HTMLInputElement: class {}, HTMLTextAreaElement: class {}, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update,head,quote})', context));
@@ -300,10 +312,10 @@ async function page() {
   }
   const workingSource = stripTypeScriptTypes(readFileSync(new URL('page/working.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   Object.assign(context, runInNewContext(workingSource + '\n({dots})', context));
-  Object.assign(context, { scrollInitial, scrollMemory, scrollStored, scrollUpdate, scrollWindow });
+  Object.assign(context, { scrollInitial, scrollMemory, scrollRollback, scrollStored, scrollUpdate, scrollWindow });
   Object.assign(document, { fonts: { ready: { then(resolve: () => void) { resolve(); } } } });
   const body = source.replace(/^import .*;\n/gm, "").replace('refreshComposer(); focusComposer(); void connect();', '') + "\nfunction put(item) { accept(item); renderDirty(); return views.get(item.seq)?.view; }\nlet agentTestSeq=10000;function agentStep(card,at,key,slots=new Map()){let seq=slots.get(key);if(seq===undefined){seq=agentTestSeq++;slots.set(key,seq)}const base={seq,revision:0,at,final:true};accept(card.direction==='in'?{...base,kind:'agent',...card}:{...base,kind:'assistant',stop:'stop',error:'',blocks:[{type:'tool',id:key,name:'spawn_agent',args:{text:'{}'},state:{type:'done',error:false,result:{text:'',images:[]}},agent:card}]});live.add(seq);renderDirty();live.delete(seq);const owner=runOwner(runContext(),card.direction==='in'?{kind:'item',seq}:{kind:'block',seq,index:0});return openers.get(sourceKey(card.direction==='in'?{kind:'item',seq}:{kind:'block',seq,index:0})).view;}";
-  return { observers, repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
+  return { observers, repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, captures, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
 }
 
 test('filtered history renders the same mixed-topic run and notices as the live feed', async t => {
@@ -811,7 +823,7 @@ test('topic rename selects the name and commits Enter and blur but cancels Escap
 test('topic interactions cancel on scope changes and resets without committing', async () => {
   const app = await page(), calls: string[] = [];
   app.context.fetch = async (path?: string) => { calls.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
-  for (const transition of ["apply({...state,type:'state',sessionId:'other'})", "apply({type:'reset',epoch:'new',items:[],more:false})"]) {
+  for (const transition of ["apply({...state,type:'state',sessionId:'other'});apply({type:'reset',epoch:'other',items:[],more:false})", "apply({type:'reset',epoch:'new',items:[],more:false})"]) {
     const result = app.run(`(()=>{
       state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};topics.render();
       topics.debug.renameTopic(element('topics').querySelector('.topic-entry'),'one');
@@ -869,13 +881,17 @@ test('an unedited astral topic rename preserves the name and naming accepts the 
 
 test('scope restoration and state reconciliation keep the scroll filter in agreement', async () => {
   const app = await page();
-  const result = app.run(`(()=>{
+  const result = await app.run(`(async()=>{
+    rendered=async()=>{};fetch=async()=>({ok:true,json:async()=>({epoch,items:[],more:false})});
     state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};
-    topics.debug.updateTopicFilter('one');apply({...state,type:'state',sessionId:'other'});scrollEvents.length=0;
-    apply({...state,type:'state',sessionId:'s'});
+    topics.debug.updateTopicFilter('one');apply({...state,type:'state',sessionId:'other'});apply({type:'reset',epoch:'other',items:[],more:false});scrollEvents.length=0;
+    apply({...state,type:'state',sessionId:'s'});apply({type:'reset',epoch:'s',items:[],more:false});
+    await transcriptHistory.debug.request?.done;decide({type:'frame'});
     const restored=scrolling.filtered;
     scrollEvents.length=0;apply({...state,type:'state',topics:[]});
-    return [restored,topics.filter(),scrollEvents.some(event=>event.type==='filter'&&!event.active)];
+    await transcriptHistory.debug.request?.done;
+    decide({type:'frame'});
+    return [restored,topics.filter(),!scrolling.filtered];
   })()`);
   assert.deepEqual(Array.from(result), [true, undefined, true]);
 });
@@ -886,7 +902,7 @@ test('a stale destination filter does not erase the outgoing reader anchor', asy
     state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[]};
     scrolling={...scrollInitial({view:'root',sessionId:'s'}),kind:'reader',anchor:{item:{kind:'message',seq:7},offset:13,edge:'row'}};
     topics.debug.scopeData('destination:s').filter='stale';
-    apply({...state,type:'state',view:{id:'destination',path:[],type:'root'}});
+    apply({...state,type:'state',view:{id:'destination',path:[],type:'root'}});apply({type:'reset',epoch:'destination',items:[],more:false});
     return scrolling.saved.get(JSON.stringify(['root',null]))?.anchor;
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(saved ?? null)), { item: { kind: 'message', seq: 7 }, offset: 13, edge: 'row' });
@@ -897,7 +913,7 @@ test('a reconciled destination filter reloads history once per scope transition'
   app.context.fetch = async (path?: string) => { calls.push(path ?? ''); return new Promise(() => {}); };
   app.run(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[]};epoch='loaded';
     topics.debug.scopeData('destination:s').filter='stale';topics.debug.scopeData('destination:s').move={from:'stale',to:'one'};
-    apply({...state,type:'state',view:{id:'destination',path:[],type:'root'},topics:[{name:'one'}]});`);
+    apply({...state,type:'state',view:{id:'destination',path:[],type:'root'},topics:[{name:'one'}]});apply({type:'reset',epoch:'destination',items:[],more:false});`);
   assert.equal(calls.filter(path => path.startsWith('/items?')).length, 1);
 });
 
@@ -910,7 +926,7 @@ test('pending prompts show mode and working dots without a remove control', asyn
 test('topic filters project blocks without changing their addresses and apply newest late labels', async () => {
   const app = await page();
   const result = app.run(`
-    state = {...state, view:{id:'root',path:[],type:'root'},sessionId:'session',topics:[{name:'one',last:{summary:'**First**',at:1}},{name:'two'}]};
+    state = {...state, life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'session',topics:[{name:'one',last:{summary:'**First**',at:1}},{name:'two'}]};
     topics.render();
     const user={kind:'user',seq:0,revision:1,at:1,final:true,text:'request',images:[],attachments:[]};
     accept(user);
@@ -1241,7 +1257,7 @@ test('filtering selects the composer topic but dropping it submits unlabelled wi
 test('composer topics stay with their root draft across reload and do not enter child or job views', async () => {
   const app = await page();
   const evaluate = app.repl();
-  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};topics.debug.setTopic('one');topics.debug.setComposerTopic('two');editor.setText('draft');`);
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]};topics.debug.setComposerTopic('two');editor.setText('draft');topics.debug.updateTopicFilter('one');topics.debug.setComposerTopic('one');editor.setText('preparing draft');`);
   app.windowListeners.get('pagehide')?.();
   evaluate("element('field').replaceChildren()");
   const restored = app.repl();
@@ -1590,18 +1606,39 @@ test('only pending implicit users show under a filter and chips stay on reply se
   assert.deepEqual(JSON.parse(JSON.stringify(result)),[true,null,true,true,true,true,['one'],[],['one','two'],[],[]]);
 });
 
-test('a resumed reset before state clears the old filter and restores rows', async () => {
+test('a resumed session publishes its scope before reset and commits after ready', async () => {
   const app = await page();
   const result = app.run(`
     state={...state,sessionId:'old',view:{id:'root',path:[],type:'root'},topics:[{name:'one'}]};
     fetch=async()=>({ok:true,json:async()=>({epoch:'new',more:false,items:[]})});
     topics.debug.setTopic('one');
+    apply({...state,type:'state',sessionId:'new',life:{type:'switching'},topics:[{name:'two'}]});
     apply({type:'reset',epoch:'new',more:false,items:[{kind:'user',seq:0,revision:1,at:1,final:true,topic:'two',text:'new session',images:[],attachments:[]}]});
-    const hidden=order.length===0;
-    apply({...state,type:'state',sessionId:'new',topics:[{name:'two'}]});
-    [hidden,order.includes(0),transcriptHistory.debug.request?.topic===undefined];
+    for(let frame=0;frame<4;frame++)tick();
+    const waiting=transition?.phase.kind==='state';
+    apply({...state,type:'state',life:{type:'ready'}});
+    for(let frame=0;frame<8;frame++)tick();
+    [waiting,order.includes(0),transcriptHistory.debug.request?.topic===undefined,!transition];
   `);
-  assert.deepEqual(Array.from(result), [true,true,true]);
+  assert.deepEqual(Array.from(result), [true,true,true,true]);
+});
+
+test('a saved target filter survives preparation until the ready state reconciles topics', async () => {
+  for (const life of ['starting', 'reloading', 'switching']) {
+    const app = await page();
+    app.context.history.replaceState({ scroll: [], drafts: [], filters: [['root:new', 'target']], composerTopics: [] });
+    const result = await app.run(`(async()=>{
+      if('${life}'!=='starting')state={...state,life:{type:'ready'},sessionId:'old',view:{id:'root',path:[],type:'root'},topics:[{name:'old-topic'}]};
+      rendered=async()=>{};fetch=async()=>({ok:true,json:async()=>({epoch:'new',items:[],more:false})});
+      apply({...state,type:'state',view:{id:'root',path:[],type:'root'},sessionId:'new',life:{type:'${life}'},topics:[]});
+      apply({type:'reset',epoch:'new',items:[],more:false});
+      const preparing=topics.filter();
+      apply({...state,type:'state',life:{type:'ready'},topics:[{name:'target'}]});
+      await transcriptHistory.debug.request?.done;
+      return [preparing,topics.filter()];
+    })()`);
+    assert.deepEqual(Array.from(result), ['target', 'target'], life);
+  }
 });
 
 test('topic changes discard in-flight history and composer sends only the active root filter', async () => {
@@ -1616,17 +1653,21 @@ test('topic changes discard in-flight history and composer sends only the active
     held[0]({ok:true,json:async()=>({epoch:'e',more:false,items:[{kind:'user',seq:0,revision:1,at:1,final:true,topic:'one',text:'stale',images:[],attachments:[]}]})});
     await previous.done;
     const dropped=!items.has(0);
+    for(let frame=0;frame<8;frame++)tick();
+    const filterCommitted=!transition;
     let sent;fetchJSON=async(path,body)=>{sent=body;return {disposition:'started'}};
     editor.setText('hello');await send();
     const two=sent.topic;
     const {topics:unused,...childState}=state;
-    apply({...childState,type:'state',sessionId:'child',view:{id:'child',path:[],type:'subagent'}});
+    apply({...childState,type:'state',sessionId:'child',view:{id:'child',path:[],type:'subagent'}});apply({type:'reset',epoch:'child',items:[],more:false});
+    for(let frame=0;frame<8;frame++)tick();
+    const childCommitted=!transition;
     editor.setText('child');await send();
     const child=sent.topic;
-    apply({...state,type:'state',sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]});
-    return [previous!==current,dropped,two,child===undefined,topics.filter(),transcriptHistory.debug.before];
+    apply({...state,type:'state',sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]});apply({type:'reset',epoch:'root',items:[],more:false});
+    return [previous!==current,dropped,two,child===undefined,topics.filter(),transcriptHistory.debug.before,filterCommitted,childCommitted];
   })()`);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), [true, true, 'two', true, 'two', null]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [true, true, 'two', true, 'two', null, true, true]);
 });
 
 test('annotation map attaches a late reply, hides items and re-renders final text only for a new annotation item', async () => {
@@ -3681,8 +3722,9 @@ test('a reset replaces an in-flight anchor load without accepting its late resul
   await page.settled(); page.settle(3);
   assert.equal(page.evaluate('scrolling.kind'), 'restoring', 'the old load must not follow');
   held[1]?.({ ok: true, json: async () => ({ epoch: 'a', more: false, items: Array.from({ length: 16 }, (_, seq) => page.text(seq + 5)) }) });
-  await page.settled(); page.settle();
-  assert.equal(page.evaluate('scrolling.kind'), 'reader');
+  await page.settled(); page.settle(); await page.settled(); page.settle();
+  assert.equal(page.evaluate('scrolling.kind'), 'reader', String(page.evaluate('JSON.stringify({scrolling,loadingAnchor,resets,first,request:scrollDecision.request,events:scrollEvents})')));
+  assert.equal(page.evaluate('transition === undefined'), true, String(page.evaluate('JSON.stringify({transition,layoutGeneration,pending:transcriptHistory.pending,scrolling,decision:scrollDecision,windowDirty,resetting,dirty:dirty.size,extentDirty:extentDirty.size,fits:fitPending.size,reveal:revealPreparation.size,growing:growing.length,holds:measuredHolds.size})')));
 });
 
 test('a reset that is shorter than the pane keeps a restoring view from following while its older pages load', async () => {
@@ -3725,7 +3767,7 @@ test('a patch that changes nothing visible does not scroll a reader who is near 
 const views = `const root={id:'r',name:'ko'},a={id:'a',name:'reviewer'},b={id:'b',name:'checker'};
   element('transcript').getBoundingClientRect=()=>({left:130,width:720});
   const calls=[];fetchJSON=async(path,body)=>{calls.push([path,body]);return {};};
-  const show=(...path)=>apply({...state,type:'state',sessionId:path.at(-1).id,view:{id:path.at(-1).id,path},life:{type:'ready'}});
+  const show=(...path)=>{apply({...state,type:'state',sessionId:path.at(-1).id,view:{id:path.at(-1).id,path},life:{type:'ready'}});apply({type:'reset',epoch:'view',items:[],more:false});for(let frame=0;frame<4;frame++)tick();};
   const bar=element('bar'),texts=()=>bar.children.map(child=>child.textContent),placeholder=()=>element('prompt').children[0].placeholder;`;
 
 test('the view bar names the path, goes to an ancestor through /view and is gone in the root view', async () => {
@@ -4025,6 +4067,36 @@ async function jobPage() {
   const flush = () => new Promise<void>(resolve => setImmediate(resolve));
   return { ...page, requests, held, failed, job, open, reset, append, lines, flush, b64 };
 }
+
+test('a job snapshot commits its prepared presentation', async () => {
+  const f = await jobPage();
+  f.evaluate("apply({...state,type:'state',sessionId:'s',life:{type:'ready'},view:{id:'root',path:[],type:'root'}})");
+  f.open('j1'); f.reset('j1', 'ready\n');
+  for (let frame = 0; frame < 12; frame++) f.step(16);
+  assert.equal(f.evaluate('transition === undefined'), true, 'the job presentation commits');
+});
+
+test('a presentation copy preserves and pauses the source animation time', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{const row=node('div',undefined,'grow');document.body.append(row);row.animations=[{currentTime:127,playState:'running',pause(){this.playState='paused'}}];beginTransition();const copy=document.body.children.find(child=>child.id==='presentation').shadowRoot.querySelector('.grow');return [copy.getAnimations()[0].currentTime,copy.getAnimations()[0].playState]})()`);
+  assert.deepEqual(Array.from(result), [127, 'paused']);
+});
+
+test('covered file input starts no upload and changes no draft', async () => {
+  const app = await page(), evaluate = app.repl(), uploads: string[] = [];
+  evaluate("state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'}};editor.setText('committed');beginTransition({...state,sessionId:'next'})");
+  app.context.fetch = async (path?: string) => { uploads.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
+  for (const type of ['drop', 'paste']) {
+    let stopped = false;
+    const transfer = { files: [new File(['x'], 'a.txt')], items: [] };
+    const event = { dataTransfer: transfer, clipboardData: transfer, composedPath: () => [], preventDefault() {}, stopImmediatePropagation() { stopped = true; } };
+    app.captures.get(type)?.(event);
+    if (!stopped) app.listeners.get(type)?.(event);
+    assert.equal(stopped, true, type + ' is blocked');
+  }
+  assert.deepEqual(uploads, []);
+  assert.equal(evaluate("JSON.stringify([editor.text(),draft.count])"), JSON.stringify(['committed', 0]));
+});
 
 test('a job view renders the log, follows live output, and shows Latest with no count and no divider while the reader is above', async () => {
   const f = await jobPage();
@@ -4798,10 +4870,11 @@ test('returning to an absent anchor loads older pages until it is loaded, mounts
   for (let turn = 0; turn < 6; turn++) { await page.settled(); page.settle(4); }
   assert.deepEqual(requests, [280, 220, 160].slice(0, requests.length));
   assert.ok(requests.length >= 1 && (requests.at(-1) ?? Infinity) <= anchor + 60, 'the requests stop once the anchor is loaded: ' + requests);
-  assert.equal(page.evaluate('scrolling.kind'), 'reader');
+  assert.equal(page.evaluate('scrolling.kind'), 'reader', String(page.evaluate('JSON.stringify({scrolling,loadingAnchor,resets,first,request:scrollDecision.request,events:scrollEvents})')));
   assert.ok(page.seqs().includes(anchor) && page.seqs().length < 40);
   assert.equal(page.offset(anchor), offset);
   assert.equal(page.latest(), '↓ 2 new,true');
+  assert.equal(page.evaluate('transition === undefined'), true, 'the restored presentation commits without a timer');
 });
 
 test('a history of text-only assistant items mounts a window at the end and after a jump', async () => {

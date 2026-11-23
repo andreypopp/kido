@@ -215,7 +215,7 @@ async function takeKoaSnapshot(name: string, appearance: string, scenario: Scena
   else await context.pageSnapshot(capture, "testKoaWebviewMockupStates()");
 }
 async function scrollPage(module: string, key: string, condition = ""): Promise<Page> {
-  const initial = paneFocus + "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[1700000012000]))}static now(){return 1700000012000}};" + (key === 'ExplicitRowExtents' ? '' : 'window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;') + "const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};";
+  const initial = paneFocus + "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[1700000012000]))}static now(){return 1700000012000}};" + (['ExplicitRowExtents', 'ViewSwitchAtomic'].includes(key) ? '' : 'window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;') + "const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};";
   const web = await context.start(browser, module, key, replayRoot(), { width: 680, height: 557 }, [initial, hideLatest]);
   await webviewUntil(web, `window.composer&&${condition}${koaIdle}&&document.querySelector('#items').childElementCount>0`);
   return web;
@@ -875,6 +875,26 @@ async function testKoaWebviewRunStepsTransitions() {
         await advance("document.querySelectorAll('.run .names .err .who').length===2")
         const failedNames = await webviewJS(web, "(()=>{const names=[...document.querySelectorAll('.run .names .err .who')],live=names.find(name=>!name.classList.contains('gone')),gone=names.find(name=>name.classList.contains('gone'));const probe=document.createElement('span');probe.style.color='var(--ko-color-1)';document.body.append(probe);const error=getComputedStyle(probe).color;probe.remove();return !!live&&!!gone&&getComputedStyle(live).color===error&&getComputedStyle(gone).color===error})()")
         equal(failedNames, true, "Live and gone names in a failed summary use the error colour")
+    }
+async function testKoaWebviewViewSwitchAtomic() {
+        const web = await scrollPage('views', 'ViewSwitchAtomic')
+        await webviewJS(web, `(()=>{const s=document.querySelector('#scroll');s.dispatchEvent(new WheelEvent('wheel',{deltaY:-100,bubbles:true}));s.scrollTop=1000;s.dispatchEvent(new Event('scroll'));return true})()`)
+        await webviewJS(web, `new Promise((resolve,reject)=>{let previous,stable=0;const end=performance.now()+5000;function sample(){const s=document.querySelector('#scroll'),rows=[...document.querySelectorAll('#items>[data-seq]')];const row=rows.find(row=>row.getBoundingClientRect().bottom>0);const current=JSON.stringify([s.scrollTop,row?.dataset.seq,row?.getBoundingClientRect().top]);stable=current===previous?stable+1:0;previous=current;if(stable===4){window.atomicAnchor={row:row.dataset.seq,top:row.getBoundingClientRect().top};resolve()}else if(performance.now()>end)reject(Error('Reader anchor did not settle'));else requestAnimationFrame(sample)}requestAnimationFrame(sample)})`)
+        await web.locator('#bar .back').click()
+        await webviewUntil(web, "!document.querySelector('#presentation')&&document.querySelector('#bar').hidden&&document.querySelector('#items').textContent.includes('Review the sidebar')&&" + koaIdle)
+        await webviewJS(web, `(()=>{
+          window.atomicFrames=[];window.atomicSampling=true;
+          window.atomicSample=()=>{const root=document.querySelector('#presentation')?.shadowRoot??document;const s=root.querySelector('#scroll'),dock=root.querySelector('#dock'),bar=root.querySelector('#bar');const row=[...root.querySelectorAll('#items>[data-seq]')].find(row=>{const r=row.getBoundingClientRect();return r.bottom>0&&r.top<dock.getBoundingClientRect().top});return {scope:root.querySelector('[data-session-id]')?.getAttribute('data-session-id')??document.body.dataset.sessionId,row:row?.getAttribute('data-seq'),top:row?.getBoundingClientRect().top,bar:[bar.hidden,bar.getBoundingClientRect().height],dock:[dock.getBoundingClientRect().top,dock.getBoundingClientRect().height],text:row?.textContent}};
+          window.atomicBefore=atomicSample();function frame(){atomicFrames.push(atomicSample());if(atomicSampling)requestAnimationFrame(frame)}requestAnimationFrame(frame);document.querySelector('[data-view]').click();return true})()`)
+        await webviewUntil(web, "!document.querySelector('#bar').hidden")
+        await webviewJS(web, "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
+        const held = await webviewJS(web, "atomicFrames.every(frame=>JSON.stringify(frame)===JSON.stringify(atomicBefore))")
+        await webviewJS(web, "fetch('/replay/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'atomic-history'})}).then(r=>r.status)")
+        equal(held, true, 'The held history keeps the complete old presentation')
+        await webviewJS(web, `new Promise((resolve,reject)=>{const end=performance.now()+5000;function sample(){if(!document.querySelector('#presentation')&&!document.querySelector('#bar').hidden)resolve();else if(performance.now()>end)reject(Error('Presentation commit deadline'));else requestAnimationFrame(sample)}sample()})`)
+        await webviewJS(web, "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>{atomicSampling=false;resolve()})))")
+        const result = await webviewJS(web, `(()=>{const changed=atomicFrames.filter(frame=>frame.scope!==atomicBefore.scope);let changes=0,previous=atomicBefore.scope;for(const frame of atomicFrames){if(frame.scope!==previous)changes++;previous=frame.scope}return changes===1&&changed.length>0&&changed.every(frame=>frame.row===atomicAnchor.row&&Math.abs(frame.top-atomicAnchor.top)<=1)})()`)
+        equal(result, true, 'Exactly one nonempty presentation change keeps the saved reader offset')
     }
 async function testKoaWebviewReloadKeepsView() {
         const web = await scrollPage("scroll-follow", "ReloadKeepsView")
@@ -1961,6 +1981,7 @@ echo release
         }
     }
 const entries: Record<string, () => Promise<void>> = {
+  "ViewSwitchAtomic": testKoaWebviewViewSwitchAtomic,
   "ReloadKeepsView": testKoaWebviewReloadKeepsView,
   "Dots": testKoaWebviewDots,
   "RunStepsTransitions": testKoaWebviewRunStepsTransitions,

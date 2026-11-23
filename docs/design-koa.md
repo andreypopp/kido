@@ -336,6 +336,29 @@ to a reader position loads older content until its anchor is present;
 a missing anchor opens at the end. Selection is not persistent
 session state.
 
+A switch of view, session or topic filter shows once. Until the new
+view is placed, the page shows a frozen copy of the old view as an
+opaque cover: the transcript, the bar, the dock and the composer.
+Under the cover, the page applies the new state only when its
+snapshot arrives. It then renders and measures the rows, loads the
+required history and catch-up and restores the saved position. It
+removes the cover in the first frame in which all of that is done
+and the geometry did not change since the previous frame. So the
+user never sees old rows with new chrome, estimated row heights or
+an interim position. Live records still update the view under the
+cover, and a turn that continues does not delay the swap. While the
+cover shows, input reaches only the view links of the bar and the
+sidebar records; a second switch keeps the cover and starts the
+preparation again. A session replace or resume also sends the new
+session's state before its snapshot; while its life is `switching`,
+the cover stays until the ready or failed state. The topics of a
+`starting`, `reloading` or `switching` state can still be those of
+the old feed, so the page checks a saved filter against the topics
+only at a later state.
+A history failure ends the preparation through the usual restore
+fallback, so the cover never stays. `pagehide` during a switch saves
+the memory of the view that the cover shows.
+
 A reload of the same document entry keeps this memory: the saved
 positions with the current reader anchor, the non-empty drafts and
 the topic filters. The page writes them to `history.state` on
@@ -590,12 +613,10 @@ with the same save and restore rule as agent views. A view left at
 the bottom follows the bottom on return. A view left in reader mode
 restores its anchor without animation; new visible items received
 while away get a divider and a new-item count.
-The composer's topic follows the filter at once, but the
-transcript keeps its shown filter, rows and position until the
-filter's history reload arrives. Then the page installs the rows,
-changes the projection and lands in one move, so the switch lands
-once. A response for a filter that a later switch replaced is
-dropped. Anchor restoration loads the anchor's history when needed.
+A filter switch uses the same cover as a view switch: the page
+changes the projection and lands under it when the filter's history
+reload arrives, and shows the result once. A response for a filter
+that a later switch replaced is dropped. Anchor restoration loads the anchor's history when needed.
 A saved topic reader also loads unfiltered history from the reset window back
 to its saved last sequence before restoration completes, so topic badges
 include replies that arrived while the reader was away.

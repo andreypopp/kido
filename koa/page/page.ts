@@ -1,6 +1,6 @@
 import { annotations, update } from './annotations.ts';
 import { head, quote } from './answers.ts';
-import { scrollInitial, scrollMemory, type Saved, scrollStored, scrollUpdate, scrollWindow, type ItemId, type ScrollEvent, type Measure, type Decision, type Row, type Lookup } from './scroll.ts';
+import { scrollInitial, scrollMemory, type Saved, scrollRollback, scrollStored, scrollUpdate, scrollWindow, type ItemId, type ScrollEvent, type Measure, type Decision, type Row, type Lookup } from './scroll.ts';
 import { pathToken } from '../path-token.ts';
 import { markdown, type Tail } from './markdown.ts';
 import { markdownLine } from '../markdown-line.ts';
@@ -98,6 +98,62 @@ const pathWarnings = new Map<number, string>();
 let pathWarningEpoch = 0;
 let state: State = { pathEditor: false, view: { id: '', path: [], type: 'root' }, topics: [], agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, dialogs: [] };
 let shownFilter: TopicName | undefined;
+type Transition = {
+  cover: HTMLElement; memory: PageMemory; scroll: ReturnType<typeof scrollInitial>; outgoingDraftSaved: boolean; generation: number;
+  phase: { kind: 'snapshot'; next: State } | { kind: 'state' } | { kind: 'layout'; prepared?: { layout: number; geometry: string } };
+};
+let transition: Transition | undefined, transitionGeneration = 0, layoutGeneration = 0;
+function cover(): HTMLElement {
+  const host = document.createElement('div'); host.id = 'presentation';
+  const shadow = host.attachShadow({ mode: 'open' });
+  for (const style of document.querySelectorAll('style,link[rel="stylesheet"]')) shadow.append(style.cloneNode(true));
+  const body = document.createElement('body');
+  for (const name of document.body.getAttributeNames()) body.setAttribute(name, document.body.getAttribute(name) ?? '');
+  const computed = getComputedStyle(document.body);
+  for (const property of computed) if (property.startsWith('--')) body.style.setProperty(property, computed.getPropertyValue(property));
+  body.style.width = innerWidth + 'px'; body.style.height = innerHeight + 'px';
+  const originals = [...document.body.children].filter(child => child.tagName !== 'SCRIPT');
+  for (const child of originals) body.append(child.cloneNode(true));
+  shadow.append(body);
+  const frozen = document.createElement('style'); frozen.textContent = '*{animation-play-state:paused!important;caret-color:transparent!important}'; shadow.append(frozen);
+  const source = originals.flatMap(child => [child, ...child.querySelectorAll('*')]);
+  const copied = [...body.querySelectorAll('*')];
+  const properties = source.map(element => ({
+    top: element.scrollTop, left: element.scrollLeft,
+    value: element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? element.value : undefined,
+    animations: element.getAnimations().map(animation => animation.currentTime),
+  }));
+  document.body.append(host);
+  copied.forEach((clone, index) => {
+    const saved = properties[index];
+    if (clone instanceof HTMLElement) { if (saved.top) clone.scrollTop = saved.top; if (saved.left) clone.scrollLeft = saved.left; }
+    if (saved.value !== undefined && (clone instanceof HTMLInputElement || clone instanceof HTMLTextAreaElement)) clone.value = saved.value;
+    clone.getAnimations().forEach((animation, index) => { const time = saved.animations[index]; if (time === undefined) animation.finish(); else animation.currentTime = time; animation.pause(); });
+  });
+  return host;
+}
+function beginTransition(next?: State) {
+  if (transition && next) {
+    scrolling = scrollRollback(transition.scroll); lastMeasurement = undefined; scrollEvents.length = 0; resets++; loadingAnchor = undefined; readerCatchup = undefined;
+    drafts.clear(); for (const [view, text] of transition.memory.drafts) drafts.set(view, text);
+  }
+  const phase: Transition['phase'] = next ? { kind: 'snapshot', next } : { kind: 'layout' };
+  if (transition) { transition.phase = phase; transition.generation = ++transitionGeneration; }
+  else {
+    const current = new Map(drafts); current.set(state.view.id, editor.text());
+    transition = { cover: cover(), memory: { scroll: scrollMemory(scrolling), drafts: [...current], ...topics.memory() }, scroll: scrolling, outgoingDraftSaved: false, generation: ++transitionGeneration, phase };
+  }
+  schedule();
+}
+function commitTransition() {
+  if (!transition || transition.phase.kind !== 'layout') return;
+  const phase = transition.phase;
+  if (state.life.type === 'switching' || transcriptHistory.pending || loadingAnchor || scrolling.kind === 'restoring' || scrolling.settling !== 'none' || scrollDecision.request || state.view.type !== 'job' && (windowDirty || resetting || dirty.size || extentDirty.size || fitPending.size || revealPreparation.size || growing.length || measuredHolds.size)) { phase.prepared = undefined; return; }
+  const geometry = JSON.stringify([element('scroll').scrollTop, ...['scroll', 'dock', 'bar'].map(id => { const box = element(id).getBoundingClientRect(); return [box.x, box.y, box.width, box.height]; }), ...Array.from(state.view.type === 'job' ? job.rows() : element('items').children).map(row => { const box = row.getBoundingClientRect(); return [row.getAttribute('data-seq') ?? row.getAttribute('data-byte'), box.top, box.height]; })]);
+  if (phase.prepared?.layout === layoutGeneration && phase.prepared.geometry === geometry) {
+    drafts.delete(state.view.id); transition.cover.remove(); transition = undefined;
+  } else phase.prepared = { layout: layoutGeneration, geometry };
+}
 function topicUnread(): Map<TopicName, number> {
   const counts = new Map<TopicName, number>();
   if (!('topics' in state)) return counts;
@@ -114,9 +170,10 @@ const topics = createTopics({
   unread: topicUnread,
   state: () => state, items, element, node, timestamp, refreshComposer, layout: dirtyExtent, focus: () => editor.focus(),
   filterChanged() {
+    beginTransition();
     transcriptHistory.cancel('scope'); topics.close(); topics.render(); refreshComposer();
     if (epoch) void transcriptHistory.reload('filter');
-    else finishTopicFilter();
+    else projectTopicFilter();
   },
   async correct(correction) {
     const { kind, ...body } = correction;
@@ -124,7 +181,7 @@ const topics = createTopics({
     catch (error) { reportError(error); throw error; }
   },
 }, memory);
-function finishTopicFilter() {
+function projectTopicFilter() {
   refreshTopicItems();
   enqueue({ type: 'filter', active: topics.filter() !== undefined, topic: topics.filter() });
   for (const seq of items.keys()) changedItem(seq, false);
@@ -168,7 +225,7 @@ const transcriptHistory = createTranscriptHistory({
   epoch: () => epoch, session: () => state.sessionId, view: () => state.view.type, filter: () => topics.filter(), first: () => first,
   viewport: () => element('scroll'), has: seq => items.has(seq), accept: rows => acceptHistory(rows),
   apply: record => { if (record.type === 'patch') applyPatch(record, false); else apply(record); },
-  history: () => enqueue({ type: 'history' }), filtered: finishTopicFilter, rendered: () => rendered(), error: reportError,
+  history: () => enqueue({ type: 'history' }), filtered: projectTopicFilter, rendered: () => rendered(), error: reportError,
 });
 let editorOpening = false;
 const draft = attach(element('attachments'), () => refreshComposer(), () => state.edit ? 'editing' : editor.bash() ? 'command' : undefined);
@@ -351,7 +408,7 @@ function foldFence(pre: HTMLElement, key: string) {
   pre.after(bar);
 }
 const transcriptVisible = () => state.view.type !== 'job' && !element('items').hidden;
-const wanted = () => fontsReady && (transcriptVisible() && (extentDirty.size > 0 || animating.size > 0 || windowDirty || revealDirty || fitPending.size > 0 || growing.length > 0 || measuredHolds.size > 0) || dirty.size > 0 || resetting || scrollEvents.length > 0 || scrollDecision.frame !== 'none' || waiters.length > 0 || !!metrics?.waiting.length);
+const wanted = () => fontsReady && (transcriptVisible() && (extentDirty.size > 0 || animating.size > 0 || windowDirty || revealDirty || fitPending.size > 0 || growing.length > 0 || measuredHolds.size > 0) || dirty.size > 0 || resetting || scrollEvents.length > 0 || scrollDecision.frame !== 'none' || waiters.length > 0 || transition?.phase.kind === 'layout' && !transcriptHistory.pending || !!metrics?.waiting.length);
 function schedule() {
   if (pending || !wanted()) return;
   pending = document.hidden ? { kind: 'timer', id: setTimeout(tick, 50) } : { kind: 'frame', id: requestAnimationFrame(tick) };
@@ -418,6 +475,8 @@ function tick() {
     || fresh.viewport !== lastMeasurement.viewport || fresh.width !== lastMeasurement.width
     ? measure() : { ...lastMeasurement, ...fresh };
   decide({ type: 'frame' }, measurement);
+  if (state.view.type !== 'job' && !resetting && !windowDirty && scrolling.kind !== 'restoring') transcriptHistory.fill();
+  commitTransition();
   for (const resolve of waiters.splice(0)) resolve();
   for (const waiter of metrics?.waiting.splice(0) ?? []) waiter();
   schedule();
@@ -1207,6 +1266,7 @@ function appendRow(t: Table, seq: number) {
 }
 const rowTop = (seq: number) => { const t = ensureTable(); return (t.starts[t.index.get(seq) ?? 0] ?? 0) + (t.divider?.before === seq ? t.divider.px : 0); };
 function dirtyExtent(target: Element) {
+  layoutGeneration++;
   const list = element('items');
   let row: Element | null = target;
   while (row && row.parentNode !== list) row = row.parentElement;
@@ -1563,17 +1623,17 @@ const drafts = new Map<string, string>(memory?.drafts);
 function takeBack(): Promise<void> {
   if (state.life.type !== 'ready' || state.dialogs.length) return Promise.resolve();
   return takingBack ??= (async () => {
-    const session = state.sessionId;
+    const session = state.sessionId, generation = transitionGeneration;
     const result = await fetchJSON('/queue/clear', { sessionId: session });
-    if (state.sessionId !== session) return;
+    if (state.sessionId !== session || transitionGeneration !== generation) return;
     restoreQueued([...result.steering, ...result.followUp]);
   })().finally(() => { takingBack = undefined; });
 }
 async function stop() {
   if (submitting || state.life.type !== 'ready' || state.dialogs.length) return;
   submitting = true;
-  const origin = state.view.id, session = state.sessionId;
-  try { if (!state.bash.some(item => item.phase === 'running')) await takeBack(); if (state.view.id !== origin) return; await fetchJSON('/abort', { sessionId: session }); }
+  const origin = state.view.id, session = state.sessionId, generation = transitionGeneration;
+  try { if (!state.bash.some(item => item.phase === 'running')) await takeBack(); if (state.view.id !== origin || transitionGeneration !== generation) return; await fetchJSON('/abort', { sessionId: session }); }
   catch (error) { reportError(error); }
   finally { submitting = false; }
 }
@@ -1685,6 +1745,11 @@ function catchUpReader() {
   });
 }
 function apply(record: PageRecord) {
+  if ((record.type === 'reset' || record.type === 'job-reset') && transition?.phase.kind === 'snapshot') {
+    const next = transition.phase.next;
+    transition.phase = next.life.type === 'switching' ? { kind: 'state' } : { kind: 'layout' };
+    applyState(next, true);
+  }
   if (record.type === 'reset') {
     readerCatchup = undefined;
     topics.cancel();
@@ -1700,7 +1765,6 @@ function apply(record: PageRecord) {
     transcriptHistory.reset(record);
     catchUpReader();
     if (topics.filter()) void transcriptHistory.reload();
-    else void rendered().then(() => { if (epoch === record.epoch) transcriptHistory.fill(); });
     schedule();
   } else if (record.type === 'item') {
     const current = items.get(record.item.seq);
@@ -1712,6 +1776,22 @@ function apply(record: PageRecord) {
   else if (record.type === 'job-gone') job.gone(record);
   else if (record.type === 'job-append') { job.append(record); after = job.cursor(); }
   else if (record.type === 'state') {
+    if (transition?.phase.kind === 'state' && record.view.id === state.view.id && record.sessionId === state.sessionId) {
+      applyState(record);
+      if (record.life.type === 'ready' || record.life.type === 'failed') transition.phase = { kind: 'layout' };
+      schedule(); return;
+    }
+    if (transition?.phase.kind === 'snapshot' && (record.life.type === 'failed' || transition.phase.next.life.type === 'switching' && record.life.type === 'ready' && record.view.id === state.view.id && record.sessionId === state.sessionId)) {
+      transition.phase = { kind: 'layout' }; applyState(record); schedule(); return;
+    }
+    if (state.view.id && (state.view.id !== record.view.id || state.sessionId !== record.sessionId || transition?.phase.kind === 'snapshot')) {
+      beginTransition(record); transcriptHistory.cancel('scope'); return;
+    }
+    if (record.life.type === 'switching' && state.view.id) { beginTransition(record); transcriptHistory.cancel('scope'); return; }
+    applyState(record);
+  }
+}
+function applyState(record: State, snapshot = false) {
     if (state.sessionId !== record.sessionId || state.life.type !== record.life.type) editor.resetCompletion();
     if (state.sessionId && state.sessionId !== record.sessionId) { closeSessions(); closePicker(); editorId = undefined; }
     const agentsChanged = JSON.stringify(state.agents) !== JSON.stringify(record.agents);
@@ -1730,7 +1810,7 @@ function apply(record: PageRecord) {
     if (scopeChanged) decide({ type: 'switch', scope: { view: record.view.id, sessionId: record.sessionId, topic: topics.filter() }, loaded, filtered: topics.filter() !== undefined });
     if (scopeChanged && loaded) catchUpReader();
     topics.render();
-    if (scopeChanged) { refreshTopicItems(); if (epoch && record.view.type === 'root' && (previousFilter !== topics.filter() || topics.filter() !== undefined)) void transcriptHistory.reload(); }
+    if (scopeChanged) { refreshTopicItems(); if (!snapshot && epoch && record.view.type === 'root' && (previousFilter !== topics.filter() || topics.filter() !== undefined)) void transcriptHistory.reload(); }
     if (workingChanged && previousFilter === shownFilter && shownFilter && priorInput?.kind === 'user') accept({ ...priorInput });
     windowDirty = true; schedule(); if (agentsChanged || viewChanged) { for (const seq of views.keys()) dirty.add(seq); } document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
     showJobView();
@@ -1745,7 +1825,6 @@ function apply(record: PageRecord) {
     }
     statuses();
     if (wasEditing && !state.edit) focusComposer();
-  }
 }
 
 function leaveView(next: string) {
@@ -1754,8 +1833,9 @@ function leaveView(next: string) {
   editor.resetCompletion(); transcriptHistory.cancel('request'); editorId = undefined; escaped = false; takingBack = undefined;
   element('error').textContent = '';
   draft.view(next);
-  if (previous) drafts.set(previous, editor.text());
-  editor.setText(drafts.get(next) ?? ''); drafts.delete(next);
+  if (previous && (!transition || !transition.outgoingDraftSaved)) drafts.set(previous, editor.text());
+  if (transition) transition.outgoingDraftSaved = true;
+  editor.setText(drafts.get(next) ?? ''); if (!transition) drafts.delete(next);
 }
 function rescopeImages() {
   for (const thumb of element('items').querySelectorAll<HTMLButtonElement>('[data-base]')) {
@@ -1793,14 +1873,14 @@ const viewedName = () => state.view.path.length > 1 ? '@' + (state.view.path.at(
 function closeBarMenu() { barMenu.hidden = true; barMenu.replaceChildren(); }
 function viewTo(id: string) {
   closeBarMenu();
-  fetchJSON('/view', { sessionId: state.sessionId, id }).catch(error => { if (error?.status !== 409) reportError(error); });
+  fetchJSON('/view', { sessionId: transition?.phase.kind === 'snapshot' ? transition.phase.next.sessionId : state.sessionId, id }).catch(error => { if (error?.status !== 409) reportError(error); });
 }
 function drawBar(collapse: boolean) {
   const path = state.view.path, last = path.length - 1, ancestors = path.slice(0, last), hidden = collapse ? ancestors.slice(1, -1) : [];
   const part = (label: string, className: string, id?: string, title = label) => {
     const result = node(id === undefined ? 'span' : 'button', label, className);
     result.title = title;
-    if (id !== undefined) result.onclick = () => viewTo(id);
+    if (id !== undefined) { result.dataset.view = id; result.onclick = () => viewTo(id); }
     return result;
   };
   const separator = () => { const result = node('span', '›', 'sep'); result.setAttribute('aria-hidden', 'true'); return result; };
@@ -2210,6 +2290,12 @@ async function send(mode: PromptMode = 'prompt') {
   finally { submitting = false; }
 }
 element('older').onclick = () => { void transcriptHistory.earlier(); };
+for (const type of ['click', 'pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart', 'touchmove', 'beforeinput', 'drop', 'paste', 'dragenter', 'dragover', 'dragleave']) document.addEventListener(type, event => {
+  if (!transition) return;
+  const target = type === 'click' ? event.composedPath().find(target => target instanceof HTMLElement && target.dataset.view) : undefined;
+  if (target instanceof HTMLElement && target.dataset.view) viewTo(target.dataset.view);
+  event.preventDefault(); event.stopImmediatePropagation();
+}, { capture: true, passive: false });
 const isTextInput = (target: EventTarget | null) => target instanceof HTMLElement && (target.isContentEditable || !!target.closest('input,textarea,select'));
 const isControl = (target: EventTarget | null) => isTextInput(target) || target instanceof HTMLElement && !!target.closest('button,[role=button],[role=option],[role=listbox],[role=menuitem]');
 function composerReceivesKeys() { return document.hasFocus() && !element('field').inert && !state.dialogs.length && !document.querySelector('.lightbox') && (editor.hasFocus() || !isTextInput(document.activeElement)); }
@@ -2234,7 +2320,7 @@ window.addEventListener('pagehide', () => {
   decide({ type: 'visibility' }); stopFrames();
   const current = new Map(drafts);
   current.set(state.view.id, editor.text());
-  const memory: PageMemory = { scroll, drafts: [...current].filter(([view, text]) => !!view && !!text), ...topics.memory() };
+  const memory: PageMemory = transition?.memory ?? { scroll, drafts: [...current].filter(([view, text]) => !!view && !!text), ...topics.memory() };
   history.replaceState(memory, '');
 });
 document.addEventListener('visibilitychange', () => { decide({ type: 'visibility' }); cancelPending(); if (!document.hidden) { revealDirty ||= revealing.size > 0; windowDirty = true; armCap(); } schedule(); });
@@ -2300,7 +2386,7 @@ element('scroll').onscroll = () => {
   decide({ type: 'scroll' });
   const geo = geometry(), top = geo.top - geo.origin, half = geo.viewport / 2, total = ensureTable().starts[order.length];
   if (!mountedSpans.some(span => span.start <= Math.max(0, top - half) && span.end >= Math.min(total, top + geo.viewport + half))) { windowDirty = true; schedule(); }
-  transcriptHistory.fill();
+  if (scrolling.kind !== 'restoring') transcriptHistory.fill();
 };
 element('scroll').addEventListener('wheel', event => {
   if (event.deltaY && Math.abs(event.deltaY) >= Math.abs(event.deltaX)) decide({ type: 'input', direction: event.deltaY < 0 ? 'up' : 'down' });
@@ -2316,6 +2402,7 @@ element('latest').onmousedown = event => event.preventDefault();
 element('latest').onclick = () => decide({ type: 'latest' });
 const layoutObserver = new ResizeObserver(entries => probe ? probe.within('ResizeObserver', () => resized(entries)) : resized(entries));
 function resized(entries: ResizeObserverEntry[]) {
+  layoutGeneration++;
   if (fontsReady && transcriptVisible() && (element('items').clientWidth !== measured.width || lineHeight() !== measured.lh)) invalidateExtents();
   const column = entries.some(({ target }) => target === element('scroll')) && !bar.hidden ? element('transcript').getBoundingClientRect() : undefined;
   for (const { target, borderBoxSize } of entries) {

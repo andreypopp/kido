@@ -41,6 +41,19 @@ test("a cancelled switch leaves the old session; a switch and a new session refr
   assert.equal((await app.post("prompt", { sessionId: stale, text: "late", mode: "prompt", attachments: [] })).status, 409);
 });
 
+test('a named session publishes its new scope while switching before its reset', { timeout: 30000 }, async t => {
+  const app = await realFixture(t, { replies: [], setup: async ({ cwd, sessions }) => { await writeSession(cwd, sessions, 1, 'named'); } });
+  const previous = state(app).sessionId;
+  const rows = (await (await app.post('sessions/list', { scope: 'current' })).json()).rows;
+  const cursor = app.count();
+  assert.equal((await app.post('sessions/switch', { path: rows[0].path })).status, 200);
+  await app.until(ofType('state', record => record.sessionId !== previous && record.life.type === 'ready'), cursor);
+  const records = app.records().slice(cursor), reset = records.findIndex(ofType('reset'));
+  const preceding = records.slice(0, reset).filter(ofType('state')).at(-1);
+  const sequence = records.filter(record => record.type === 'state' || record.type === 'reset').map(record => record.type === 'state' ? [record.type, record.sessionId === previous ? 'old' : 'new', record.life.type] : [record.type]);
+  assert.deepEqual([preceding?.sessionId === state(app).sessionId, preceding?.life.type], [true, 'switching'], JSON.stringify(sequence));
+});
+
 test("a switch that fails after teardown ends in the failed state and Start again recovers", { timeout: 30000 }, async t => {
   const app = await realFixture(t, { replies: [], args: ["--provider", "fake", "--model", "fake-model"], setup: async ({ cwd, sessions }) => { await writeSession(cwd, sessions, 1, "other"); } });
   const rows = (await (await app.post("sessions/list", { scope: "current" })).json()).rows;

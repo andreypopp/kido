@@ -11,19 +11,22 @@ export function createTranscriptHistory(deps: {
   has(seq: number): boolean; accept(items: readonly WireItem[]): void; apply(record: Buffered): void;
   history(): void; filtered(): void; rendered(): Promise<void>; error(error: unknown): void;
 }) {
-  let before: number | undefined, more = false, request: Request | undefined;
+  let before: number | undefined, filled: number | undefined, more = false, request: Request | undefined;
   let boundary = Infinity, catchup: { patches: Buffered[] } | undefined;
-  function cancel(mode: 'request' | 'scope') { request = undefined; catchup = undefined; if (mode === 'scope') before = undefined; }
+  function cancel(mode: 'request' | 'scope') { request = undefined; catchup = undefined; if (mode === 'scope') { before = undefined; filled = undefined; } }
   function reset(snapshot: Snapshot) {
-    request = undefined; catchup = undefined; more = snapshot.more;
+    request = undefined; catchup = undefined; filled = undefined; more = snapshot.more;
     boundary = snapshot.more ? snapshot.items.reduce((lowest, item) => Math.min(lowest, item.seq), Infinity) : -Infinity;
     before = snapshot.items.filter(item => !deps.filter() || item.kind !== 'annotations' && item.kind !== 'topics').reduce((lowest, item) => Math.min(lowest, item.seq), Infinity);
   }
-  function fill() { const scroll = deps.viewport(); if (scroll.scrollHeight <= scroll.clientHeight || scroll.scrollTop < 80) void earlier(); }
+  function fill() {
+    if (deps.view() === 'job' || !more || request || catchup || deps.first() === filled) return;
+    const scroll = deps.viewport(); if (scroll.scrollHeight <= scroll.clientHeight || scroll.scrollTop < 80) void earlier();
+  }
   function earlier() {
     const first = deps.first();
     if (deps.view() === 'job' || !more || first === undefined) return;
-    if (!request) { const mine = request = { before: before ?? first, ...(deps.filter() ? { topic: deps.filter() } : {}), patches: [], done: Promise.resolve(), transition: 'history' }; mine.done = load(mine); }
+    if (!request) { filled = first; const mine = request = { before: before ?? first, ...(deps.filter() ? { topic: deps.filter() } : {}), patches: [], done: Promise.resolve(), transition: 'history' }; mine.done = load(mine); }
     return request.done;
   }
   async function reload(transition: Request['transition'] = 'history') {
@@ -63,7 +66,6 @@ export function createTranscriptHistory(deps: {
     finally { if (catchup === mine) catchup = undefined; }
   }
   async function load(mine: Request) {
-    let applied = false;
     try {
       const response = await fetch(scoped('/items?before=' + mine.before + (mine.topic ? '&topic=' + encodeURIComponent(mine.topic) : ''), deps.session())); if (!response.ok) throw Error('Could not load earlier messages');
       const result: Snapshot = await response.json();
@@ -76,11 +78,11 @@ export function createTranscriptHistory(deps: {
           if (request !== mine) return;
         }
         if (mine.transition === 'filter') { mine.transition = 'history'; deps.filtered(); }
-        await deps.rendered(); applied = true;
+        await deps.rendered();
       }
-    } catch (error) { deps.error(error); } finally { if (request === mine) { if (mine.transition === 'filter') deps.filtered(); request = undefined; if (applied && before !== mine.before) fill(); } }
+    } catch (error) { deps.error(error); } finally { if (request === mine) { if (mine.transition === 'filter') deps.filtered(); request = undefined; deps.history(); } }
   }
-  return { get more() { return more; }, get pending() { return request !== undefined; }, cancel, reset, earlier, reload, fill, catchUp,
+  return { get more() { return more; }, get pending() { return request !== undefined || catchup !== undefined; }, cancel, reset, earlier, reload, fill, catchUp,
     needsCatchUp(last: number) { return Number.isFinite(boundary) && boundary > last; },
     buffer(record: Buffered) { request?.patches.push(record); catchup?.patches.push(record); },
     outside(seq: number) { return before !== undefined && Number.isFinite(before) && seq < before; },

@@ -155,10 +155,11 @@ export function createView(options: ViewOptions) {
     state.sessionId = session.sessionId; nameSession(session);
     restoreMessage();
     state.model = session.model; state.thinking = session.thinkingLevel; state.sessionFile = session.sessionFile;
-    rebuild(); levels(false);
+    levels(false);
     const count = stats(false);
     state.cwd = runtime.cwd;
     options.title(own());
+    publish(true); rebuild();
     if (life.type === "starting" || life.type === "switching" || life.type === "reloading") { life = { type: "ready" }; publish(); }
     return count;
   };

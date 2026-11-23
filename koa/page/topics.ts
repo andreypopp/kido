@@ -361,7 +361,7 @@ export function createTopics(deps: {
   return {
     update(next: State, previousScope: string) {
       const scope = filterKey(next), filter = scopes.get(scope)?.filter, move = scopes.get(scope)?.move;
-      const reconciled = filter && 'topics' in next && !next.topics.some(topic => topic.name === filter)
+      const reconciled = (next.life.type === 'ready' || next.life.type === 'failed') && filter && 'topics' in next && !next.topics.some(topic => topic.name === filter)
         ? move?.from === filter && next.topics.some(topic => topic.name === move.to) ? move.to : undefined
         : filter;
       if (scope !== previousScope && reconciled !== filter) { if (reconciled) scopeData(scope).filter = reconciled; else delete scopeData(scope).filter; }
