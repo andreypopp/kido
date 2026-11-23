@@ -67,6 +67,12 @@ export function createTopics(deps: {
     const choice = scopes.get(filterKey())?.composer;
     return choice ? choice.type === 'topic' ? choice.name : undefined : topicFilter();
   }
+  const clearableComposerTopic = () => interaction.naming?.target.kind === 'composer' ? undefined : composerTopicName();
+  function dropComposer(): boolean {
+    if (!clearableComposerTopic()) return false;
+    setComposerTopic(undefined);
+    return true;
+  }
   function setComposerTopic(name: TopicName | undefined) {
     if (interaction.naming?.target.kind === 'composer') interaction.naming = undefined;
     scopeData(filterKey()).composer = name ? { type: 'topic', name } : { type: 'dropped' };
@@ -117,7 +123,7 @@ export function createTopics(deps: {
     mark.style.setProperty('--topic-color', topicColour(name));
     mark.title = name; mark.append(topicName(name));
     if (clear) {
-      const button = node('button', '×', 'topic-clear'); button.type = 'button'; button.setAttribute('aria-label', 'Drop composer topic'); button.onclick = () => setComposerTopic(undefined); mark.append(button);
+      const button = node('button', '×', 'topic-clear'); button.type = 'button'; button.setAttribute('aria-label', 'Drop composer topic'); button.onclick = dropComposer; mark.append(button);
     } else {
       mark.setAttribute('role', 'button'); mark.tabIndex = -1;
       mark.setAttribute('aria-label', 'Compose in topic ' + name); mark.onclick = () => setComposerTopic(name);
@@ -362,10 +368,10 @@ export function createTopics(deps: {
       if (scope !== previousScope) { cancel(); clearTimeout(topicClick); topicClick = undefined; }
       if (scope === previousScope && reconciled !== filter) updateTopicFilter(reconciled);
     },
-    cancel, scope: filterKey, filter: topicFilter, composer: composerTopicName, render: renderTopics,
+    cancel, dropComposer, scope: filterKey, filter: topicFilter, composer: composerTopicName, render: renderTopics,
     renderComposer() {
       if (interaction.naming && interaction.naming.scope !== filterKey()) finishTopicNaming(false);
-      const topic = composerTopicName();
+      const topic = clearableComposerTopic();
       if (interaction.naming?.target.kind !== 'composer' || !composerTopic.contains(interaction.naming.chip)) {
         composerTopic.remove(); composerTopic.replaceChildren();
         if (current.state.view.type === 'root') {

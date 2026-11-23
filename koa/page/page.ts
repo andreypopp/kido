@@ -172,6 +172,7 @@ const draft = attach(element('attachments'), () => refreshComposer(), () => stat
 const pendingBash = new Map<string, ReturnType<typeof commandRun>>();
 const editor = composer(element('prompt'), {
   drop: draft.drop, paste: draft.paste,
+  dropTopic: () => !element('field').inert && topics.dropComposer(),
   input(user) { if (user) escaped = false; refreshComposer(); },
   send(mode) { void send(mode); },
   quit() { if (!draft.count && !draft.busy) void fetchJSON('/quit', { sessionId: state.sessionId }); },

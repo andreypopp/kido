@@ -22,7 +22,7 @@ export const composerLanguage = new Language(markdownLanguage.data, parser.confi
 
 const outsideComposition = (command: Command): Command => view => !view.compositionStarted && command(view);
 
-export function composer(host: HTMLElement, handlers: { input(user: boolean): void; send(mode: PromptMode): void; quit(): void; takeBack(): void; drop(event: DragEvent): boolean; paste(event: ClipboardEvent): boolean }) {
+export function composer(host: HTMLElement, handlers: { input(user: boolean): void; send(mode: PromptMode): void; quit(): void; takeBack(): void; dropTopic(): boolean; drop(event: DragEvent): boolean; paste(event: ClipboardEvent): boolean }) {
   const hint = new Compartment(), language = new Compartment(), locked = new Compartment();
   let label = 'Message koa…', running = false;
   const mode = StateField.define<ReturnType<typeof bashCommand>>({
@@ -94,7 +94,7 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
         { key: 'Enter', run: outsideComposition(() => { handlers.send('prompt'); return true; }) },
         { key: 'Shift-Enter', run: outsideComposition(view => !view.state.field(mode) && insertNewlineContinueMarkup(view)) },
         { key: 'Shift-Enter', run: outsideComposition(insertNewline) },
-        { key: 'Backspace', run: outsideComposition(view => !view.state.field(mode) && deleteMarkupBackward(view)) },
+        { key: 'Backspace', run: outsideComposition(view => view.state.selection.main.empty && view.state.selection.main.head === 0 && handlers.dropTopic() || !view.state.field(mode) && deleteMarkupBackward(view)) },
         { key: 'Alt-Enter', run: outsideComposition(() => { handlers.send('follow_up'); return true; }) },
         { key: 'Ctrl-d', run: () => { if (!empty()) return false; handlers.quit(); return true; } },
       ])),
