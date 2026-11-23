@@ -3,8 +3,9 @@ import type { PromptResult } from '../koa-records.ts';
 
 export type ItemId = { kind: 'message'; seq: number; row?: RowId } | { kind: 'job'; byte: number };
 export type Anchor = { item: ItemId; offset: number; edge: 'row' | 'divider' };
-type Scope = { view: string; sessionId: string | undefined };
-export type Saved = { scope: Scope; anchor: Anchor; last: number };
+type Scope = { view: string; sessionId: string | undefined; topic?: string };
+const scopeKey = (scope: Scope): string => JSON.stringify([scope.view, scope.topic ?? null]);
+export type Saved = { scope: Scope; anchor: Anchor; last: number } | { scope: Scope; last: number };
 type Glide = { from: number; start: number; offset: number };
 type Travel = { from: number; start: number };
 type Geometry = { top: number; max: number; viewport: number; width: number; origin: number };
@@ -26,7 +27,7 @@ type Common = {
 export type State = Common & (
   | { kind: 'following'; positioning?: boolean; glide?: Glide }
   | { kind: 'reader'; anchor?: Anchor; travel?: Travel }
-  | { kind: 'restoring'; target: Saved; waiting: boolean }
+  | { kind: 'restoring'; target: Extract<Saved, { anchor: Anchor }>; waiting: boolean }
 );
 type Cause = 'layout' | 'instant';
 export type ScrollEvent =
@@ -40,7 +41,7 @@ export type ScrollEvent =
   | { type: 'focus' | 'visibility' | 'frame' | 'resize' | 'latest' | 'history' }
   | { type: 'switch'; scope: Scope; loaded: boolean; filtered: boolean }
   | { type: 'reset' }
-  | { type: 'filter'; active: boolean }
+  | { type: 'filter'; active: boolean; topic?: string }
   | { type: 'restore-result'; generation: number; found: boolean }
   | { type: 'navigate'; anchor: Anchor };
 export type Row = { item: ItemId; top: number; bottom: number; windowTop?: number; leading?: number };
@@ -70,9 +71,9 @@ export type Decision = {
 };
 export function scrollMemory(state: State): Saved[] {
   const saved = new Map(state.saved);
-  if (state.kind === 'reader' && !state.travel && state.anchor) saved.set(state.scope.view, { scope: state.scope, anchor: state.anchor, last: state.lastSeq });
-  else if (state.kind === 'restoring') saved.set(state.scope.view, state.target);
-  else saved.delete(state.scope.view);
+  if (state.kind === 'reader' && !state.travel && state.anchor) saved.set(scopeKey(state.scope), { scope: state.scope, anchor: state.anchor, last: state.lastSeq });
+  else if (state.kind === 'restoring') saved.set(scopeKey(state.scope), state.target);
+  else saved.set(scopeKey(state.scope), { scope: state.scope, last: state.lastSeq });
   return [...saved.values()];
 }
 export function scrollInitial(scope: Scope, memory: Saved[] = []): State {
@@ -80,7 +81,7 @@ export function scrollInitial(scope: Scope, memory: Saved[] = []): State {
     kind: 'following',
     positioning: true,
     scope,
-    saved: new Map(memory.map(saved => [saved.scope.view, saved])),
+    saved: new Map(memory.map(saved => [scopeKey(saved.scope), saved])),
     candidates: new Map(),
     threshold: false,
     filtered: false,
@@ -214,33 +215,33 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         break;
       }
       case 'filter':
-        state.filtered = event.active;
-        for (const [seq, rows] of state.candidates) for (const [key, candidate] of rows) if (candidate.visible) candidates(seq).set(key, { ...candidate, visible: false });
-        state = { ...common(state), kind: 'reader' };
-        state.pendingSend = undefined; state.forceItem = undefined; state.last = undefined; state.written = undefined;
-        state.generation++;
-        state.settling = 'render';
-        filtering = true; instant = true; newInstant = true; force = false;
-        break;
       case 'switch': {
-        state.filtered = event.filtered;
+        const scope = event.type === 'filter' ? { ...state.scope, topic: event.topic } : event.scope;
+        state.filtered = event.type === 'filter' ? event.active : event.filtered;
         if (state.kind === 'reader' && state.travel) reader();
-        state.saved = new Map(scrollMemory(state).map(saved => [saved.scope.view, saved]));
-        const target = state.saved.get(event.scope.view);
-        state.scope = event.scope;
+        state.saved = new Map(scrollMemory(state).map(saved => [scopeKey(saved.scope), saved]));
+        const target = state.saved.get(scopeKey(scope));
+        state.scope = scope;
         state.pendingSend = undefined;
         state.forceItem = undefined;
         state.last = undefined;
         state.written = undefined;
-        state.lastSeq = -1;
+        if (event.type === 'switch') {
+          state.lastSeq = -1;
+          state.candidates = new Map();
+          clear();
+        } else {
+          for (const [seq, rows] of state.candidates) for (const [key, candidate] of rows) if (candidate.visible) candidates(seq).set(key, { ...candidate, visible: false });
+        }
         state.generation++;
-        state.candidates = new Map();
-        clear();
-        instant = true;
-        state = target && target.scope.sessionId === event.scope.sessionId
-          ? { ...common(state), kind: 'restoring', target, waiting: !event.loaded }
+        state.settling = 'render';
+        instant = true; newInstant = true;
+        filtering = event.type === 'filter';
+        state = target && 'anchor' in target && target.scope.sessionId === scope.sessionId
+          ? { ...common(state), kind: 'restoring', target, waiting: event.type === 'switch' && !event.loaded }
           : { ...common(state), kind: 'following', positioning: true };
         force = state.kind === 'following';
+        if (filtering && !target) state = { ...common(state), kind: 'reader' };
         break;
       }
       case 'reset':
@@ -293,7 +294,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
       case 'focus': case 'frame': break;
     }
   }
-  if (filtering) {
+  if (filtering && state.kind === 'reader' && !state.anchor) {
     let first: { seq: number; candidate: Candidate } | undefined;
     for (const [seq, rows] of state.candidates) for (const candidate of rows.values()) if (candidate.visible && candidate.unread && (!first || seq < first.seq || seq === first.seq && candidate.index < first.candidate.index)) first = { seq, candidate };
     if (first) reader({ item: { kind: 'message', seq: first.seq, row: first.candidate.row }, offset: 0, edge: 'divider' });

@@ -52,7 +52,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 type PageMemory = TopicsMemory & { scroll: Saved[]; drafts: [view: string, text: string][] };
 const stored: unknown = history.state;
 const pageMemory = (stored: unknown): stored is PageMemory => isRecord(stored) && Array.isArray(stored.scroll) && stored.scroll.every(saved => {
-  if (!isRecord(saved) || !isRecord(saved.scope) || typeof saved.scope.view !== 'string' || saved.scope.sessionId !== undefined && typeof saved.scope.sessionId !== 'string' || !Number.isInteger(saved.last) || !isRecord(saved.anchor) || saved.anchor.edge !== 'row' && saved.anchor.edge !== 'divider' || typeof saved.anchor.offset !== 'number' || !Number.isFinite(saved.anchor.offset) || !isRecord(saved.anchor.item)) return false;
+  if (!isRecord(saved) || !isRecord(saved.scope) || typeof saved.scope.view !== 'string' || saved.scope.sessionId !== undefined && typeof saved.scope.sessionId !== 'string' || saved.scope.topic !== undefined && typeof saved.scope.topic !== 'string' || !Number.isInteger(saved.last)) return false;
+  if (!('anchor' in saved)) return true;
+  if (!isRecord(saved.anchor) || saved.anchor.edge !== 'row' && saved.anchor.edge !== 'divider' || typeof saved.anchor.offset !== 'number' || !Number.isFinite(saved.anchor.offset) || !isRecord(saved.anchor.item)) return false;
   const item = saved.anchor.item;
   return item.kind === 'message' && Number.isInteger(item.seq) && (item.row === undefined || isRecord(item.row) && isRecord(item.row.source) && Number.isInteger(item.row.source.seq) && (item.row.kind === 'text' && item.row.source.kind === 'block' && Number.isInteger(item.row.source.index) || item.row.kind === 'run' && (item.row.source.kind === 'item' || item.row.source.kind === 'block' && Number.isInteger(item.row.source.index)))) || item.kind === 'job' && Number.isInteger(item.byte);
 }) && Array.isArray(stored.drafts) && stored.drafts.every(entry => Array.isArray(entry) && entry.length === 2 && entry.every(value => typeof value === 'string')) && topicsMemory(stored);
@@ -111,7 +113,7 @@ const topics = createTopics({
 }, memory);
 function finishTopicFilter() {
   refreshTopicItems();
-  enqueue({ type: 'filter', active: topics.filter() !== undefined });
+  enqueue({ type: 'filter', active: topics.filter() !== undefined, topic: topics.filter() });
   for (const seq of items.keys()) changedItem(seq, false);
 }
 function latestTopicInput(): WireItem | undefined {
@@ -1669,7 +1671,7 @@ function apply(record: PageRecord) {
     reportComposer();
     topics.update(record, previousScope);
     if (scopeChanged) transcriptHistory.cancel('scope');
-    if (scopeChanged) decide({ type: 'switch', scope: { view: record.view.id, sessionId: record.sessionId }, loaded, filtered: topics.filter() !== undefined });
+    if (scopeChanged) decide({ type: 'switch', scope: { view: record.view.id, sessionId: record.sessionId, topic: topics.filter() }, loaded, filtered: topics.filter() !== undefined });
     topics.render();
     if (scopeChanged) { refreshTopicItems(); if (epoch && record.view.type === 'root' && (previousFilter !== topics.filter() || topics.filter() !== undefined)) void transcriptHistory.reload(); }
     if (workingChanged && previousFilter === shownFilter && shownFilter && priorInput?.kind === 'user') accept({ ...priorInput });

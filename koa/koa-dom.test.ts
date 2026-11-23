@@ -887,7 +887,7 @@ test('a stale destination filter does not erase the outgoing reader anchor', asy
     scrolling={...scrollInitial({view:'root',sessionId:'s'}),kind:'reader',anchor:{item:{kind:'message',seq:7},offset:13,edge:'row'}};
     topics.debug.scopeData('destination:s').filter='stale';
     apply({...state,type:'state',view:{id:'destination',path:[],type:'root'}});
-    return scrolling.saved.get('root')?.anchor;
+    return scrolling.saved.get(JSON.stringify(['root',null]))?.anchor;
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(saved ?? null)), { item: { kind: 'message', seq: 7 }, offset: 13, edge: 'row' });
 });

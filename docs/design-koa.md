@@ -342,7 +342,7 @@ the topic filters. The page writes them to `history.state` on
 `pagehide`, so a `reload` record and the app's Reload Page keep them,
 and reads them once at start. `history.state` needs no storage
 permission or origin and ends with its entry. A following view saves
-nothing. Restoration is the `restoring` path of a switch, so a
+its following intent, not an anchor. Restoration is the `restoring` path of a switch, so a
 position of another session is not used. Folds do not survive,
 because their keys depend on the loaded range. Attachments, pickers
 and dialogs do not survive. A process replacement loads a new entry,
@@ -564,14 +564,19 @@ bottom or reader input cancels it; only growth after that placement
 makes an unfocused page a reader. So a reload or `/restart` of a
 following view opens at the bottom.
 
-A switch of the topic filter drops the previous filter's reader
-anchor. The composer's topic follows the filter at once, but the
+Each topic filter and All topics keep a separate scroll position,
+with the same save and restore rule as agent views. A view left at
+the bottom follows the bottom on return. A view left in reader mode
+restores its anchor without animation; new visible items received
+while away get a divider and a new-item count.
+The composer's topic follows the filter at once, but the
 transcript keeps its shown filter, rows and position until the
 filter's history reload arrives. Then the page installs the rows,
 changes the projection and lands in one move, so the switch lands
 once. A response for a filter that a later switch replaced is
-dropped. The view opens at the divider above the first unread row
-that the filter shows, or follows the bottom when it shows none.
+dropped. Anchor restoration loads the anchor's history when needed.
+A view not visited before opens at the divider above the first unread
+row that the filter shows, or follows the bottom when it shows none.
 Unread state belongs to the row, not to the filter: a row that the
 filter hides keeps it, so the row is still unread in a later view
 that shows it. The count and the divider cover only the shown rows.
