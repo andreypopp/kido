@@ -547,11 +547,22 @@ A scrollbar jump into unmounted space uses the position table to
 mount the destination. A fold toggle holds its header at the same
 screen position and ends scroll travel.
 
-The follow slide is a transform of the transcript, not an animated
-scroll. It smooths growth without competing with bottom correction.
-Instant causes, such as a reset, restore or resize, only update its
-baseline. A clipping wrapper prevents the transform from changing
-the scrollable extent and feeding back into the next measurement.
+Following has no animation: growth puts the transcript at the new
+bottom in the same frame. While following, the written scroll
+position never decreases. The following state keeps a floor, the
+largest natural transcript height seen, and the page applies it as
+the minimum height of the transcript's clipping wrapper before it
+writes the scroll. So a shrink at the tail (a revised reveal slice,
+a working row that goes, merged run rows, the typing dots, the
+unread divider) leaves a blank reserve under the content instead of
+an upward jump, and later growth consumes the reserve. Turn end does
+not release it. A reader keeps only the part of it that the current
+position needs, so leaving following causes no clamp, and the part
+goes as the reader moves up; a reset, a switch, a filter or a resize
+clears it. Each frame measures fresh geometry after the
+render and reveal writes, and the divider and rhythm changes are
+applied and measured once more before the frame's one scroll write,
+so no write uses a stale height.
 
 A hidden or unfocused following page becomes a reader when new
 content or layout moves the bottom. Focus alone never resumes

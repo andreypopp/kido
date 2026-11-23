@@ -1382,7 +1382,7 @@ test('block topic updates preserve the scrolled panel position', async () => {
 
 test('divider insertion movement and removal update rhythm across rows and reply sections', async () => {
   const app=await page();
-  const result=app.run(`(()=>{const list=element('items');list.hidden=false;const previous=node('div'),outside=node('div',undefined,'nrow'),root=node('div'),section=node('div',undefined,'reply-section'),a=node('div'),b=node('div'),first=node('div',undefined,'run'),second=node('div',undefined,'run');previous.dataset.seq='0';root.dataset.seq='1';previous.append(outside);a.append(first);b.append(second);section.append(a,b);root.append(section);list.replaceChildren(previous,root);views.set(0,{view:previous});views.set(1,{view:root});unitRows=seq=>{if(seq===0)return [{kind:'run',source:{kind:'block',seq:0,index:0}}];if(seq===1)return [0,2].map(index=>({kind:'run',source:{kind:'block',seq:1,index}}));throw Error('Unexpected row')};openers.set('run:1:2',{view:second});rhythm([previous,root]);const flags=()=>[outside.dataset.rhythm,first.dataset.rhythm],states=[flags()];applyScroll({...scrollDecision,divider:{seq:1,row:{kind:'run',source:{kind:'block',seq:1,index:2}}}});states.push(flags());applyScroll({...scrollDecision,divider:{seq:1,row:{kind:'run',source:{kind:'block',seq:1,index:0}}}});states.push(flags());applyScroll({...scrollDecision,divider:undefined});states.push(flags());return states})()`);
+  const result=app.run(`(()=>{const list=element('items');list.hidden=false;const previous=node('div'),outside=node('div',undefined,'nrow'),root=node('div'),section=node('div',undefined,'reply-section'),a=node('div'),b=node('div'),first=node('div',undefined,'run'),second=node('div',undefined,'run');previous.dataset.seq='0';root.dataset.seq='1';previous.append(outside);a.append(first);b.append(second);section.append(a,b);root.append(section);list.replaceChildren(previous,root);views.set(0,{view:previous});views.set(1,{view:root});unitRows=seq=>{if(seq===0)return [{kind:'run',source:{kind:'block',seq:0,index:0}}];if(seq===1)return [0,2].map(index=>({kind:'run',source:{kind:'block',seq:1,index}}));throw Error('Unexpected row')};openers.set('run:1:2',{view:second});rhythm([previous,root]);const flags=()=>[outside.dataset.rhythm,first.dataset.rhythm],states=[flags()];applyScroll({...scrollDecision,divider:{seq:1,row:{kind:'run',source:{kind:'block',seq:1,index:2}}}},measure());states.push(flags());applyScroll({...scrollDecision,divider:{seq:1,row:{kind:'run',source:{kind:'block',seq:1,index:0}}}},measure());states.push(flags());applyScroll({...scrollDecision,divider:undefined},measure());states.push(flags());return states})()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)),[['compact','compact'],['compact','block'],['block','compact'],['compact','compact']]);
 });
 
@@ -2217,7 +2217,7 @@ async function revealPage(clientHeight = 100) {
   const rects = (count: number) => Array.from({ length: count }, (_, line) => ({ top: line * 20 + 2, bottom: line * 20 + 18 }));
   app.context.document.createElement = (tag: string) => {
     const node = create(tag);
-    node.getBoundingClientRect = () => { hooks.read?.('rect', node); layout.flush(); const offset = app.context.document.getElementById('items').contains(node) || app.context.document.getElementById('jobv').contains(node) ? Number.parseFloat(String(app.context.document.getElementById('transcript').style.transform).slice(11)) || 0 : 0; const position = (node.className.includes('reveal') ? 0 : node.offsetTop - top) + offset, height = node.rects.at(-1)?.bottom ? Number(node.rects.at(-1)?.bottom) + 2 : node.offsetHeight; return { left: 0, top: position, bottom: position + height, height }; };
+    node.getBoundingClientRect = () => { hooks.read?.('rect', node); layout.flush(); const position = (node.className.includes('reveal') ? 0 : node.offsetTop - top), height = node.rects.at(-1)?.bottom ? Number(node.rects.at(-1)?.bottom) + 2 : node.offsetHeight; return { left: 0, top: position, bottom: position + height, height }; };
     if (tag === 'template') Object.defineProperty(node, 'innerHTML', { set(value: string) {
       html.push(value);
       const child = create(value.startsWith('<pre') ? 'pre' : 'p'), text = value.replace(/<[^>]*>/g, '').replace(/\n$/, '');
@@ -2239,7 +2239,9 @@ async function revealPage(clientHeight = 100) {
   const evaluate = app.repl();
   const box = app.context.document.getElementById('scroll');
   const layout: { height?: () => number; elastic?: boolean; flush: () => void } = { flush: () => {} };
-  const total = () => layout.height?.() ?? height;
+  const natural = () => layout.height?.() ?? height;
+  Object.defineProperty(app.context.document.getElementById('transcript'), 'offsetHeight', { get: natural });
+  const total = () => Math.max(natural(), Number.parseFloat(String(app.context.document.getElementById('transcript-clip').style.minHeight)) || 0);
   layout.flush = () => { if (layout.elastic) return; const next = Math.min(Math.max(0, total() - client), top); if (next !== top) { top = next; moved = true; } };
   Object.defineProperties(box, {
     scrollTop: { get: () => (hooks.read?.('scrollTop', box), layout.flush(), top), set: (value: number) => { layout.flush(); const before = top; top = Math.max(0, Number(value)); layout.flush(); hooks.wrote?.(); if (top !== before) moved = true; } },
@@ -3359,7 +3361,7 @@ async function flowPage(margin = 0) {
   const starts = new Map<unknown, number>(), now = () => Number(app.context.performance.now());
   const grown = (node: { className: string }) => { if (node.className.includes('hold')) return 0; if (!node.className.includes('grow')) return 1; if (!starts.has(node)) starts.set(node, now()); return Math.min(1, (now() - Number(starts.get(node))) / 220); };
   type Box = { tagName: string; className: string; children: Box[]; parent?: Box; style: Record<string, string>; dataset: Record<string, string> };
-  const count = (node: Box): number => (node.tagName === 'P' || node.tagName === 'PRE' ? 100 * grown(node) : 0) + (node.children ?? []).reduce((total, child) => total + count(child), 0);
+  const count = (node: Box): number => (node.tagName === 'P' || node.tagName === 'PRE' ? 100 * grown(node) : 0) + (node.children ?? []).reduce((total, child) => total + (!(node.className ?? '').split(' ').includes('open') && (child.className ?? '').split(' ').some(name => ['detail', 'steps', 'bd'].includes(name)) ? 0 : count(child)), 0);
   const isBox = (value: unknown): value is Box => typeof value === 'object' && value !== null && 'children' in value;
   const size = (seq: number) => { const view = evaluate(`views.get(${seq}).view`); assert.ok(isBox(view)); return count(view) + (extra.get(seq) ?? 0); };
   const list = doc.getElementById('items');
@@ -3418,28 +3420,22 @@ test('every transcript fold holds the clicked header in following and reader win
     `(()=>{const item={kind:'job',seq:0,at:0,final:true,job:{id:'job',name:'job',log:'/tmp/job'},event:{type:'stream',batch:{text:'echo ok',cut:0},omitted:0,cut:false}},view=run([{kind:'job',key:'toggle',item,slots:new Map()}]);return runMarks.get(view).steps[0].child})()`,
     ...['step', 'run'].map(kind => `(()=>{const block={type:'tool',id:'read',name:'read',args:{text:'{}'},state:{type:'done',error:false,result:{text:'output',images:[]}}};const step={kind:'block',key:'toggle',block,item:{seq:0,at:0,final:true,blocks:[block]},index:0,slots:new Map()};return ${kind === 'step' ? 'stepMarks(step).child' : 'run([step])'}})()`),
   ];
-  for (const card of cards) for (const mode of ['following', 'reader', 'overscan', 'glide', 'keyboard']) {
+  for (const card of cards) for (const mode of ['following', 'reader', 'overscan', 'keyboard']) {
     const page = await flowPage();
     page.open(Array.from({ length: 30 }, (_, seq) => page.text(seq)));
     page.settle();
     if (mode === 'reader' || mode === 'overscan') { page.reader(mode === 'overscan' ? 1200 : page.bottom() - 30); page.step(0); }
     const seq = mode === 'overscan' ? page.seqs().find(seq => page.offset(seq) >= 100) : page.seqs().at(-1);
     assert.ok(seq !== undefined);
-    page.evaluate(`globalThis.toggleCard=${card};globalThis.toggleRow=views.get(${seq}).view;toggleRow.append(toggleCard);globalThis.rowRect=toggleRow.getBoundingClientRect;toggleRow.getBoundingClientRect=()=>{const rect=rowRect();return {...rect,top:rect.top+scrollDecision.glideOffset,bottom:rect.bottom+scrollDecision.glideOffset}};globalThis.toggleHeader=toggleCard.children[0];toggleHeader.getBoundingClientRect=()=>({top:toggleRow.getBoundingClientRect().top+20})`);
+    page.evaluate(`globalThis.toggleCard=${card};globalThis.toggleRow=views.get(${seq}).view;toggleRow.append(toggleCard);globalThis.toggleHeader=toggleCard.children[0];toggleHeader.getBoundingClientRect=()=>({top:toggleRow.getBoundingClientRect().top+20})`);
     const get = page.extra.get.bind(page.extra);
     page.extra.get = key => (get(key) ?? 0) + (key === seq && page.evaluate("toggleCard.classList.contains('open')") ? 200 : 0);
     page.layout.flush();
     page.step(0); page.settle();
-    if (mode === 'glide') {
-      page.pad.value += 40;
-      page.evaluate("decide({type:'layout',cause:'layout'})");
-      assert.notEqual(page.evaluate('scrollDecision.glideOffset'), 0);
-    }
     const before = page.evaluate('toggleHeader.getBoundingClientRect().top');
     page.evaluate(mode === 'keyboard' ? "toggleHeader.onkeydown({key:'Enter',preventDefault(){}})" : 'toggleHeader.onclick({})');
     page.layout.flush(); page.step(0);
     assert.equal(page.evaluate('toggleHeader.getBoundingClientRect().top'), before, card + ' ' + mode + ' expand');
-    assert.equal(page.evaluate('scrollDecision.glideOffset'), 0);
     assert.equal(page.evaluate('scrolling.kind'), 'reader');
     assert.equal(page.evaluate('scrollDecision.divider?.seq'), undefined);
     page.evaluate('toggleHeader.onclick({})');
@@ -3468,7 +3464,6 @@ test('a folded fence expands at its clicked bar without following or a divider',
     assert.equal(page.evaluate("fence.classList.contains('folded')"), false);
     assert.equal(page.evaluate("element('items').contains(fenceBar)"), false);
     assert.equal(page.evaluate('scrolling.kind'), 'reader');
-    assert.equal(page.evaluate('scrollDecision.glideOffset'), 0);
     assert.equal(page.evaluate('scrollDecision.divider?.seq'), undefined);
   }
 });
@@ -3748,7 +3743,7 @@ test('a card that grows moves the following pane to the new bottom in the same f
   assert.equal(page.bottom() - page.top(), 0);
 });
 
-test('the working row of a turn that ends go in one frame and the follower writes the new bottom in it', async () => {
+test('the working row of a turn that ends goes in one frame without moving the follower up', async () => {
   const page = await streamingPage();
   page.step(1600);
   page.settle(30);
@@ -3757,7 +3752,7 @@ test('the working row of a turn that ends go in one frame and the follower write
   page.evaluate("apply({...state,type:'state',working:false})");
   page.step(16);
   assert.equal(page.evaluate("!!element('items').lastChild?.className.includes('working')"), false);
-  assert.deepEqual([page.top(), page.top() - page.bottom()], [settled - 38, 0]);
+  assert.deepEqual([page.top(), page.top() - page.bottom()], [settled, 0]);
 });
 
 test('a reveal moves a following pane to the bottom in its first frame and never pulls a reader who scrolled up', async () => {
@@ -5100,7 +5095,7 @@ test('a topic switch keeps its presentation until history arrives and lands once
   page.evaluate("state={...state,sessionId:'s',topics:[{name:'one'},{name:'two'}]}");
   page.open(initial); page.settle(12);
   const release = page.gate([...older, ...initial.slice(-2)]);
-  const sample = () => { const first = page.seqs().find(seq => page.offset(seq) + 100 > 0); return { top: page.top(), first, offset: first === undefined ? undefined : page.offset(first), mode: page.evaluate('scrolling.kind'), glide: page.evaluate('scrollDecision.glideOffset') }; };
+  const sample = () => { const first = page.seqs().find(seq => page.offset(seq) + 100 > 0); return { top: page.top(), first, offset: first === undefined ? undefined : page.offset(first), mode: page.evaluate('scrolling.kind') }; };
   const initialPosition = sample();
   page.evaluate("topics.debug.updateTopicFilter('one'); apply({type:'item',item:{...items.get(395),revision:1}})");
   const before = []; for (let frame = 0; frame < 12; frame++) { page.step(16); before.push(sample()); }
@@ -5108,7 +5103,7 @@ test('a topic switch keeps its presentation until history arrives and lands once
   assert.equal(page.evaluate('visible(395)?.seq'), 395);
   release();
   const after = []; for (let turn=0;turn<20;turn++) { await page.settled(); page.step(16); after.push(sample()); }
-  assert.deepEqual(after.map(({ first, offset, glide }) => ({ first, offset, glide })), after.map(() => ({ first: 192, offset: 0, glide: 0 })));
+  assert.deepEqual(after.map(({ first, offset }) => ({ first, offset })), after.map(() => ({ first: 192, offset: 0 })));
 });
 
 test('filtered history installs 400 summary rows with a linear topic index', async () => {

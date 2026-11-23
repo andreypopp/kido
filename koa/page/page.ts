@@ -154,7 +154,7 @@ function refreshTopicItems() {
   windowDirty = true; schedule();
 }
 let scrolling = scrollInitial({ view: '', sessionId: undefined }, memory?.scroll);
-let scrollDecision: Decision = { glideOffset: 0, latest: { show: false, count: 0 }, windowTop: 0, frame: 'none' };
+let scrollDecision: Decision = { latest: { show: false, count: 0 }, windowTop: 0, frame: 'none' };
 let lastMeasurement: Measure | undefined;
 let divider: HTMLElement | undefined;
 let dockHeight = 0;
@@ -371,9 +371,7 @@ function stopFrames() {
 function rendered() { return new Promise<void>(resolve => { waiters.push(resolve); schedule(); }); }
 function tick() {
   pending = undefined;
-  const now = performance.now(), measurement = scrollDecision.frame === 'measure' ? measure() : lastMeasurement ?? measure(), geo = geometry();
-  const physicalTop = element('scroll').scrollTop;
-  const top = physicalTop < -1 || physicalTop > measurement.max + 1 ? physicalTop : scrolling.last?.top ?? measurement.top;
+  const now = performance.now(), geo = geometry();
   const grown = [...measuredHolds];
   measuredHolds.clear();
   for (const [target, height] of grown) {
@@ -407,7 +405,16 @@ function tick() {
   }
   const layout = flushExtents();
   if (layout) scrollEvents.push({ type: 'layout', cause: 'layout' });
-  decide({ type: 'frame' }, layout ? measure() : { ...measurement, now, top });
+  const scroll = element('scroll'), viewport = scroll.clientHeight;
+  const fresh = {
+    now, top: scroll.scrollTop, max: Math.max(0, scroll.scrollHeight - viewport),
+    naturalHeight: element('transcript').offsetHeight, viewport, width: scroll.clientWidth,
+  };
+  const measurement = !lastMeasurement || layout || scrollDecision.frame === 'measure'
+    || fresh.naturalHeight !== lastMeasurement.naturalHeight || fresh.max !== lastMeasurement.max
+    || fresh.viewport !== lastMeasurement.viewport || fresh.width !== lastMeasurement.width
+    ? measure() : { ...lastMeasurement, ...fresh };
+  decide({ type: 'frame' }, measurement);
   for (const resolve of waiters.splice(0)) resolve();
   for (const waiter of metrics?.waiting.splice(0) ?? []) waiter();
   schedule();
@@ -431,12 +438,11 @@ function measure(): Measure {
   const origin = element('transcript').offsetTop + element('items').offsetTop;
   const viewport = scroll.clientHeight;
   const rect = scroll.getBoundingClientRect();
-  const offset = scrollDecision.glideOffset;
   const mounted = new Map<number, { row: Row; element: Element }>(), projected = new Map<string, { row: Row; element: Element }>(), units = new Map<number, RowId[]>();
   const jobView = state.view.type === 'job';
   const leading = (row: Row): Row => {
     if (row.item.kind !== 'message' || row.item.seq !== scrollDecision.divider?.seq || !divider?.isConnected || !sameRow(row.item.row ?? unitRows(row.item.seq)[0], scrollDecision.divider?.row)) return row;
-    const start = top + divider.getBoundingClientRect().top - rect.top - offset - parseFloat(getComputedStyle(divider).marginTop);
+    const start = top + divider.getBoundingClientRect().top - rect.top - parseFloat(getComputedStyle(divider).marginTop);
     return { ...row, leading: Math.min(row.top, start) };
   };
   for (const view of jobView ? Array.from(messageRows()) : resetting ? [] : [...views.values()].map(entry => entry.view)) {
@@ -445,8 +451,8 @@ function measure(): Measure {
     const box = view.getBoundingClientRect();
     const row = leading({
       item,
-      top: top + box.top - rect.top - offset,
-      bottom: top + box.bottom - rect.top - offset,
+      top: top + box.top - rect.top,
+      bottom: top + box.bottom - rect.top,
     });
     mounted.set(item.kind === 'message' ? item.seq : item.byte, { row, element: view });
     if (item.kind === 'message') {
@@ -455,7 +461,7 @@ function measure(): Measure {
         const address: ItemId = { ...item, row: key }, target = key === keys[0] ? view : unitView(key);
         if (!target) continue;
         const bounds = target === view ? box : target.getBoundingClientRect();
-        projected.set(rowKey(key), { element: target, row: leading({ item: address, top: top + bounds.top - rect.top - offset, bottom: top + bounds.bottom - rect.top - offset }) });
+        projected.set(rowKey(key), { element: target, row: leading({ item: address, top: top + bounds.top - rect.top, bottom: top + bounds.bottom - rect.top }) });
       }
     }
   }
@@ -480,6 +486,7 @@ function measure(): Measure {
     now: performance.now(),
     top,
     max: Math.max(0, scroll.scrollHeight - viewport),
+    naturalHeight: element('transcript').offsetHeight,
     viewport,
     width: scroll.clientWidth,
     origin,
@@ -520,16 +527,8 @@ function measure(): Measure {
     },
   };
 }
-function applyScroll(decision: Decision) {
+function applyScroll(decision: Decision, measurement: Measure) {
   let stored: number | undefined;
-  if (decision.scrollTop !== undefined) {
-    const scroll = element('scroll');
-    scroll.scrollTop = decision.scrollTop;
-    stored = scroll.scrollTop;
-  }
-  const transcript = element('transcript');
-  transcript.style.transform = decision.glideOffset ? `translateY(${decision.glideOffset}px)` : '';
-  transcript.style.willChange = decision.glideOffset ? 'transform' : '';
   const latest = element('latest'), label = decision.latest.count ? '↓ ' + decision.latest.count + ' new' : '↓ Latest';
   if (latest.textContent !== label) latest.textContent = label;
   latest.classList.toggle('show', decision.latest.show);
@@ -546,7 +545,24 @@ function applyScroll(decision: Decision) {
     if (!divider) { divider = node('div', undefined, 'newmsgs'); divider.append(node('span', 'new messages')); }
     if (divider.nextSibling !== view) { remember(); view.parentNode?.insertBefore(divider, view); remember(); }
   }
-  if (changed.length) { rhythm(changed); changed.forEach(dirtyExtent); }
+  if (changed.length) {
+    rhythm(changed); changed.forEach(dirtyExtent);
+    flushExtents();
+    const correcting = scrolling.kind === 'following' && decision.scrollTop !== undefined
+      ? { ...scrolling, positioning: true, last: measurement } : { ...scrolling, last: measurement };
+    const correction = scrollUpdate(correcting, [{ type: 'layout', cause: 'layout' }], {
+      ...measure(), focused: measurement.focused, visible: measurement.visible,
+    });
+    scrolling = scrolling.kind === 'following' && correction.state.kind === 'following'
+      ? { ...correction.state, positioning: scrolling.positioning } : correction.state;
+    scrollDecision = decision = correction.decision;
+  }
+  element('transcript-clip').style.minHeight = decision.minHeight === undefined ? '' : decision.minHeight + 'px';
+  if (decision.scrollTop !== undefined) {
+    const scroll = element('scroll');
+    scroll.scrollTop = decision.scrollTop;
+    stored = scroll.scrollTop;
+  }
   if (decision.request?.type === 'mount') windowDirty = true;
   else if (decision.request?.type === 'load') void loadAnchor(decision.request.item, decision.request.generation);
   if (decision.frame !== 'none') schedule();
@@ -563,7 +579,7 @@ function decide(event?: ScrollEvent, measurement = measure()) {
   if (unreadChanged) topics.render();
   if (previousTop !== scrollDecision.windowTop) windowDirty = true;
   if (previousDivider !== scrollDecision.divider?.seq || !sameRow(previousRow, scrollDecision.divider?.row)) { if (previousDivider !== undefined) extents.delete(previousDivider); if (scrollDecision.divider?.seq !== undefined) extents.delete(scrollDecision.divider?.seq); table = undefined; dividerPx = undefined; windowDirty = true; }
-  const stored = applyScroll(scrollDecision);
+  const stored = applyScroll(scrollDecision, measurement);
   if (stored !== undefined) scrolling = scrollStored(scrolling, stored);
 }
 function enqueue(event: ScrollEvent) { scrollEvents.push(event); schedule(); }
@@ -657,7 +673,7 @@ function toggleAt(line: HTMLElement, change: () => void) {
   const found = measurement.lookup(item);
   if (found.kind !== 'mounted') return;
   const delta = row.contains(line) ? line.getBoundingClientRect().top - before : row.getBoundingClientRect().top - rowBefore;
-  const top = measurement.top + delta - scrollDecision.glideOffset;
+  const top = measurement.top + delta;
   decide({ type: 'layout', cause: 'toggle', anchor: { item, offset: found.row.top - top, edge: 'row' } }, measurement);
 }
 function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLElement, show?: () => void, className = 'open', changed?: () => void) {

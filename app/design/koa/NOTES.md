@@ -1361,8 +1361,7 @@ grow by the chunk; it grows by blocks and by slices of whole lines.
   (2026-11-15, the Auto-scroll section): while the reader follows,
   the follower writes the bottom instantly before each paint the
   reveal changes, so the grown block is in view at once; a reader
-  who scrolled up keeps their anchor and is never pulled down. The
-  earlier glide per reveal is dropped.
+  who scrolled up keeps their anchor and is never pulled down.
 - A code fence with more than 15 lines is folded: the first 15
   lines, then a full-width bar "Show N more lines" under the pre
   (the well's fill, a hairline above, the accent colour, the
@@ -1586,7 +1585,7 @@ Open WebUI): the scroll has two states and one animation.
   the bottom before every paint that changes the layout: streaming
   text, a revealed block, an image that loaded, a fold, the dock's
   height (the queue, a dialog, the exit card, the composer growing),
-  a viewport resize, the typing dots going. The block reveal
+  a viewport resize. The block reveal
   animation (strategy G) stays as rendering; the scroll follows the
   measured layout frame by frame, never animates toward it. Nothing
   flashes, because the write happens before the paint.
@@ -1666,62 +1665,26 @@ Open WebUI): the scroll has two states and one animation.
   it on return, instantly: `reader(anchor)` restored with the divider
   above what arrived meanwhile and "↓ N new"; `following` restored at
   the end, no divider and no button.
-- **The typing dots at the turn's end** go in one frame; following
-  writes the new bottom in the same frame, so the text moves down by
-  the dots' height at once. The earlier 220ms collapse is dropped:
-  the one animation is "↓ Latest".
+- **The typing dots at the turn's end** go in one frame; the text
+  stays where it is and the dots' space stays as blank reserve (see
+  "The tail reserve"). The one animation is "↓ Latest".
 - **Kept animated, and why.** Only "↓ Latest" scrolls animated: it
   is the reader's request to travel, and a jump would lose where
   they were. Everything the layout does under a following reader is
   instant in the scroll, because an animated follow and a streaming
-  layout fight each other, which was the "sometimes it jumps". The
-  glide the reader sees comes from the slide below, which moves no
-  scroll.
-- **The follow slide** (user, 2026-11-16: "scroll just jumps to the
-  latest"; the glide comes back without touching the scroll). While
-  `following` and focused, the scroll is still written to the exact
-  bottom before the paint, and the transcript's content (the one
-  element that holds every item, the dots row and the bottom
-  padding; the dock is outside it) is offset down by the amount the
-  bottom moved and eases back to 0: `transform: translateY(offset)`,
-  so the frame first shows what was in view before, and the new
-  content slides up into place from behind the dock. One mechanism
-  for everything that moves the bottom: a revealed slice, a block
-  that completes, a new item, the dots row appearing or going, the
-  sent block, a loaded image, the composer growing (the dock's
-  height change moves the bottom; the content slides, the dock
-  does not). The grow of a block (strategy G's 220 ms) adds its
-  frame-by-frame deltas to the same offset, so a growing block and
-  a revealed slice read as one motion.
-  - Offset and timing: on each bottom change by `h` px, `offset +=
-    h`; the offset eases to 0 over 180 ms `ease-out` from its
-    current value, the animation restarted on each change, so
-    content arriving mid-slide retargets from where the content is
-    now and never steps back. The offset is clamped to the
-    viewport's height: a burst larger than the viewport starts
-    from one viewport away, never from further, so a slide is at
-    most one screen and about 180 ms. A bottom change downward
-    (content removed, the dots going, a fold) adds a negative `h`:
-    the content slides down the same way.
-  - Not following: no slide. The reader's anchor keeps its item in
-    place, exactly as before; nothing moves for them.
-  - The user's send: `following` and the exact bottom in the frame
-    the sent block appends; its height goes through the slide like
-    any bottom change when the reader was already following; when
-    the reader was up, the jump to the bottom is instant and only
-    the sent block slides in (the offset is the block's height,
-    not the distance travelled).
-  - No slide: a view switch, a session switch, a restored view,
-    history loading above, `/reload`, `/restart`, `/new`, the first
-    paint of a transcript, a resize. The "↓ Latest" travel is
-    unchanged (it is scroll, not the slide); when it arrives,
-    following begins with offset 0.
-  - Reduce Motion: no slide, offset always 0; the layout is as
-    today, instant.
-  - Nothing else changes: the write before paint, the divider, the
-    counts and the states are as above. The slide is a transform on
-    one element, so it costs no layout and cannot lose a follow:
-    `scrollTop` is exact at every frame, whatever the offset shows.
+  layout fight each other.
+- **The tail reserve.** While following, the scroll never moves up.
+  Content that grows is at the new bottom in the same frame, with no
+  slide. Content that shrinks at the tail (a revealed slice revised
+  to fewer lines, a working row that goes, run rows that merge, the
+  typing dots, the unread divider) does not pull the text down and
+  then back up: the transcript keeps the largest height it had while
+  following, and the difference stays as blank space under the last
+  content. New content fills that space first; the scroll moves
+  again only when the content passes it. The end of a turn keeps
+  the space. Scrolling up does not make the text jump: the space
+  goes as the reader moves up past it. A reset, a view or session
+  switch, a filter or a resize clears it.
 
 ## The job page (job.html; 2026-11-15, approved)
 

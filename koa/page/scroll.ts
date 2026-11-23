@@ -6,16 +6,16 @@ export type Anchor = { item: ItemId; offset: number; edge: 'row' | 'divider' };
 type Scope = { view: string; sessionId: string | undefined; topic?: string };
 const scopeKey = (scope: Scope): string => JSON.stringify([scope.view, scope.topic ?? null]);
 export type Saved = { scope: Scope; anchor: Anchor; last: number } | { scope: Scope; last: number };
-type Glide = { from: number; start: number; offset: number };
 type Travel = { from: number; start: number };
 type Geometry = { top: number; max: number; viewport: number; width: number; origin: number };
 type Candidate = { row?: RowId; index: number; visible: boolean; unread: boolean };
 type Common = {
   scope: Scope;
+  floor?: number;
   last?: Geometry;
   written?: { top: number; echo: boolean };
-  pendingSend?: { mode: 'following' | 'reader' };
-  forceItem?: { seq: number; mode: 'following' | 'reader' };
+  pendingSend?: true;
+  forceItem?: { seq: number };
   saved: Map<string, Saved>;
   candidates: Map<number, Map<string, Candidate>>;
   threshold: boolean;
@@ -25,7 +25,7 @@ type Common = {
   settling: 'none' | 'render' | 'delivery';
 };
 export type State = Common & (
-  | { kind: 'following'; positioning?: boolean; glide?: Glide }
+  | { kind: 'following'; positioning?: boolean }
   | { kind: 'reader'; anchor?: Anchor; travel?: Travel }
   | { kind: 'restoring'; target: Extract<Saved, { anchor: Anchor }>; waiting: 'none' | 'snapshot' | 'catchup' }
 );
@@ -52,6 +52,7 @@ export type Lookup =
   | { kind: 'unloaded' }
   | { kind: 'removed'; next?: Row };
 export type Measure = Geometry & {
+  naturalHeight: number;
   now: number;
   focused: boolean;
   visible: boolean;
@@ -63,7 +64,7 @@ export type Measure = Geometry & {
 };
 export type Decision = {
   scrollTop?: number;
-  glideOffset: number;
+  minHeight?: number;
   latest: { show: boolean; count: number };
   divider?: { seq: number; row?: RowId };
   windowTop: number;
@@ -93,7 +94,7 @@ export function scrollInitial(scope: Scope, memory: Saved[] = []): State {
 }
 function common(state: State): Common {
   switch (state.kind) {
-    case 'following': { const { kind, positioning, glide, ...data } = state; return data; }
+    case 'following': { const { kind, positioning, ...data } = state; return data; }
     case 'reader': { const { kind, anchor, travel, ...data } = state; return data; }
     case 'restoring': { const { kind, target, waiting, ...data } = state; return data; }
   }
@@ -105,19 +106,6 @@ export function scrollWindow(state: State, position: (item: ItemId, edge: 'row' 
   const y = anchor && position(anchor.item, anchor.edge);
   return y !== undefined && anchor ? y - anchor.offset : state.kind === 'restoring' ? bottom : top;
 }
-function offset(glide: Glide | undefined, now: number) {
-  if (!glide) return 0;
-  const progress = Math.min(1, Math.max(0, (now - glide.start) / 180));
-  if (!progress) return glide.from;
-  if (progress === 1) return 0;
-  let low = 0, high = 1;
-  for (let n = 0; n < 24; n++) {
-    const t = (low + high) / 2;
-    if (1.74 * t * t * (1 - t) + t ** 3 < progress) low = t; else high = t;
-  }
-  const t = (low + high) / 2;
-  return glide.from * (1 - (3 * t * t - 2 * t ** 3));
-}
 export function scrollStored(state: State, top: number): State {
   return { ...state, written: { top, echo: true }, last: state.last && { ...state.last, top } };
 }
@@ -128,8 +116,8 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
   let newInstant = false;
   let filtering = false, sawScroll = false;
   let force = state.forceItem !== undefined;
-  let sentHeight: number | undefined;
   let scrollTop: number | undefined;
+  let minHeight: number | undefined;
   let request: Decision['request'];
   const focused = m.focused && m.visible;
   const overscrolled = m.top < -1 || m.top > m.max + 1;
@@ -184,7 +172,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         break;
       }
       case 'submit':
-        state.pendingSend = { mode: state.kind === 'following' ? 'following' : 'reader' };
+        state.pendingSend = true;
         follow();
         instant = true;
         break;
@@ -196,7 +184,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
       case 'item': {
         state.lastSeq = Math.max(state.lastSeq, event.seq);
         if (event.appended && event.kind === 'user' && state.pendingSend) {
-          state.forceItem = { seq: event.seq, mode: state.pendingSend.mode };
+          state.forceItem = { seq: event.seq };
           state.pendingSend = undefined;
           follow();
         }
@@ -223,6 +211,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         state.saved = new Map(scrollMemory(state).map(saved => [scopeKey(saved.scope), saved]));
         const target = state.saved.get(scopeKey(scope));
         state.scope = scope;
+        state.floor = undefined;
         state.pendingSend = undefined;
         state.forceItem = undefined;
         state.last = undefined;
@@ -246,6 +235,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         break;
       }
       case 'reset':
+        state.floor = undefined;
         state.pendingSend = undefined;
         state.forceItem = undefined;
         state.last = undefined;
@@ -317,12 +307,8 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     else if (found.kind === 'unloaded') request = { type: 'load', item: target.anchor.item, generation: state.generation };
     else if (events.some(event => event.type === 'frame' || event.type === 'layout')) follow();
   }
-  if (state.forceItem?.mode === 'reader') {
-    const found = m.lookup({ kind: 'message', seq: state.forceItem.seq });
-    if (found.kind === 'mounted') sentHeight = found.row.bottom - found.row.top;
-    else instant = true;
-  }
   const resized = state.last && (state.last.viewport !== m.viewport || state.last.width !== m.width);
+  if (resized || events.some(event => event.type === 'resize')) state.floor = undefined;
   if (resized) {
     instant = true;
     newInstant = true;
@@ -330,16 +316,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
   }
   if (!overscrolled && state.kind === 'following' && !focused && !force && !state.positioning && m.max - m.top > 1) reader(previous.kind === 'following' ? m.anchor : undefined);
   if (!overscrolled && state.kind === 'following') {
-    if (force || focused || state.positioning) scrollTop = m.max;
-    if (instant || !focused || m.reducedMotion || !state.last) state = { ...state, glide: undefined };
-    else {
-      const delta = sentHeight ?? m.max - state.last.max;
-      const current = sentHeight === undefined ? offset(state.glide, m.now) : 0;
-      if (delta) {
-        const from = Math.max(-m.viewport, Math.min(m.viewport, current + delta));
-        state = { ...state, glide: { from, start: m.now, offset: from } };
-      } else if (state.glide) state = { ...state, glide: current ? { ...state.glide, offset: current } : undefined };
-    }
+    if (force || focused || state.positioning) scrollTop = Math.max(0, Math.max(state.floor ?? 0, m.naturalHeight) - m.viewport);
     if (focused) clear();
   } else if (!overscrolled && state.kind === 'reader') {
     if (state.travel) {
@@ -360,8 +337,15 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
       else scrollTop = m.max;
     }
   }
-  if (state.kind === 'following' && scrollTop === m.max && m.max > 0 && !events.some(event => event.type === 'reset' || event.type === 'switch')) state.positioning = undefined;
-  if (scrollTop !== undefined) scrollTop = Math.max(0, Math.min(m.max, scrollTop));
+  if (state.kind === 'following') {
+    state.floor = Math.max(state.floor ?? 0, m.naturalHeight);
+    minHeight = state.floor;
+  } else if (state.kind === 'reader' && state.floor !== undefined) {
+    minHeight = Math.max(m.naturalHeight, Math.min(state.floor, (scrollTop ?? m.top) + m.viewport));
+    state.floor = minHeight > m.naturalHeight ? minHeight : undefined;
+  }
+  if (state.kind === 'following' && scrollTop === Math.max(0, (minHeight ?? 0) - m.viewport) && scrollTop > 0 && !events.some(event => event.type === 'reset' || event.type === 'switch')) state.positioning = undefined;
+  if (scrollTop !== undefined) scrollTop = Math.max(0, Math.min(Math.max(m.max, (minHeight ?? 0) - m.viewport), scrollTop));
   const top = scrollTop ?? (overscrolled ? state.last?.top ?? Math.max(0, Math.min(m.max, m.top)) : m.top);
   const distance = m.max - top;
   if (state.kind !== 'reader') state.threshold = false;
@@ -384,7 +368,6 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     if ((found.kind === 'mounted' || found.kind === 'unmounted') && found.row.top >= top + m.dock) count++;
   }
   if (state.forceItem && m.lookup({ kind: 'message', seq: state.forceItem.seq }).kind === 'mounted') state.forceItem = undefined;
-  const glideOffset = state.kind === 'following' ? state.glide?.offset ?? 0 : 0;
   if (!newInstant && events.some(event => event.type === 'frame') && !request && state.kind !== 'restoring') {
     if (wasSettling === 'delivery') state.settling = 'none';
     else if (wasSettling === 'render') state.settling = 'delivery';
@@ -396,12 +379,12 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
   }, top - m.origin, m.windowMax ?? Math.max(0, m.max - m.origin));
   let frame: Decision['frame'] = 'none';
   if (state.kind === 'following' && (resized || events.some(event => event.type === 'layout'))) frame = 'measure';
-  else if (state.settling !== 'none' && state.kind !== 'restoring' || state.kind === 'following' && state.glide || state.kind === 'reader' && state.travel) frame = 'animation';
+  else if (state.settling !== 'none' && state.kind !== 'restoring' || state.kind === 'reader' && state.travel) frame = 'animation';
   return {
     state,
     decision: {
       scrollTop,
-      glideOffset,
+      minHeight,
       latest: { show: state.kind === 'reader' && (count > 0 || state.threshold), count },
       divider,
       windowTop,

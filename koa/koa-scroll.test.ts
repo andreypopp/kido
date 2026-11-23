@@ -4,7 +4,7 @@ import { scrollInitial, scrollMemory, scrollStored, scrollUpdate, type State, ty
 
 const scope = { view: 'root', sessionId: 's' };
 const row = (seq: number, top: number, bottom = top + 100): Row => ({ item: { kind: 'message', seq }, top, bottom });
-type FixtureMeasure = Omit<Measure, 'lookup'> & { rows: readonly Row[]; loaded: readonly ItemId[]; mounted?: readonly ItemId[]; more: boolean };
+type FixtureMeasure = Omit<Measure, 'lookup' | 'naturalHeight'> & { rows: readonly Row[]; loaded: readonly ItemId[]; mounted?: readonly ItemId[]; more: boolean };
 const same = (a: ItemId, b: ItemId) => a.kind === b.kind && (a.kind === 'message' ? b.kind === 'message' && a.seq === b.seq : b.kind === 'job' && a.byte === b.byte);
 function fixture() {
   let state: State = scrollInitial(scope);
@@ -13,6 +13,7 @@ function fixture() {
     measurement = { ...measurement, ...changes };
     const result = scrollUpdate(state, events, {
       ...measurement,
+      naturalHeight: measurement.max + measurement.viewport,
       lookup(item): Lookup {
         const row = measurement.rows.find(row => same(row.item, item));
         if (row) return { kind: !measurement.mounted || measurement.mounted.some(found => same(found, item)) ? 'mounted' : 'unmounted', row };
@@ -30,6 +31,60 @@ function fixture() {
   step();
   return { step, state: () => state, store: (top: number) => { state = scrollStored(state, top); measurement.top = top; } };
 }
+test('following reserves transient tail shrink', () => {
+  let state = scrollInitial(scope);
+  let top = 0;
+  let reserve = 0;
+  let previous = 0;
+  let peak = 0;
+  for (const [stage, naturalHeight] of [
+    ['streaming', 1200], ['slice replacement', 1100], ['run merging', 1080],
+    ['dots movement', 1060], ['regrowth', 1150], ['growth past reserve', 1250], ['turn end', 1230],
+  ] as const) {
+    const measurement: Measure = {
+      now: 1000, top, max: Math.max(naturalHeight, reserve) - 300,
+      naturalHeight, viewport: 300, width: 700, origin: 0, dock: 250,
+      focused: true, visible: true, reducedMotion: false, lookup: () => ({ kind: 'removed' }),
+    };
+    const result = scrollUpdate(state, [{ type: 'layout', cause: 'layout' }], measurement);
+    assert.notEqual(result.decision.scrollTop, undefined);
+    top = result.decision.scrollTop ?? 0;
+    assert.ok(top >= previous, `${stage}: bottom moved up: ${previous} -> ${top}`);
+    reserve = result.decision.minHeight ?? 0;
+    peak = Math.max(peak, naturalHeight);
+    assert.equal(reserve - naturalHeight, peak - naturalHeight);
+    state = scrollStored(result.state, top);
+    const delivered = { ...measurement, top, max: reserve - measurement.viewport, now: 1001 };
+    const delayed = scrollUpdate(state, [{ type: 'frame' }], delivered);
+    assert.equal(delayed.decision.scrollTop, top);
+    state = scrollStored(delayed.state, top);
+    const echo = scrollUpdate(state, [{ type: 'scroll' }], { ...delivered, now: 1002 });
+    assert.equal(echo.state.kind, 'following');
+    state = echo.state;
+    previous = top;
+  }
+  const shrunk: Measure = {
+    now: 1003, top, max: 950, naturalHeight: 1000, viewport: 300,
+    width: 700, origin: 0, dock: 250, focused: true, visible: true,
+    reducedMotion: false, lookup: () => ({ kind: 'removed' }),
+  };
+  const shrink = scrollUpdate(state, [{ type: 'layout', cause: 'layout' }], shrunk);
+  state = scrollStored(shrink.state, top);
+  const wheel = scrollUpdate(state, [{ type: 'input', direction: 'up' }], shrunk);
+  assert.equal(wheel.state.kind, 'reader');
+  assert.equal(wheel.decision.scrollTop, undefined);
+  assert.equal(wheel.decision.minHeight, 1250);
+  state = wheel.state;
+  for (const [position, height] of [[900, 1200], [800, 1100], [700, 1000]] as const) {
+    const moved = scrollUpdate(state, [{ type: 'scroll' }], { ...shrunk, top: position, max: (state.floor ?? 1000) - 300 });
+    assert.equal(moved.state.kind, 'reader');
+    assert.equal(moved.decision.scrollTop, undefined);
+    assert.equal(moved.decision.minHeight, height);
+    state = moved.state;
+  }
+  assert.equal(state.floor, undefined);
+});
+
 test('scope switches retain the restored topic filter mode', () => {
   const f = fixture();
   const event = { type: 'switch' as const, loaded: false, scope: { view: 'other', sessionId: 's' }, filtered: true };
@@ -81,7 +136,7 @@ test('view memory restores readers, records following and rejects another sessio
   f.step([intent, item(7)], { top: 500, anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: -400 } });
   const memory = scrollMemory(f.state());
   assert.deepEqual(memory, [{ scope, anchor: { item: { kind: 'message' as const, seq: 1 }, edge: 'row' as const, offset: -400 }, last: 7 }]);
-  const m: Measure = { now: 1000, top: 0, max: 900, viewport: 300, width: 700, dock: 250, origin: 0, focused: true, visible: true, reducedMotion: true, lookup: () => ({ kind: 'unloaded' }) };
+  const m: Measure = { naturalHeight: 1200, now: 1000, top: 0, max: 900, viewport: 300, width: 700, dock: 250, origin: 0, focused: true, visible: true, reducedMotion: true, lookup: () => ({ kind: 'unloaded' }) };
   const restored = scrollUpdate(scrollInitial({ view: '', sessionId: undefined }, memory), [{ type: 'switch', filtered: false, loaded: false, scope }], m);
   assert.equal(restored.state.kind, 'restoring');
   if (restored.state.kind === 'restoring') assert.deepEqual(restored.state.target, memory[0]);
@@ -100,14 +155,14 @@ test('view memory restores readers, records following and rejects another sessio
 
 test('following memory waits for non-empty positioning before background growth becomes reader', () => {
   const memory = scrollMemory(fixture().state());
-  const m: Measure = { now: 1000, top: 0, max: 0, viewport: 300, width: 700, dock: 250, origin: 0, focused: false, visible: true, reducedMotion: true, lookup: () => ({ kind: 'removed' }) };
+  const m: Measure = { naturalHeight: 300, now: 1000, top: 0, max: 0, viewport: 300, width: 700, dock: 250, origin: 0, focused: false, visible: true, reducedMotion: true, lookup: () => ({ kind: 'removed' }) };
   let result = scrollUpdate(scrollInitial({ view: '', sessionId: undefined }, memory), [{ type: 'switch', filtered: false, loaded: false, scope }, { type: 'reset' }], m);
-  result = scrollUpdate(result.state, [layout], { ...m, max: 900 });
+  result = scrollUpdate(result.state, [layout], { ...m, max: 900, naturalHeight: 1200 });
   assert.equal(result.state.kind, 'following');
   assert.equal(result.decision.scrollTop, 900);
-  result = scrollUpdate(scrollStored(result.state, 900), [{ type: 'focus' }], { ...m, top: 900, max: 900, focused: true });
+  result = scrollUpdate(scrollStored(result.state, 900), [{ type: 'focus' }], { ...m, top: 900, max: 900, naturalHeight: 1200, focused: true });
   assert.equal(result.state.kind, 'following');
-  result = scrollUpdate(result.state, [layout], { ...m, top: 900, max: 1000 });
+  result = scrollUpdate(result.state, [layout], { ...m, top: 900, max: 1000, naturalHeight: 1300 });
   assert.equal(result.state.kind, 'reader');
 });
 
@@ -135,25 +190,23 @@ test('completed Latest travel does not retain positioning intent during backgrou
 });
 
 test('reader input cancels initial positioning even at an empty bottom', () => {
-  const m: Measure = { now: 1000, top: 0, max: 0, viewport: 300, width: 700, dock: 250, origin: 0, focused: false, visible: true, reducedMotion: true, lookup: () => ({ kind: 'removed' }) };
+  const m: Measure = { naturalHeight: 300, now: 1000, top: 0, max: 0, viewport: 300, width: 700, dock: 250, origin: 0, focused: false, visible: true, reducedMotion: true, lookup: () => ({ kind: 'removed' }) };
   const cancelled = scrollUpdate(scrollInitial(scope), [intent], m);
   assert.equal(cancelled.state.kind, 'following');
   assert.ok(cancelled.state.kind === 'following' && !cancelled.state.positioning);
-  const result = scrollUpdate(cancelled.state, [layout], { ...m, max: 900 });
+  const result = scrollUpdate(cancelled.state, [layout], { ...m, max: 900, naturalHeight: 1200 });
   assert.equal(result.state.kind, 'reader');
   assert.equal(result.decision.scrollTop, undefined);
 });
 
-test('a toggle holds its anchor, cancels travel and glide, and follows only at the bottom', () => {
-  for (const mode of ['following', 'glide', 'reader', 'travel'] as const) {
+test('a toggle holds its anchor, cancels travel, and follows only at the bottom', () => {
+  for (const mode of ['following', 'reader', 'travel'] as const) {
     const f = fixture();
-    if (mode === 'glide') { f.step([layout], { max: 1000 }); f.store(900); }
     if (mode === 'reader' || mode === 'travel') f.step([intent]);
     if (mode === 'travel') f.step([{ type: 'latest' }]);
     const result = f.step([{ type: 'layout', cause: 'toggle', anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: -800 } }], { max: 1200 });
     assert.equal(result.decision.scrollTop ?? 900, 900);
     assert.equal(result.state.kind, 'reader');
-    assert.equal(result.decision.glideOffset, 0);
     assert.equal(result.decision.divider?.seq, undefined);
     assert.equal(f.step([{ type: 'frame' }], { now: 1100 }).decision.scrollTop, undefined);
   }
@@ -166,8 +219,8 @@ test('a toggle holds its anchor, cancels travel and glide, and follows only at t
   const f = fixture();
   const result = f.step([{ type: 'layout', cause: 'toggle', anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: -800 } }], { max: 800, top: 800 });
   assert.equal(result.state.kind, 'following');
-  assert.equal(result.decision.scrollTop, 800);
-  assert.equal(result.decision.glideOffset, 0);
+  assert.equal(result.decision.scrollTop, 900);
+  assert.equal(result.decision.minHeight, 1200);
 });
 
 const layout: ScrollEvent = { type: 'layout', cause: 'layout' };
@@ -201,12 +254,14 @@ test('elastic measurements never write or change follow state or its geometry', 
   }
 });
 
-test('focused following writes each current measured bottom, including deferred layout and shrink/regrowth', () => {
+test('focused following writes a nondecreasing bottom, including deferred layout and shrink/regrowth', () => {
   const f = fixture();
+  let bottom = 900;
   for (const max of [1000, 1300, 800, 1400]) {
     const result = f.step([layout], { max, ...(max === 800 ? { top: 800 } : {}) });
     assert.equal(result.state.kind, 'following');
-    assert.equal(result.decision.scrollTop, max);
+    bottom = Math.max(bottom, max);
+    assert.equal(result.decision.scrollTop, bottom);
   }
   assert.equal(f.step([{ type: 'frame' }], { max: 1700 }).decision.scrollTop, 1700);
 });
@@ -214,7 +269,7 @@ test('focused following writes each current measured bottom, including deferred 
 test('a scroll of any size above the bottom leaves following, a clamp does not, and a move down to the bottom follows again', () => {
   const f = fixture();
   const clamp = f.step([scroll], { top: 700, max: 700 });
-  assert.deepEqual([clamp.state.kind, clamp.decision.scrollTop], ['following', 700]);
+  assert.deepEqual([clamp.state.kind, clamp.decision.scrollTop], ['following', 900]);
   f.step([layout], { max: 900 });
   const read = f.step([scroll], { top: 899.5, anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: -799.5 } });
   assert.deepEqual([read.state.kind, read.decision.scrollTop], ['reader', undefined]);
@@ -292,7 +347,7 @@ test('a scroll below the bottom leaves following and below the last travel frame
 test('a clamp to a fractional position at the shrunk bottom is no move in reader or following', () => {
   const following = fixture();
   const kept = following.step([scroll], { top: 699.6, max: 700 });
-  assert.deepEqual([kept.state.kind, kept.decision.scrollTop], ['following', 700]);
+  assert.deepEqual([kept.state.kind, kept.decision.scrollTop], ['following', 900]);
   const f = fixture();
   f.step([intent, scroll], { top: 650, rows: [row(1, 650)], anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: 0 } });
   f.step([scroll], { top: 299.6, max: 300, anchor: { item: { kind: 'message', seq: 0 }, edge: 'row', offset: -299.6 } });
@@ -380,7 +435,7 @@ test('Latest hysteresis uses one third and one quarter, unread overrides it, and
   assert.equal(f.step([{ type: 'reset' }]).decision.divider?.seq, undefined);
 });
 
-test('Latest travel retargets the moving bottom, is interrupted by intent, and completes without glide', () => {
+test('Latest travel retargets the moving bottom, is interrupted by intent, and completes', () => {
   const f = fixture();
   f.step([intent, scroll], { top: 100, anchor: undefined });
   const start = f.step([{ type: 'latest' }]);
@@ -389,7 +444,7 @@ test('Latest travel retargets the moving bottom, is interrupted by intent, and c
   assert.equal(f.step([intent], { now: 1130 }).decision.frame, 'none');
   f.step([{ type: 'latest' }], { now: 1200 });
   const end = f.step([{ type: 'frame' }], { now: 1450, max: 1200 });
-  assert.deepEqual([end.state.kind, end.decision.scrollTop, end.decision.glideOffset], ['following', 1200, 0]);
+  assert.deepEqual([end.state.kind, end.decision.scrollTop], ['following', 1200]);
   f.step([intent]);
   assert.equal(f.step([{ type: 'latest' }], { reducedMotion: true }).decision.scrollTop, 1200);
 });
@@ -430,55 +485,14 @@ test('an animation frame reuses maps and mutation leaves the previous state unch
   assert.equal(animated.candidates.has(2), false);
 });
 
-test('glide uses signed measured bottom deltas, retargets current offset, and repeated geometry adds nothing', () => {
-  const f = fixture();
-  assert.equal(f.step([layout], { max: 1000 }).decision.glideOffset, 100);
-  assert.equal(f.step([layout]).decision.glideOffset, 100);
-  const half = f.step([{ type: 'frame' }], { now: 1090 }).decision.glideOffset;
-  assert.ok(half > 30 && half < 32);
-  const next = f.step([layout], { max: 1020 });
-  assert.ok(Math.abs(next.decision.glideOffset - half - 20) < 0.001);
-  assert.equal(next.decision.scrollTop, 1020);
-  assert.equal(f.step([layout], { max: 3000 }).decision.glideOffset, 300);
-  assert.equal(f.step([layout], { max: 900, top: 900 }).decision.glideOffset, -300);
-});
-
-test('glide exclusions clear the transform and first paint is a baseline', () => {
-  for (const event of [{ type: 'reset' }, { type: 'history' }, { type: 'resize' }, { type: 'input', direction: 'up' }, { type: 'layout', cause: 'instant' }] satisfies ScrollEvent[]) {
-    const f = fixture(); f.step([layout], { max: 1000 });
-    assert.equal(f.step([event], { max: 1200 }).decision.glideOffset, 0);
-  }
-  for (const change of [{ reducedMotion: true }, { focused: false }, { visible: false }, { width: 800 }, { viewport: 400 }]) {
-    const f = fixture(); f.step([layout], { max: 1000 });
-    assert.equal(f.step([layout], { max: 1200, ...change }).decision.glideOffset, 0);
-  }
-  assert.equal(scrollUpdate(scrollInitial(scope), [layout], { now: 0, top: 0, max: 900, viewport: 300, width: 700, dock: 250, origin: 0, focused: true, visible: true, reducedMotion: false, lookup: () => ({ kind: 'removed' }) }).decision.glideOffset, 0);
-});
-
-test('an instant batch stays instant through repeated deliveries and its correction frame, then ordinary growth glides', () => {
-  const f = fixture();
-  assert.equal(f.step([{ type: 'layout', cause: 'instant' }], { max: 1000 }).decision.glideOffset, 0);
-  assert.equal(f.step([layout], { max: 1200 }).decision.glideOffset, 0);
-  assert.equal(f.step([layout], { max: 1300, rows: [row(1, 250)] }).decision.glideOffset, 0);
-  assert.equal(f.step([{ type: 'frame' }]).decision.glideOffset, 0);
-  assert.equal(f.step([layout], { max: 1350 }).decision.glideOffset, 50);
-});
-
-test('reader send slides only the sent row height, not the distance jumped', () => {
-  const f = fixture();
-  f.step([intent, scroll], { top: 100, anchor: undefined });
-  f.step([{ type: 'submit' }]);
-  assert.equal(f.step([{ type: 'item', seq: 2, kind: 'user', visible: true, appended: true }], { max: 1100, rows: [row(2, 1050, 1100)] }).decision.glideOffset, 50);
-});
-
-test('a reader send keeps its force until the actual row is mounted and glides only its measured height', () => {
+test('a reader send keeps its force until the actual row is mounted', () => {
   const f = fixture();
   f.step([intent, scroll], { top: 100, anchor: undefined });
   f.step([{ type: 'submit' }]);
   const beforeMount = f.step([{ type: 'item', seq: 2, kind: 'user', visible: true, appended: true }], { focused: false, max: 1100, rows: [row(2, 1000, 1030)], loaded: [{ kind: 'message', seq: 2 }], mounted: [] });
-  assert.deepEqual([beforeMount.decision.scrollTop, beforeMount.decision.glideOffset, beforeMount.state.forceItem?.seq], [1100, 0, 2]);
+  assert.deepEqual([beforeMount.decision.scrollTop, beforeMount.state.forceItem?.seq], [1100, 2]);
   const mounted = f.step([{ type: 'frame' }], { focused: true, max: 1200, rows: [row(2, 1100, 1150)], mounted: [{ kind: 'message', seq: 2 }] });
-  assert.deepEqual([mounted.decision.scrollTop, mounted.decision.glideOffset, mounted.state.forceItem], [1200, 50, undefined]);
+  assert.deepEqual([mounted.decision.scrollTop, mounted.state.forceItem], [1200, undefined]);
 });
 
 test('view return restores reader instantly with away arrivals, but a followed view returns at bottom', () => {
@@ -488,7 +502,7 @@ test('view return restores reader instantly with away arrivals, but a followed v
   f.step([{ type: 'reset' }], { top: 0, max: 500, loaded: [], rows: [] });
   f.step([{ type: 'switch', filtered: false, loaded: false, scope }]);
   const restored = f.step([{ type: 'reset' }, item(2, true, false)], { loaded: [{ kind: 'message', seq: 1 }, { kind: 'message', seq: 2 }], rows: [row(1, 100), row(2, 700)], max: 900 });
-  assert.deepEqual([restored.state.kind, restored.decision.scrollTop, restored.decision.divider?.seq, restored.decision.glideOffset], ['reader', 100, 2, 0]);
+  assert.deepEqual([restored.state.kind, restored.decision.scrollTop, restored.decision.divider?.seq], ['reader', 100, 2]);
   f.step([{ type: 'switch', filtered: false, loaded: false, scope: { view: 'child', sessionId: 'c' } }]);
   assert.equal(f.step([{ type: 'reset' }], { max: 1500 }).decision.scrollTop, 1500);
 });
@@ -522,5 +536,5 @@ test('job byte anchors use the same reader corrections and never add unread mess
   const anchor: import('./page/scroll.ts').Anchor = { item: { kind: 'job', byte: 300 }, edge: 'row', offset: 20 };
   f.step([{ type: 'navigate', anchor }], { top: 100, rows: [{ item: anchor.item, top: 120, bottom: 150 }], loaded: [anchor.item] });
   const prepend = f.step([{ type: 'history' }], { rows: [{ item: anchor.item, top: 420, bottom: 450 }] });
-  assert.deepEqual([prepend.decision.scrollTop, prepend.decision.latest.count, prepend.decision.glideOffset], [400, 0, 0]);
+  assert.deepEqual([prepend.decision.scrollTop, prepend.decision.latest.count], [400, 0]);
 });
