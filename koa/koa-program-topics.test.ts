@@ -180,7 +180,32 @@ test('a quote match is synchronous and explicit markers take precedence', { time
   assert.equal(app.provider.requests.filter(request => request.body.model === 'classifier').length, 0);
 });
 
-test('a persisted reply move stores entry ids and survives reload', { timeout: 10000 }, async t => {
+test('a streaming turn correction wins over later markers and survives reconnect and reload', { timeout: 10000 }, async t => {
+  const app = await realFixture(t, { replies: [{ when: 'work', chunks: ['Growing'], stages: [{ gate: 'finish', chunks: ['\n[topic: conflict]\nFinished'] }] }] });
+  const before = app.count();
+  await app.post('prompt', { text: 'work', mode: 'prompt', attachments: [] });
+  const running = await app.until(ofType('item', record => record.item.kind === 'assistant' && !record.item.final && record.item.blocks.some(block => block.type === 'text' && block.text.includes('Growing'))), before);
+  assert.equal((await app.post('messages/topic', { seq: running.item.seq, topic: 'chosen' })).status, 200);
+  app.provider.release('finish');
+  await app.until(ofType('state', record => !record.working), before);
+  const history = await (await fetch(app.url('items?before=100&topic=chosen'))).json();
+  const reply = history.items.find((item: { kind: string }) => item.kind === 'assistant');
+  assert.ok(reply?.blocks.length);
+  assert.ok(reply.blocks.every((block: { topic?: string }) => block.topic === 'chosen'));
+  const live = [...app.records()].reverse().find(ofType('item', record => record.item.seq === running.item.seq));
+  assert.ok(live?.item.kind === 'assistant' && live.item.blocks.every(block => block.topic === 'chosen'));
+  const state = [...app.records()].reverse().find(ofType('state')); assert.ok(state);
+  const reconnect = await app.subscribe(state.view.id, '&epoch=' + history.epoch + '&after=' + running.item.seq);
+  const corrected = await reconnect.until(ofType('item', record => record.item.seq === running.item.seq));
+  assert.ok(corrected.item.kind === 'assistant' && corrected.item.blocks.every(block => block.topic === 'chosen'));
+  reconnect.close();
+  const reload = app.count(); await app.post('prompt', { text: '/reload', mode: 'prompt', attachments: [] });
+  const replay = await app.until(ofType('reset'), reload);
+  const saved = replay.items.find(item => item.kind === 'assistant');
+  assert.ok(saved?.kind === 'assistant' && saved.blocks.every(block => block.topic === 'chosen'));
+});
+
+test('a persisted reply move stores its turn anchor and survives reload', { timeout: 10000 }, async t => {
   const app = await realFixture(t, { replies: [{ when: 'first', text: '[topic: one]\nFirst reply' }, { when: 'second', text: '[topic: two]\nSecond reply' }] });
   for (const [text, topic] of [['first', 'one'], ['second', 'two']]) {
     const before = app.count(); await app.post('prompt', { text, topic, mode: 'prompt', attachments: [] });
@@ -203,8 +228,7 @@ test('a persisted reply move stores entry ids and survives reload', { timeout: 1
   const state = [...app.records()].reverse().find(ofType('state')); assert.ok(state?.sessionFile);
   const entries = (await readFile(state.sessionFile, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   const move = entries.find(entry => entry.customType === 'koa.message-topic');
-  assert.equal(move.data.entries.length, 2);
-  assert.ok(move.data.entries.every((id: string) => entries.some(entry => entry.id === id && entry.type === 'message')));
+  assert.equal(move.data.anchor, entries.find(entry => entry.type === 'message' && entry.message.role === 'user').id);
   const beforeReload = app.count(); await app.post('prompt', { text: '/reload', mode: 'prompt', attachments: [] });
   const replay = await app.until(ofType('reset'), beforeReload);
   assert.equal(replay.items.find(item => item.kind === 'user')?.topic, 'two');

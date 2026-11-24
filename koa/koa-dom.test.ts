@@ -862,7 +862,7 @@ test('topic drag selects the whole turn in sequence order after older history ar
     const unfinished=eligible(0);items.delete(1);topics.debug.updateTopicFilter('one');
     return [user,reply,unfinished,eligible(0)];
   })()`);
-  assert.deepEqual(Array.from(result), [true, true, false, true]);
+  assert.deepEqual(Array.from(result), [true, true, true, true]);
 });
 
 test('an unedited astral topic rename preserves the name and naming accepts the same length', async () => {

@@ -38,9 +38,22 @@ test('topic list folds alias chains, rename-back and valid entry overrides once'
   assert.equal(list.resolve(b), 'a');
   custom('koa.message-topic', { entries: ['user', 'missing'], topic: 'invalid' });
   assert.equal(topicList(branch).assignment('user', parseTopicName('a')), 'a');
-  custom('koa.message-topic', { entries: ['user'], topic: 'override' });
+  custom('koa.message-topic', { anchor: 'user', topic: 'override' });
   assert.equal(topicList(branch).assignment('user', parseTopicName('a')), 'override');
   assert.deepEqual(topicList(branch).names, ['override']);
+});
+
+test('turn corrections include later replies and stop at the next user', () => {
+  const branch: SessionEntry[] = [{ type: 'message', id: 'user', parentId: null, timestamp: new Date(1).toISOString(), message: { role: 'user', content: '[topic: original]\nWork', timestamp: 1 } }];
+  const correction: SessionEntry = { type: 'custom', id: 'correction', parentId: 'user', timestamp: new Date(2).toISOString(), customType: 'koa.message-topic', data: { anchor: 'user', topic: 'chosen' } };
+  branch.push(correction);
+  branch.push({ type: 'message', id: 'reply', parentId: 'correction', timestamp: new Date(3).toISOString(), message: { role: 'assistant', content: [{ type: 'text', text: '[topic: conflict]\nReply' }], api: 'openai-responses', provider: 'test', model: 'test', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: 'stop', timestamp: 3 } });
+  branch.push({ type: 'message', id: 'next', parentId: 'reply', timestamp: new Date(4).toISOString(), message: { role: 'user', content: '[topic: next]\nNext', timestamp: 4 } });
+  assert.equal(topicList(branch).assignment('reply', parseTopicName('conflict')), 'chosen');
+  assert.equal(topicList(branch).assignment('next', parseTopicName('next')), 'next');
+  branch.push({ ...correction, id: 'again', data: { anchor: 'user', topic: 'latest' } });
+  assert.equal(topicList(branch).assignment('reply', undefined), 'latest');
+  assert.equal(topicList(branch.filter(entry => entry.id !== 'correction' && entry.id !== 'again')).assignment('reply', parseTopicName('conflict')), 'conflict');
 });
 
 test('archive replay follows rename aliases and only an archive entry restores a topic', () => {
@@ -51,7 +64,7 @@ test('archive replay follows rename aliases and only an archive entry restores a
   custom('koa.topic-move', { from: 'a', to: 'b' });
   assert.equal(topicList(branch).archived(b), true);
   custom('koa.topic', { name: 'b' });
-  custom('koa.message-topic', { entries: ['user'], topic: 'b' });
+  custom('koa.message-topic', { anchor: 'user', topic: 'b' });
   assert.equal(topicList(branch).archived(b), true);
   custom('koa.topic-archive', { name: 'a', archived: false });
   assert.equal(topicList(branch).archived(b), false);
@@ -67,7 +80,7 @@ test('a merge takes the existing target archive state even when the target has n
   for (const source of [false, true]) for (const target of [false, true]) {
     const branch: SessionEntry[] = ['a', 'other'].map((name, index) => ({ type: 'message', id: 'user' + index, parentId: index ? 'user0' : null, timestamp: new Date(index).toISOString(), message: { role: 'user', content: '[topic: ' + name + ']\nWork', timestamp: index } }));
     const custom = (customType: string, data: unknown) => branch.push({ type: 'custom', id: String(branch.length), parentId: branch.at(-1)?.id ?? null, timestamp: new Date(2).toISOString(), customType, data });
-    custom('koa.message-topic', { entries: ['user1'], topic: 'b' });
+    custom('koa.message-topic', { anchor: 'user1', topic: 'b' });
     custom('koa.topic-archive', { name: 'a', archived: source });
     custom('koa.topic-archive', { name: 'b', archived: target });
     custom('koa.topic-move', { from: 'a', to: 'b' });

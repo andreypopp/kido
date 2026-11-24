@@ -1,5 +1,6 @@
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { decodePrompt } from './prompt.ts';
+import { turnAnchors } from './topic-turn.ts';
 import { contentText, isRecord, topicSections } from './text.ts';
 import { messageTopic, topicMove, topicArchive, parseTopicName, type TopicName } from './records.ts';
 
@@ -17,12 +18,15 @@ export function topicList(branch: readonly SessionEntry[]): TopicList {
     const used = new Set<TopicName>();
     const use = (name: TopicName | undefined) => { if (name) used.add(resolveTopic(moves, name)); };
     for (const [id, names] of seen) {
-      const forced = id === undefined ? undefined : overrides.get(id);
-      if (forced) use(forced); else names.forEach(use);
+      const name = forced(id);
+      if (name) use(name); else names.forEach(use);
     }
     return used;
   };
-  const messages = new Set(branch.flatMap(entry => entry.type === 'message' && (entry.message.role === 'user' || entry.message.role === 'assistant') ? [entry.id] : []));
+  const indices = new Map(branch.map((entry, index) => [entry.id, index]));
+  const turn = turnAnchors(branch, entry => entry.type === 'message' && (entry.message.role === 'user' || entry.message.role === 'assistant') ? entry.message.role : undefined);
+  const anchor = (id: string) => { const index = indices.get(id), at = index === undefined ? undefined : turn(index); return at === undefined ? undefined : branch[at]?.id; };
+  const forced = (id: string | undefined) => id === undefined ? undefined : overrides.get(anchor(id) ?? id);
   for (const entry of branch) {
     const names: TopicName[] = [];
     const use = (name: TopicName | undefined) => { if (name) names.push(name); };
@@ -51,12 +55,12 @@ export function topicList(branch: readonly SessionEntry[]): TopicList {
     const archive = topicArchive(entry);
     if (archive) { const name = resolveTopic(moves, archive.name); if (archive.archived) archived.add(name); else archived.delete(name); continue; }
     const override = messageTopic(entry);
-    if (override && override.entries.every(id => messages.has(id))) for (const id of override.entries) overrides.set(id, override.topic);
+    if (override && anchor(override.anchor) === override.anchor) overrides.set(override.anchor, override.topic);
     else if (entry.type === 'custom' && entry.customType === 'koa.topic' && isRecord(entry.data)) { const name = parseTopicName(entry.data.name); if (name) { order.push(name); occurrences.push([undefined, [name]]); } }
   }
   const used = usedNames();
   const indexed = [...new Set(order.map(name => resolveTopic(moves, name)))];
   const resolve = (name: TopicName): TopicName => resolveTopic(moves, name);
-  const recent = [...new Set(occurrences.reverse().flatMap(([id, names]) => { const forced = id === undefined ? undefined : overrides.get(id); return (forced ? [forced] : names).map(resolve); }))].filter(name => used.has(name));
-  return { recent, archived: name => archived.has(resolve(name)), movable: (from, to) => movable(moves, from, to), indexed, names: [...new Set([...indexed, ...used])].filter(name => used.has(name)), resolve, assignment: (entryId, original) => { const name = (entryId === undefined ? undefined : overrides.get(entryId)) ?? original; return name && resolve(name); }, overridden: entryId => entryId !== undefined && overrides.has(entryId) };
+  const recent = [...new Set(occurrences.reverse().flatMap(([id, names]) => { const name = forced(id); return (name ? [name] : names).map(resolve); }))].filter(name => used.has(name));
+  return { recent, archived: name => archived.has(resolve(name)), movable: (from, to) => movable(moves, from, to), indexed, names: [...new Set([...indexed, ...used])].filter(name => used.has(name)), resolve, assignment: (entryId, original) => { const name = forced(entryId) ?? original; return name && resolve(name); }, overridden: entryId => forced(entryId) !== undefined };
 }

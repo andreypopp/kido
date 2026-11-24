@@ -19,11 +19,11 @@ export const topicArchive = (entry: { type: string; customType?: string; data?: 
   const name = parseTopicName('name' in entry.data ? entry.data.name : undefined);
   return name && 'archived' in entry.data && typeof entry.data.archived === 'boolean' ? { name, archived: entry.data.archived } : undefined;
 };
-export const messageTopic = (entry: { type: string; customType?: string; data?: unknown }): { entries: string[]; topic: TopicName } | undefined => {
+export const messageTopic = (entry: { type: string; customType?: string; data?: unknown }): { anchor: string; topic: TopicName } | undefined => {
   if (entry.type !== 'custom' || entry.customType !== 'koa.message-topic' || typeof entry.data !== 'object' || entry.data === null) return;
-  const data = entry.data, entries = 'entries' in data ? data.entries : undefined;
+  const data = entry.data, anchor = 'anchor' in data ? data.anchor : undefined;
   const name = parseTopicName('topic' in data ? data.topic : undefined);
-  return Array.isArray(entries) && entries.length > 0 && entries.every((id): id is string => typeof id === 'string' && id.length > 0) && new Set(entries).size === entries.length && name ? { entries, topic: name } : undefined;
+  return typeof anchor === 'string' && anchor.length > 0 && name ? { anchor, topic: name } : undefined;
 };
 
 export type Relation = components["schemas"]["Relation"];

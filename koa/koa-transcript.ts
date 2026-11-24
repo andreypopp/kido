@@ -1,4 +1,4 @@
-import { topicTurn } from './topic-turn.ts';
+import { itemTurnAnchors } from './topic-turn.ts';
 import { countedMessage, messageTopics, runParts, runOf, invalidateRuns, sourceKey, stepTopic, firstTopicStep, type TopicStep, type RunContext, type Source } from './topic-run.ts';
 import { topicContext, topicQuotes, quotedTopic } from './koa-classify.ts';
 import type { QueuedPrompt } from './koa-records.ts';
@@ -196,7 +196,8 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
   const projection = (entries = branch()) => {
     const owner = topics(entries), latest = items.findLast(item => item.kind === 'assistant');
     const latestId = latest ? entryId(latest.seq, entries) : undefined;
-    const id = (seq: number) => seq === latest?.seq ? latestId : entryId(seq, entries);
+    const anchor = kind === 'root' ? itemTurnAnchors(items) : undefined;
+    const id = (seq: number) => entryId(anchor?.(seq) ?? seq, entries);
     const project = (item: Item): Item => {
       if (kind !== 'root') return item;
       const entry = id(item.seq);
@@ -609,12 +610,12 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     messages.set(item.seq, { message });
     if (!branch) { publish(item); flush(); }
   };
-  const moveTargets = (seq: number): string[] | undefined => {
-    if (kind !== 'root') return;
-    const targets = topicTurn(items, seq);
-    if (!targets || targets.some(target => { const original = items[target.seq]; return original?.kind === 'assistant' && original.lifecycle !== 'ended'; })) return;
-    const entries = branch(), ids = targets.map(target => entryId(target.seq, entries));
-    return ids.every((id): id is string => id !== undefined) ? ids : undefined;
+  const topicAnchor = (seq: number): { type: 'missing' } | { type: 'unsupported' } | { type: 'waiting' } | { type: 'ready'; anchor: string } => {
+    if (!items[seq]) return { type: 'missing' };
+    const target = itemTurnAnchors(items)(seq);
+    if (target === undefined) return { type: 'unsupported' };
+    const anchor = entryId(target);
+    return anchor === undefined ? { type: 'waiting' } : { type: 'ready', anchor };
   };
   const annotation = (entry: SessionEntry, notify = true): void => {
     if (kind === 'root' && topicArchive(entry)) { list = undefined; changed?.(); return; }
@@ -843,7 +844,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
   return { topicContext: (queued: readonly QueuedPrompt[]) => {
     const { project, names, owner } = projection();
     return topicContext(items.map(project), names, queued.map(prompt => prompt.topic ? { ...prompt, topic: owner.resolve(prompt.topic) } : prompt), new Set(names.filter(owner.archived)));
-  }, resolveTopic: (name: TopicName) => topics().resolve(name), isTopicArchived: (name: TopicName) => topics().archived(name), movable: (from: TopicName, to: TopicName) => topics().movable(from, to), moveTargets, quotedTopic: (text: string) => {
+  }, resolveTopic: (name: TopicName) => topics().resolve(name), isTopicArchived: (name: TopicName) => topics().archived(name), movable: (from: TopicName, to: TopicName) => topics().movable(from, to), topicAnchor, topicScope: (seq: number) => { const item = items[seq]; return () => items[seq] === item; }, quotedTopic: (text: string) => {
     const quotes = topicQuotes(text);
     if (!quotes.length) return;
     const { project, names, owner } = projection();

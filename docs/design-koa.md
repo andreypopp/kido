@@ -996,13 +996,22 @@ The user corrects topics with two session entries, which
 `koa/topic-list.ts` folds into one derivation of the branch for
 the transcript and the extension. `koa.topic-move` renames or
 merges a topic: its names resolve to the target, and a chain of
-moves resolves to its end. `koa.message-topic` moves messages, named
-by their pi entry ids, to a topic; a move from a reply moves its
-whole turn. Entry ids, not timestamps, identify messages, because
+moves resolves to its end. `koa.message-topic` moves a whole turn to
+a topic. It names the turn by its anchor: the pi entry id of the
+turn's user message, or of its first assistant message before the
+first user message. A turn ends at the next user message. The newest
+correction of a turn applies to every user and assistant entry of
+that turn, also to entries that the running turn writes later, and
+it wins over the agent's markers in them. So a drop on a running
+turn holds without a second store, and a replay derives the same
+result. Entry ids, not timestamps, identify messages, because
 timestamps collide. pi emits `message_end` before it persists the
 entry, so the transcript keeps each item's message object and finds
-its entry id by identity when the user acts; an unpersisted message
-cannot move. The transcript keeps the original labels of its items
+its entry id by identity when the user acts. When the anchor is not
+persisted yet, the route waits for it outside the view's serial
+queue, for at most 5 s and until the session stops, then appends
+the correction in the queue if the session is still the same; the
+request fails with a specific error otherwise. The transcript keeps the original labels of its items
 and projects them through that derivation, so a live correction and a
 replay agree by construction. A correction keeps the epoch, so open
 pages keep their loaded history and position: the transcript compares

@@ -36,6 +36,40 @@ function record(line: string | undefined) {
   return JSON.parse(line.slice(6, -2));
 }
 
+test('a running reply uses its persisted user anchor before the reply is saved', t => {
+  const user: AgentMessage = { role: 'user', content: 'Work', timestamp: 1 };
+  const branch: SessionEntry[] = [{ type: 'message', id: 'user', parentId: null, timestamp: new Date(1).toISOString(), message: user }];
+  const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  view.message(user, 'end');
+  view.message(assistant('Growing'), 'update');
+  assert.deepEqual(view.topicAnchor(1), { type: 'ready', anchor: 'user' });
+  const correction: SessionEntry = { type: 'custom', id: 'correction', parentId: 'user', timestamp: new Date(2).toISOString(), customType: 'koa.message-topic', data: { anchor: 'user', topic: 'chosen' } };
+  branch.push(correction); view.annotation(correction);
+  view.message(assistant('[topic: conflict]\nGrowing more'), 'update');
+  const reply = assistant('[topic: conflict]\nDone'); view.message(reply, 'end');
+  branch.push({ type: 'message', id: 'reply', parentId: 'correction', timestamp: new Date(3).toISOString(), message: reply });
+  const next: AgentMessage = { role: 'user', content: '[topic: next]\nNext', timestamp: 4 }; view.message(next, 'end');
+  const rows: WireItem[] = JSON.parse(request(view, '/items?before=100').join('')).items;
+  assert.ok(rows.some(item => item.kind === 'assistant' && item.blocks.length > 0 && item.blocks.every(block => block.topic === 'chosen')));
+  assert.equal(rows.findLast(item => item.kind === 'user')?.topic, 'next');
+  const valid = view.topicScope(1);
+  assert.equal(valid(), true);
+  view.rebuild(branch, 'session', 'reply');
+  assert.equal(valid(), false);
+});
+
+test('unsaved turns wait for their first member including the pre-user assistant turn', t => {
+  for (const preUser of [false, true]) {
+    const branch: SessionEntry[] = [];
+    const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+    const first: AgentMessage = preUser ? assistant('First') : { role: 'user', content: 'First', timestamp: 1 };
+    view.message(first, 'end'); view.message(assistant('Growing'), 'update');
+    assert.deepEqual(view.topicAnchor(1), { type: 'waiting' });
+    branch.push({ type: 'message', id: 'first', parentId: null, timestamp: new Date(1).toISOString(), message: first });
+    assert.deepEqual(view.topicAnchor(1), { type: 'ready', anchor: 'first' });
+  }
+});
+
 test('large resets keep a stalled stream open until live output exceeds the cap', t => {
   const parent = transcript({ dir: directory(t), flushMs: 1, branch: () => [], sessionEntryToContextMessages });
   const child = transcript({ dir: directory(t), flushMs: 1, branch: () => [], sessionEntryToContextMessages });
@@ -75,9 +109,9 @@ test('message moves use persisted entry identity with equal timestamps', t => {
   ];
   const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
   view.rebuild(branch, 'session', 'two');
-  assert.deepEqual(view.moveTargets(0), ['one']);
+  assert.deepEqual(view.topicAnchor(0), { type: 'ready', anchor: 'one' });
   const before = JSON.parse(request(view, '/items?before=100').join(''));
-  const move: SessionEntry = { type: 'custom', id: 'move', parentId: 'two', timestamp: new Date(124).toISOString(), customType: 'koa.message-topic', data: { entries: ['one'], topic: 'target' } };
+  const move: SessionEntry = { type: 'custom', id: 'move', parentId: 'two', timestamp: new Date(124).toISOString(), customType: 'koa.message-topic', data: { anchor: 'one', topic: 'target' } };
   branch.push(move); view.annotation(move);
   const after = JSON.parse(request(view, '/items?before=100').join(''));
   assert.deepEqual(after.items.filter((item: WireItem) => item.kind === 'user').map((item: { topic: string }) => item.topic), ['target', 'two']);
@@ -92,7 +126,7 @@ test('topic windows follow a message move', t => {
   view.rebuild(branch, 'session', 'reply');
   const page = (topic: string): WireItem[] => JSON.parse(request(view, '/items?before=100&topic=' + topic).join('')).items;
   assert.equal(page('old').filter(item => item.kind === 'assistant').length, 1);
-  const move: SessionEntry = { type: 'custom', id: 'move', parentId: 'reply', timestamp: new Date(124).toISOString(), customType: 'koa.message-topic', data: { entries: ['reply'], topic: 'new' } };
+  const move: SessionEntry = { type: 'custom', id: 'move', parentId: 'reply', timestamp: new Date(124).toISOString(), customType: 'koa.message-topic', data: { anchor: 'reply', topic: 'new' } };
   branch.push(move); view.annotation(move);
   assert.equal(page('old').filter(item => item.kind === 'assistant').length, 0);
   assert.equal(page('new').filter(item => item.kind === 'assistant').length, 1);
@@ -107,16 +141,16 @@ test('corrections preserve reconnect cursors and replay merges and whole reply t
   const later = { ...assistant('[topic: one]\nFinal'), timestamp: 124 };
   const add = (id: string, message: Extract<AgentMessage, { role: 'user' | 'assistant' }>) => { branch.push({ type: 'message', id, parentId: branch.at(-1)?.id ?? null, timestamp: new Date(message.timestamp).toISOString(), message }); view.message(message, 'end'); };
   add('user', user); add('reply', reply); add('later', later);
-  assert.deepEqual(view.moveTargets(0), ['user', 'reply', 'later']);
-  assert.deepEqual(view.moveTargets(1), ['user', 'reply', 'later']);
+  assert.deepEqual(view.topicAnchor(0), { type: 'ready', anchor: 'user' });
+  assert.deepEqual(view.topicAnchor(1), { type: 'ready', anchor: 'user' });
   const unpersisted = { ...assistant('Not saved'), timestamp: 125 }; view.message(unpersisted, 'end');
-  assert.equal(view.moveTargets(3), undefined);
+  assert.deepEqual(view.topicAnchor(3), { type: 'ready', anchor: 'user' });
   branch.push({ type: 'message', id: 'unsaved', parentId: 'later', timestamp: new Date(125).toISOString(), message: unpersisted });
   const before = JSON.parse(request(view, '/items?before=100').join(''));
   const custom = (id: string, customType: string, data: unknown) => { const entry: SessionEntry = { type: 'custom', id, parentId: branch.at(-1)?.id ?? null, timestamp: new Date(130).toISOString(), customType, data }; branch.push(entry); view.annotation(entry); };
   const events = request(view, '/events?epoch=' + before.epoch + '&after=100');
   events.length = 0;
-  custom('move', 'koa.message-topic', { entries: ['user', 'reply', 'later', 'unsaved'], topic: 'target' });
+  custom('move', 'koa.message-topic', { anchor: 'user', topic: 'target' });
   custom('merge', 'koa.topic-move', { from: 'target', to: 'renamed' });
   const live = JSON.parse(request(view, '/items?before=100').join(''));
   assert.ok(live.items.filter((item: WireItem) => item.kind === 'assistant').every((item: { blocks: { topic: string }[] }) => item.blocks.every(block => block.topic === 'renamed')));
@@ -159,7 +193,7 @@ test('moving the latest persisted reply removes its only old topic', t => {
   const reply = assistant('[topic: old]\nThe only reply in the old topic');
   view.message(reply, 'end');
   branch.push({ type: 'message', id: 'reply', parentId: null, timestamp: new Date(123).toISOString(), message: reply });
-  const move: SessionEntry = { type: 'custom', id: 'move', parentId: 'reply', timestamp: new Date(124).toISOString(), customType: 'koa.message-topic', data: { entries: ['reply'], topic: 'target' } };
+  const move: SessionEntry = { type: 'custom', id: 'move', parentId: 'reply', timestamp: new Date(124).toISOString(), customType: 'koa.message-topic', data: { anchor: 'reply', topic: 'target' } };
   branch.push(move); view.annotation(move);
   assert.deepEqual(view.topics().map(topic => topic.name), ['target']);
   assert.deepEqual(view.topicContext([]).others, []);

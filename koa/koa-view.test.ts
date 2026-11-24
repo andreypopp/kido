@@ -7,6 +7,26 @@ import { sessionEntryToContextMessages, type AgentSession, type AgentSessionRunt
 import { attachments } from './koa-attach.ts';
 import { createView } from './koa-view.ts';
 
+test('topic anchors wait for post-callback persistence and cancel with their session', async t => {
+  const dir = mkdtempSync('/tmp/koa-view-'), entries: SessionEntry[] = [];
+  const session: AgentSession = Object.assign(Object.create(null), { sessionId: 'session', sessionManager: { getBranch: () => entries } });
+  const runtime: AgentSessionRuntime = Object.assign(Object.create(null), { cwd: dir });
+  const view = createView({ sessionEntryToContextMessages, branch: () => entries, kind: 'root', dir, metrics: false, attached: attachments(dir), name: 'test', cwd: dir, home: dir, agent: () => ({ session, runtime }), compose: () => { throw Error('a starting view does not publish'); }, status() {}, title() {}, closed: () => false, cancelEditor() {}, shutdown() {}, agentsChanged() {}, changed() {} });
+  t.after(() => view.close());
+  const message = { role: 'user' as const, content: 'Work', timestamp: 1 };
+  view.hooks.onEvent({ type: 'message_end', message });
+  const waiting = view.waitTopicAnchor(0);
+  let serialFree = false; await view.serial(async () => { serialFree = true; }); assert.equal(serialFree, true);
+  entries.push({ type: 'message', id: 'user', parentId: null, timestamp: new Date(1).toISOString(), message });
+  assert.deepEqual(await waiting, { type: 'ready', anchor: 'user' });
+  const next = { ...message, content: 'Next', timestamp: 2 }; view.hooks.onEvent({ type: 'message_end', message: next });
+  assert.deepEqual(await view.waitTopicAnchor(1, 1), { type: 'timeout' });
+  const cancelled = view.waitTopicAnchor(1); view.newSessionScope();
+  assert.deepEqual(await cancelled, { type: 'changed' });
+  const disconnected = view.waitTopicAnchor(1); view.close();
+  assert.deepEqual(await disconnected, { type: 'changed' });
+});
+
 test('saved compaction adds one summary without resetting the live transcript', t => {
   const dir = mkdtempSync('/tmp/koa-view-');
   const entries: SessionEntry[] = [{ type: 'message', id: 'user', parentId: null, timestamp: new Date(1).toISOString(), message: { role: 'user', content: 'before', timestamp: 1 } }];

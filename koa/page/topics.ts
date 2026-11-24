@@ -162,7 +162,7 @@ export function createTopics(deps: {
       if (message !== hovered) {
         hovered = message;
         const targets = item && topicTurn(items.values(), item.seq);
-        eligible = !!targets?.every(target => target.final) && (topicFilter() !== undefined || targets.some(target => target.kind === 'user' ? target.topic !== from : target.blocks.some(block => block.topic !== from)));
+        eligible = !!targets?.length && (topicFilter() !== undefined || targets.some(target => target.kind === 'user' ? target.topic !== from : target.blocks.some(block => block.topic !== from)));
       }
       mark(row ? row.dataset.topic !== from ? row : undefined : eligible ? message : undefined);
     };

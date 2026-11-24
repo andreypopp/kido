@@ -174,6 +174,24 @@ export function createView(options: ViewOptions) {
   let userWarning: string | undefined;
   let outcome: "done" | "error" = "done";
   let settleWaiter: (() => void) | undefined;
+  const anchorWaiters = new Set<() => void>();
+  const waitTopicAnchor = (seq: number, timeout = 5000) => {
+    const signal = sessionStop.signal;
+    return new Promise<ReturnType<typeof feed.topicAnchor> | { type: 'timeout' } | { type: 'changed' }>(resolve => {
+      const finish = (result: ReturnType<typeof feed.topicAnchor> | { type: 'timeout' } | { type: 'changed' }) => {
+        clearTimeout(timer); anchorWaiters.delete(check); signal.removeEventListener('abort', abort); resolve(result);
+      };
+      const abort = () => finish({ type: 'changed' });
+      const check = () => {
+        if (signal.aborted) { abort(); return; }
+        const result = feed.topicAnchor(seq);
+        if (result.type !== 'waiting') finish(result);
+      };
+      const timer = setTimeout(() => finish({ type: 'timeout' }), timeout);
+      anchorWaiters.add(check); signal.addEventListener('abort', abort, { once: true });
+      check();
+    });
+  };
   const event = (event: AgentSessionEvent): void => {
     if (life.type === "failed" || stopping()) return;
     switch (event.type) {
@@ -199,6 +217,7 @@ export function createView(options: ViewOptions) {
         break;
       }
       case "message_end": {
+        setImmediate(() => { for (const check of anchorWaiters) check(); });
         const line = messageLine(event.message, userAttachments, options.kind);
         if (event.message.role === "custom" && event.message.display) options.agentsChanged();
         feed.message(event.message, "end", event.message.role === "assistant" ? Date.now() : undefined, event.message.role === "user" ? userAttachments : []);
@@ -322,7 +341,7 @@ export function createView(options: ViewOptions) {
     nextBash: () => String(++bashSerial),
     title: () => options.title(own()),
     publish, status, background, running, stopping, newSessionScope, cancelDialogs, removeDialog, finishCompaction, fail, stats, levels, rebuild, refresh, resetSession,
-    replaySwitching, setModel, announce, serial, queue, reloadBusy, settleBash, dropBash,
+    replaySwitching, setModel, announce, serial, queue, reloadBusy, settleBash, dropBash, waitTopicAnchor,
     clearBashTimer: () => { clearTimeout(bashTimer); bashTimer = undefined; },
     begin: () => { switchingUI = []; },
     close: () => { closed = true; cancelDialogs(); sessionStop.abort(); dropBash(); feed.close(); rmSync(options.dir, { recursive: true, force: true }); },

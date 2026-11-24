@@ -626,16 +626,30 @@ Everything after -- is message text.
           v.publish(); respond(response, 200, JSON.stringify(restored));
         } finally { v.prompts.endClear(); }
       }); } },
-      "/messages/topic": { method: "POST", access: "session", scope: "agent", handle: (value, response, req) => { const { agent } = req, v = agent.view, owner = agent.session; return v.serial(async () => {
+      "/messages/topic": { method: "POST", access: "session", scope: "agent", handle: async (value, response, req) => { const { agent } = req, v = agent.view, owner = agent.session, signal = v.sessionStop;
         owned(req, owner);
-        const topic = isRecord(value) ? parseTopicName(value.topic) : undefined, seq = isRecord(value) && typeof value.seq === "number" && Number.isSafeInteger(value.seq) ? value.seq : undefined;
-        const targets = seq === undefined ? undefined : v.feed.moveTargets(seq);
-        if (agent.parent || !topic || !targets?.length) { respond(response, 400, JSON.stringify({ error: "A finished message of the root and a topic name are required" })); return; }
-        const entry = owner.sessionManager.getEntry(owner.sessionManager.appendCustomEntry('koa.message-topic', { entries: targets, topic }));
-        if (entry) v.feed.annotation(entry);
-        v.publish();
-        respond(response, 200, "{}");
-      }); } },
+        const refuse = (error: string) => respond(response, 400, JSON.stringify({ error }));
+        if (agent.parent) { refuse("Topics belong to the root"); return; }
+        const topic = isRecord(value) ? parseTopicName(value.topic) : undefined;
+        if (!topic) { refuse("A valid topic name is required"); return; }
+        const seq = isRecord(value) && typeof value.seq === "number" && Number.isSafeInteger(value.seq) && value.seq >= 0 ? value.seq : undefined;
+        if (seq === undefined) { refuse("A non-negative message sequence is required"); return; }
+        const validTarget = v.feed.topicScope(seq);
+        const target = await v.waitTopicAnchor(seq);
+        if (target.type === 'missing') { refuse("Message not found"); return; }
+        if (target.type === 'unsupported') { refuse("This row is not a user or assistant message"); return; }
+        if (target.type === 'timeout') { refuse("Message persistence timed out"); return; }
+        if (target.type !== 'ready') { refuse("The session changed before the topic was assigned"); return; }
+        return v.serial(async () => {
+          if (signal.aborted || agent.session !== owner || !validTarget()) { refuse("The session changed before the topic was assigned"); return; }
+          const current = v.feed.topicAnchor(seq);
+          if (current.type !== 'ready') { refuse("The session changed before the topic was assigned"); return; }
+          const entry = owner.sessionManager.getEntry(owner.sessionManager.appendCustomEntry('koa.message-topic', { anchor: current.anchor, topic }));
+          if (entry) v.feed.annotation(entry);
+          v.publish();
+          respond(response, 200, "{}");
+        });
+      } },
       "/topics/archive": { method: "POST", access: "session", scope: "agent", handle: (value, response, req) => { const { agent } = req, v = agent.view, owner = agent.session; return v.serial(async () => {
         owned(req, owner);
         const name = isRecord(value) ? parseTopicName(value.name) : undefined, archived = isRecord(value) && typeof value.archived === 'boolean' ? value.archived : undefined;
