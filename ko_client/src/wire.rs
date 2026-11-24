@@ -34,6 +34,8 @@ const RECEIVE_BUFFER: usize = 1 << 20;
 const MAX_RESERVE: usize = 64 << 20;
 pub const READ_TIMEOUT: Duration = Duration::from_secs(40);
 pub const WATCHDOG: Duration = Duration::from_secs(60);
+#[cfg(all(target_vendor = "apple", feature = "tls"))]
+pub(crate) const PROBE: Duration = Duration::from_secs(3);
 
 // poll cannot see frames that the upgrade read already buffered in the link,
 // so the owner of a new link dispatches one read at once.
@@ -696,6 +698,8 @@ pub struct Link {
     reads: Reads,
     token: Option<Token>,
     received: Instant,
+    #[cfg(all(target_vendor = "apple", feature = "tls"))]
+    probe: Option<(Instant, Instant)>,
     closing: Option<(protocol::CloseCode, String)>,
     cancel: Option<Arc<Wake>>,
     within: Duration,
@@ -881,6 +885,8 @@ impl Link {
             reads: Reads::new(),
             token: None,
             received: Instant::now(),
+            #[cfg(all(target_vendor = "apple", feature = "tls"))]
+            probe: None,
             closing: None,
             cancel: None,
             within: READ_TIMEOUT,
@@ -967,6 +973,36 @@ impl Link {
     #[cfg(all(target_vendor = "apple", feature = "tls"))]
     pub(crate) fn reset_received(&mut self, now: Instant) {
         self.received = now;
+    }
+
+    #[cfg(all(target_vendor = "apple", feature = "tls"))]
+    pub(crate) fn probe(&mut self, poll: &mut Poll) -> io::Result<()> {
+        if self.probe_deadline().is_some() {
+            return Ok(());
+        }
+        self.message(Message::Ping(Default::default()))?;
+        self.probe = Some((self.received, Instant::now() + PROBE));
+        self.settle(poll)
+    }
+
+    #[cfg(all(target_vendor = "apple", feature = "tls"))]
+    pub(crate) fn stop_probe(&mut self) {
+        self.probe = None;
+    }
+
+    #[cfg(all(target_vendor = "apple", feature = "tls"))]
+    pub(crate) fn probe_deadline(&self) -> Option<Instant> {
+        self.probe
+            .filter(|(received, _)| *received == self.received)
+            .map(|(_, deadline)| deadline)
+    }
+
+    #[cfg(all(target_vendor = "apple", feature = "tls"))]
+    pub(crate) fn silent(&self, now: Instant, limit: Duration) -> bool {
+        silent(self.received, now, limit)
+            || self
+                .probe_deadline()
+                .is_some_and(|deadline| now >= deadline)
     }
 
     pub fn begin_turn(&mut self) {

@@ -541,7 +541,8 @@ state machine of `ko_client/src/wire/upgrade.rs`, which Kido.app's
 engine also uses), so a slow upgrade does not stop the `/client` link
 from answering the server's pings. While a pane's view is not open,
 its input goes through the HTTP input route. A view that closes for
-any reason but `gone`, fails, or is silent past the watchdog opens
+any reason but `gone`, fails, or is silent past the watchdog or a
+probe (section 5, "Liveness probe") opens
 again at its resume offset, alone. An upgrade refused because the
 pane is missing ends the view as `gone` does; any other failed
 upgrade, or one that does not complete within the read timeout, is
@@ -1275,14 +1276,36 @@ them, so one connection migrates at most three times; the next hint
 finds no spare id and rejoins. A TCP link rejoins on a hint only when
 the route's local address for the server changed; a QUIC connection
 that is still in its handshake or already closing, and a client that
-waits to retry, rejoin at once. A rejoin is a reconnect without the
+waits to retry, rejoin at once, also on a unix endpoint. A rejoin is a reconnect without the
 retry delay that reports no failure to the app: the views open again
 at their offsets, as after any reconnect. A client that stopped
-(`Stopped`: a refused certificate, a mismatch) ignores hints, and so
-does a unix endpoint. An app that was suspended finds, when it
+(`Stopped`: a refused certificate, a mismatch) ignores hints. An app that was suspended finds, when it
 resumes, that its connection's idle timer has passed (the server's
 also, 30 s on Caddy); the expired timer rejoins at once, with no
 failure reported.
+
+Liveness probe: a hint is also a suspicion that a link is dead
+without a close, as after a sleep, when a TCP connection under an
+SSH master is in its retransmission backoff and the watchdog would
+find the loss only after up to 60 s. On a hint, an established link
+that does not migrate (a unix endpoint, an SSH forward included, and
+TCP whose route did not move) sends a WebSocket Ping on the `/client`
+link and on every open view link whose reads are not paused. Any
+byte that arrives on a link ends its probe; no byte within `PROBE`
+(`ko_client/src/wire.rs`, 3 s) loses that link with `KO_ERR_SILENT`,
+the code of the watchdog also: the `/client` link takes the normal
+reconnect (the selection and the views resume), a view link opens
+again alone. The probe shortens the link's existing idle deadline and
+adds no timer. A live link costs one round trip. 3 s: the server
+answers a Ping at once on its loop and a forward adds one network
+round trip, so a live link answers well under 1 s; on a network that
+is not up yet a fresh dial fails as well, so an early loss costs
+nothing. A hint during a probe does not extend its deadline. A paused
+view link gets no Ping and a pause cancels its probe: it cannot read
+the answer, and a hint must never reopen a live view; the `/client`
+probe covers the path that it shares, and a loss there takes every
+view with it. QUIC needs no probe: its migration's path validation is
+one.
 
 A known stall after a NAT rebinding is in the server, not in the
 client. quic-go before v0.64.0 (Caddy 2.11.9 pins v0.63.0) sends one

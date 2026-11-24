@@ -12,8 +12,19 @@ import Network
     private let monitor = NWPathMonitor()
     private let clients = NSHashTable<KoClient>.weakObjects()
     private var baseline = false
+    private var lastWake: ContinuousClock.Instant?
+    private let onHint: (String) -> Void
 
-    public init() {}
+    public init(onHint: @escaping (String) -> Void = { _ in }) { self.onHint = onHint }
+
+    public func wake() { wake(at: .now) }
+
+    func wake(at now: ContinuousClock.Instant) {
+        if let lastWake, now - lastWake < .seconds(2) { return }
+        lastWake = now
+        onHint("wake: network path hint sent")
+        for client in clients.allObjects { client.pathChanged() }
+    }
 
     public func start() {
         monitor.pathUpdateHandler = { [weak self] path in
@@ -31,6 +42,7 @@ import Network
         let first = !baseline
         baseline = true
         guard !first, satisfied else { return }
+        onHint("NWPathMonitor: network path hint sent")
         for client in clients.allObjects { client.pathChanged() }
     }
 }

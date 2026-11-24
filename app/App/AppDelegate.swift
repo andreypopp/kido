@@ -28,7 +28,7 @@ import SidebarFeed
     let routes: WindowRoutes
     private(set) var identities = IdentityStore(root: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Kido"))
     private var sentPairingTokens: Set<Data> = []
-    private let paths = PathMonitor()
+    private let paths = PathMonitor(onHint: { note($0) })
 
     override init() {
         routes = WindowRoutes()
@@ -84,10 +84,18 @@ import SidebarFeed
             (NSWorkspace.sessionDidBecomeActiveNotification, "session became active"),
             (NSWorkspace.sessionDidResignActiveNotification, "session resigned active"),
         ] {
-            lifecycleObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { _ in note(label) })
+            lifecycleObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                note(label)
+                if name == NSWorkspace.didWakeNotification || name == NSWorkspace.screensDidWakeNotification {
+                    MainActor.assumeIsolated { self?.paths.wake() }
+                }
+            })
         }
         for (name, label) in [("com.apple.screenIsLocked", "screen locked"), ("com.apple.screenIsUnlocked", "screen unlocked")] {
-            lifecycleObservers.append(DistributedNotificationCenter.default().addObserver(forName: Notification.Name(name), object: nil, queue: .main) { _ in note(label) })
+            lifecycleObservers.append(DistributedNotificationCenter.default().addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] _ in
+                note(label)
+                if name == "com.apple.screenIsUnlocked" { MainActor.assumeIsolated { self?.paths.wake() } }
+            })
         }
         Upload.sweepPromises(launch: true)
         ImagePreview.shared.sweep()

@@ -104,9 +104,18 @@ is the baseline, and each later update whose status is satisfied calls
 `KoClient.pathChanged()` (`ko_client_path_changed`) on the clients
 that the app registers, which it holds weakly; an unsatisfied update
 does nothing, so a short loss of the path leaves the links to the
-lost-link rule. Kido.app's `AppDelegate` owns one monitor for the
-process, and each `WindowOwner` registers its connected client. The
-core decides what a hint does (design-ko.md, section 5, "Migration").
+lost-link rule. `NWPathMonitor` reports only a change of the path,
+with no promise of an update at wake: a Mac that wakes on the same
+network often gets none, and its links may be dead without a close.
+So `PathMonitor.wake()` also sends the hint, and Kido.app's
+`AppDelegate` calls it on `NSWorkspace.didWakeNotification`,
+`screensDidWakeNotification` and the distributed
+`com.apple.screenIsUnlocked`. These arrive within milliseconds of
+each other, so `wake()` sends at the first and drops the others for
+2 s: one probe for each wake. The log names each hint and its source.
+Kido.app's `AppDelegate` owns one monitor for the process, and each
+`WindowOwner` registers its connected client. The core decides what
+a hint does (design-ko.md, section 5, "Migration").
 An iOS app also calls `pathChanged()` when it becomes active, because
 its sockets were suspended.
 
@@ -385,7 +394,14 @@ a killed master leaves `c`, and ssh then starts a master that serves no
 control socket and reports nothing. The loop's attempts back off from
 1 s to 30 s with no deadline, so a Mac that slept for hours connects again
 at wake (the master ends through `ServerAliveInterval=15` and
-`ServerAliveCountMax=3`); only a terminal ssh failure (authentication, a
+`ServerAliveCountMax=3`). A loss with `KO_ERR_SILENT` (the wake probe
+or the watchdog, design-ko.md, section 5, "Liveness probe") makes the
+owner stop the master that it spawned, unless a recovery runs: a
+silent forward means a hung master, whose TCP connection can sit in
+its retransmission backoff long after the network is back, and the
+loop then starts a fresh master instead of the engine retrying
+through the old one. A wake hint does not shorten the loop's backoff.
+Only a terminal ssh failure (authentication, a
 host key) stops it. `ko HOST` has a 60 s deadline instead, because it is a
 foreground command. The banner shows the loop's last error, and a welcome
 hides it. A welcome of another `instance` resets the session view as for a

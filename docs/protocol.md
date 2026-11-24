@@ -63,8 +63,10 @@ connection's output progresses, the pong deadline starts again, and
 output that makes no progress closes it (section 4). While the server
 does not read a connection (an exec session's stdin backpressure,
 design-runtimes.md), it still pings and waits for no pong; the pong
-deadline starts again when reads resume. A client sends no pings of
-its own. It treats a link as lost when no byte arrives for `WATCHDOG`
+deadline starts again when reads resume. A client pings only to
+probe a link on a hint of the network path (design-ko.md, section 5,
+"Liveness probe"); the server's WebSocket layer answers with a pong.
+It treats a link as lost when no byte arrives for `WATCHDOG`
 (`ko_client/src/wire.rs`) while it reads the link; a byte of a partial
 frame counts, so a large snapshot on a slow link keeps the link alive,
 and its own sends never count. `WATCHDOG` is twice `PING_INTERVAL`,

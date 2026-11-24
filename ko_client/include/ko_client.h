@@ -142,6 +142,7 @@ typedef enum ko_code {
     /* The client's identity failed: the server refused its certificate,
      * or the sign function failed. */
     KO_ERR_IDENTITY = 15,
+    KO_ERR_SILENT = 16, /* The link sent nothing within its deadline. */
 } ko_code;
 
 enum { KO_ENDPOINT_UNIX = 1, KO_ENDPOINT_TLS = 2 };
@@ -467,7 +468,13 @@ ko_code ko_client_cancel(const ko_client *client);
  * connection that is still in its handshake or already closing, and a client
  * that waits to retry, reconnect at once, without the retry delay. TCP stays
  * TCP. A failed migration or path validation is a lost link and takes the
- * normal reconnect. A unix endpoint, an SSH forward included, ignores it. A
+ * normal reconnect. An established unix link (an SSH forward included), or
+ * a TCP link whose route did not move, sends a Ping on the client link and
+ * every open view link whose reads are not paused. Paused views keep their
+ * links; a loss of the client link resumes them with the other views. Any
+ * received bytes end that link's probe. No bytes
+ * within 3 seconds loses that link with KO_ERR_SILENT, as does the normal
+ * idle watchdog. A hint during a probe does not extend its deadline. A
  * client that stopped its reconnect attempts (see Reconnect above: a
  * mismatch, a refused certificate) stays stopped. Reports that are queued and not yet handled count as one. It may
  * run on any thread, under the handle and close rules above. KO_OK: the core

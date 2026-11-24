@@ -77,6 +77,7 @@ pub enum Code {
     VtMismatch = 13,
     Tls = 14,
     Identity = 15,
+    Silent = 16,
 }
 
 impl Code {
@@ -1589,6 +1590,7 @@ pub extern "C" fn ko_code_message(code: c_int) -> *const c_char {
         c if c == Code::Io as c_int => c"i/o error",
         c if c == Code::Protocol as c_int => c"protocol error",
         c if c == Code::Closed as c_int => c"the server closed the connection",
+        c if c == Code::Silent as c_int => c"the link sent nothing within its deadline",
         c if c == Code::Conflict as c_int => {
             c"the layout changed: the buffer holds the newer document"
         }
@@ -5039,7 +5041,7 @@ mod tests {
 
     #[test]
     fn every_code_has_its_own_static_message() {
-        let messages: Vec<String> = (0..=16)
+        let messages: Vec<String> = (0..=17)
             .map(|code| {
                 // SAFETY: the function returns a static NUL-terminated string.
                 unsafe { CStr::from_ptr(ko_code_message(code)) }
@@ -5050,7 +5052,7 @@ mod tests {
         let mut unique = messages.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!((unique.len(), messages[16].as_str()), (17, "unknown code"));
+        assert_eq!((unique.len(), messages[17].as_str()), (18, "unknown code"));
     }
 
     fn logged(log: &Arc<Mutex<Vec<String>>>, line: impl Into<String>) {
@@ -5935,6 +5937,199 @@ mod tests {
             model_of(client)["selection"],
             json!({"pane":"pane_2","window":"window_1","session":"session_1"})
         );
+        close(client);
+    }
+
+    #[test]
+    fn a_path_hint_probes_live_and_stalled_unix_links() {
+        fn answer(socket: &mut Ws, pings: &Sender<&'static str>, link: &'static str) {
+            while let Ok(message) = socket.read() {
+                if matches!(message, Message::Ping(_)) {
+                    socket.flush().unwrap();
+                    let _ = pings.send(link);
+                }
+            }
+        }
+        let (pings, pinged) = channel();
+        let (first, second, view_first, view_second) =
+            (pings.clone(), pings.clone(), pings.clone(), pings.clone());
+        let routes = client_script(move |socket, _| {
+            welcomed(socket);
+            answer(socket, &first, "client");
+        })
+        .client(move |socket, _| {
+            welcomed(socket);
+            answer(socket, &second, "client");
+        })
+        .view(move |socket, _| {
+            send_binary(socket, slice_record(10, true, true, true, b"old"));
+            answer(socket, &view_first, "view");
+        })
+        .view(move |socket, _| {
+            send_binary(socket, slice_record(20, true, true, true, b"new"));
+            answer(socket, &view_second, "view");
+        })
+        .view(move |socket, _| {
+            send_binary(socket, slice_record(30, true, true, true, b"resumed"));
+            answer(socket, &pings, "view");
+        });
+        let server = serve("hint-origin", routes);
+        let dir = PathBuf::from(format!("/tmp/ko-ffi-{}-hint-relay", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let listener = UnixListener::bind(dir.join("socket")).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stalled = Arc::new(AtomicBool::new(false));
+        let (halted, blocked, target) = (
+            Arc::clone(&stop),
+            Arc::clone(&stalled),
+            server.dir.join("socket"),
+        );
+        let (connections, connected) = channel();
+        let accept = std::thread::spawn(move || {
+            let mut workers = Vec::new();
+            while let Ok((down, _)) = listener.accept() {
+                if halted.load(Ordering::SeqCst) {
+                    break;
+                }
+                let up = UnixStream::connect(&target).unwrap();
+                let local = Arc::new(AtomicBool::new(false));
+                connections.send(Arc::clone(&local)).unwrap();
+                for (mut input, mut output) in [
+                    (down.try_clone().unwrap(), up.try_clone().unwrap()),
+                    (up, down),
+                ] {
+                    let (halted, blocked, local) = (
+                        Arc::clone(&halted),
+                        Arc::clone(&blocked),
+                        Arc::clone(&local),
+                    );
+                    workers.push(std::thread::spawn(move || {
+                        input
+                            .set_read_timeout(Some(Duration::from_millis(50)))
+                            .unwrap();
+                        let mut bytes = [0; 65536];
+                        while !halted.load(Ordering::SeqCst) {
+                            match input.read(&mut bytes) {
+                                Ok(0) => break,
+                                Ok(count) => {
+                                    if !blocked.load(Ordering::SeqCst)
+                                        && !local.load(Ordering::SeqCst)
+                                        && output.write_all(&bytes[..count]).is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                Err(error)
+                                    if matches!(
+                                        error.kind(),
+                                        std::io::ErrorKind::WouldBlock
+                                            | std::io::ErrorKind::TimedOut
+                                    ) => {}
+                                Err(_) => break,
+                            }
+                        }
+                        let _ = output.shutdown(std::net::Shutdown::Both);
+                    }));
+                }
+            }
+            for worker in workers {
+                worker.join().unwrap();
+            }
+        });
+        let relay = Server {
+            dir,
+            stop,
+            accept: Some(accept),
+            requests: Arc::clone(&server.requests),
+        };
+        let fixture = Fixture::new();
+        let client = fixture.connect(&relay);
+        assert!(matches!(fixture.next(), Seen::Welcome(..)));
+        assert!(matches!(fixture.next(), Seen::Layout(..)));
+        let decoder = Decoder::new(|_| Restored::Ok);
+        let view = open_view(client, decoder, true);
+        assert!(matches!(fixture.next(), Seen::Restored(..)));
+        let _client_link = connected.recv_timeout(WAIT).unwrap();
+        let view_link = connected.recv_timeout(WAIT).unwrap();
+        assert_eq!(ko_client_path_changed(client), Code::Ok);
+        let mut links = [
+            pinged.recv_timeout(WAIT).unwrap(),
+            pinged.recv_timeout(WAIT).unwrap(),
+        ];
+        links.sort();
+        assert_eq!(links, ["client", "view"]);
+        let events = fixture.quiet_for(crate::wire::PROBE + QUIET);
+        assert!(events.is_empty(), "{events:?}");
+        assert_eq!(
+            server
+                .targets("GET")
+                .iter()
+                .filter(|target| target.starts_with("/client"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            server
+                .targets("GET")
+                .iter()
+                .filter(|target| target.starts_with("/panes/"))
+                .count(),
+            1
+        );
+        assert!(handle_of(view).view.up.load(Ordering::SeqCst));
+        while fixture.links.try_recv().is_ok() {}
+        view_link.store(true, Ordering::SeqCst);
+        assert_eq!(ko_client_path_changed(client), Code::Ok);
+        assert_eq!(pinged.recv_timeout(WAIT).unwrap(), "client");
+        let lost_view = fixture.links.recv_timeout(WAIT).unwrap();
+        assert!(
+            matches!(lost_view, Seen::Link(Code::Silent, _)),
+            "{lost_view:?}"
+        );
+        assert!(matches!(fixture.next(), Seen::Restored(..)));
+        let resumed_view = fixture.links.recv_timeout(WAIT).unwrap();
+        assert!(
+            matches!(resumed_view, Seen::Link(Code::Ok, _)),
+            "{resumed_view:?}"
+        );
+        assert!(fixture.quiet().is_empty());
+        assert_eq!(
+            server
+                .targets("GET")
+                .iter()
+                .filter(|target| target.starts_with("/client"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            server
+                .targets("GET")
+                .iter()
+                .filter(|target| target.starts_with("/panes/"))
+                .count(),
+            2
+        );
+        stalled.store(true, Ordering::SeqCst);
+        let began = Instant::now();
+        assert_eq!(ko_client_path_changed(client), Code::Ok);
+        let lost = fixture.events.recv_timeout(Duration::from_secs(5));
+        stalled.store(false, Ordering::SeqCst);
+        if lost.is_err() {
+            close_view(view);
+            close(client);
+        }
+        let lost = lost.expect("a path hint did not detect the stalled relay within five seconds");
+        assert!(
+            matches!(lost.seen, Seen::Failed(Code::Silent, _)),
+            "{:?}",
+            lost.seen
+        );
+        assert!(began.elapsed() < crate::wire::WATCHDOG);
+        assert!(matches!(fixture.next(), Seen::Welcome(..)));
+        assert!(matches!(fixture.next(), Seen::Layout(..)));
+        assert!(matches!(fixture.next(), Seen::Restored(..)));
+        close_view(view);
         close(client);
     }
 

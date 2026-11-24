@@ -29,9 +29,17 @@ import XCTest
         monitor.update(satisfied: true)
         XCTAssertEqual(calls.withLock { $0 }, 2)
 
+        let now = ContinuousClock.now
+        monitor.wake(at: now)
+        monitor.wake(at: now + .seconds(1))
+        monitor.wake(at: now + .milliseconds(1999))
+        XCTAssertEqual(calls.withLock { $0 }, 3, "wake hints use the leading edge of the burst")
+        monitor.wake(at: now + .seconds(2))
+        XCTAssertEqual(calls.withLock { $0 }, 4, "a new burst can start at the throttle boundary")
         monitor.unregister(live)
         monitor.update(satisfied: true)
-        XCTAssertEqual(calls.withLock { $0 }, 2)
+        monitor.wake(at: now + .seconds(4))
+        XCTAssertEqual(calls.withLock { $0 }, 4)
         live.testCallHook(nil)
         let done = expectation(description: "the live client closed")
         live.close { done.fulfill() }

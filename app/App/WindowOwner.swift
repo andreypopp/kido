@@ -1358,6 +1358,7 @@ private class AlertEscape: NSView {
             navigationPhase = .idle
             welcomed = false
             guard recovering == nil else { return }
+            if code == KO_ERR_SILENT, case .remote = host { ssh?.master?.stop() }
             if code == KO_ERR_NO_SERVER {
                 switch host { case .local, .remote: return startServer(); case .tls: break }
             }

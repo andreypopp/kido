@@ -25,7 +25,7 @@ use crate::endpoint::{Dial, Endpoint, Resolving};
 use crate::model::{Applied, Greeting, JoinError, Model, Rejoin};
 use crate::wire::quic::Migration;
 use crate::wire::quic::h3::{Connection as Quic, StreamFailure};
-use crate::wire::{Connecting, Link, Next, READ_TIMEOUT, UpgradeStep, buffered, silent, text};
+use crate::wire::{Connecting, Link, Next, READ_TIMEOUT, UpgradeStep, buffered, text};
 
 const WATCH: Duration = Duration::from_secs(2);
 const KEEP_ALIVE: Duration = Duration::from_secs(15);
@@ -265,6 +265,7 @@ impl Engine<'_> {
                     self.join_ready(buffered(self.connection.token().unwrap_or(self.wake)));
                 } else if due.timer == self.watch {
                     self.watchdog();
+                    self.arm_watch();
                 } else if due.timer == self.webview_deadline {
                     self.webview_due = None;
                     self.webview_expired(Instant::now());
@@ -877,29 +878,51 @@ impl Engine<'_> {
         self.connect();
     }
 
+    fn arm_watch(&mut self) {
+        let Some(session) = self.connection.session() else {
+            return;
+        };
+        let now = Instant::now();
+        let deadlines =
+            session
+                .link
+                .probe_deadline()
+                .into_iter()
+                .chain(self.views.iter().filter_map(|open| {
+                    let (link, paused) = open.unpaused()?;
+                    if paused {
+                        return None;
+                    }
+                    link.probe_deadline()
+                }));
+        let within = deadlines.fold(WATCH.min(self.shared.watchdog), |within, deadline| {
+            within.min(deadline.saturating_duration_since(now))
+        });
+        let _ = self.poll.start(self.watch, within, None);
+    }
+
     fn watchdog(&mut self) {
         let now = Instant::now();
 
         let silent_client = self
             .connection
             .session()
-            .is_some_and(|session| silent(session.link.received(), now, self.shared.watchdog));
+            .is_some_and(|session| session.link.silent(now, self.shared.watchdog));
         if silent_client {
-            self.lose(Code::Closed, "the server went silent");
+            self.lose(Code::Silent, "the server went silent");
             return;
         }
         let ids: Vec<u64> = self
             .views
             .iter()
             .filter(|open| {
-                open.unpaused().is_some_and(|(link, paused)| {
-                    !paused && silent(link.received(), now, self.shared.watchdog)
-                })
+                open.unpaused()
+                    .is_some_and(|(link, paused)| !paused && link.silent(now, self.shared.watchdog))
             })
             .map(|open| open.view.id)
             .collect();
         for id in ids {
-            self.reopen_view(id, Code::Closed, "the pane view went silent");
+            self.reopen_view(id, Code::Silent, "the pane view went silent");
         }
     }
 
@@ -1052,15 +1075,47 @@ impl Engine<'_> {
                 owner.path_changed(&mut self.poll)
             }
             (Transport::Direct, Connection::Idle) => match &self.shared.endpoint {
-                Endpoint::Unix(_) => return,
+                Endpoint::Unix(_) => Ok(Migration::Rejoin),
                 Endpoint::Remote(_) => Ok(Migration::Rejoin),
                 #[cfg(test)]
-                Endpoint::Fixed(Dial::Unix(_)) => return,
+                Endpoint::Fixed(Dial::Unix(_)) => Ok(Migration::Rejoin),
                 #[cfg(test)]
                 Endpoint::Fixed(Dial::Remote { .. }) => Ok(Migration::Rejoin),
             },
             (Transport::Direct, Connection::Established(session)) if session.link.route_moved() => {
                 Ok(Migration::Rejoin)
+            }
+            (Transport::Direct, Connection::Established(_)) => {
+                if let Some(session) = self.connection.session_mut()
+                    && let Err(error) = session.link.probe(&mut self.poll)
+                {
+                    let (code, message) = failure(&error);
+                    self.lose(code, &message);
+                    return;
+                }
+                let failed: Vec<_> = self
+                    .views
+                    .iter_mut()
+                    .filter_map(|open| {
+                        let conn = open.conn.as_mut()?;
+                        let ViewLink::Open { link, paused } = &mut conn.state else {
+                            return None;
+                        };
+                        if *paused || open.view.pause.load(Ordering::SeqCst) {
+                            link.stop_probe();
+                            return None;
+                        }
+                        link.probe(&mut self.poll)
+                            .err()
+                            .map(|error| (open.view.id, error))
+                    })
+                    .collect();
+                for (id, error) in failed {
+                    let (code, message) = failure(&error);
+                    self.reopen_view(id, code, &message);
+                }
+                self.arm_watch();
+                return;
             }
             (Transport::Direct, _) => return,
         };
@@ -1107,7 +1162,10 @@ impl Engine<'_> {
                 let (code, message) = failure(&error);
                 self.reopen_view(id, code, &message);
             }
-            Ok(()) if *paused => link.interest(&mut self.poll, false),
+            Ok(()) if *paused => {
+                link.stop_probe();
+                link.interest(&mut self.poll, false);
+            }
             Ok(()) => {}
         }
     }
@@ -1340,6 +1398,7 @@ impl Engine<'_> {
             Err(End::Outage((code, message))) => self.reopen_view(id, code, &message),
             Ok(()) if pause.load(Ordering::SeqCst) => {
                 *paused = true;
+                link.stop_probe();
                 link.interest(&mut self.poll, false);
             }
             Ok(()) => {}
