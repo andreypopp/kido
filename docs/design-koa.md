@@ -502,7 +502,29 @@ whole line units. History and final text render whole. Paragraph line
 boxes, list items, table rows and fence lines determine the clip.
 A width change cannot leave a clip through a line. Content clipped
 to zero occupies no space. Long fences fold independently of the
-stream. `koa/page/reveal.ts` and the reveal settings in
+stream.
+
+The streaming tail only grows, so that a follower never sees content
+move down. The partial render is kept a prefix of the final one:
+remend closes open inline syntax, with links as text until their
+address arrives. A unit enters the reveal only when later text
+cannot change it: a paragraph's last line waits for the next line, a
+paragraph whose last source line starts with `|` (a possible table
+header) waits for the next source line, a table enters whole when it
+is closed, and a fence line that could close the fence waits until
+it is decided. The tail block's clip never decreases: when Markdown
+rewraps lines that were shown, the clip goes up to the next complete
+unit, or else holds its height, with the paint clipped to complete
+units, until the block completes. A block that a landing renders (a
+reset, a history page, a remount, a filter switch) shows all its
+complete units at once, so a fresh render shows as much as the live
+one. Remaining accepted reflows, which can make shown lines shorter: a
+setext underline under a paragraph of several
+lines, a reference definition that arrives after its use, a list
+that turns loose, and unmatched syntax at the message's end, which
+the final render does not repair. A row that leaves a filtered view
+(a classification, a move, an archive) moves the rows above it
+down. `koa/page/reveal.ts` and the reveal settings in
 `koa/page/page.ts` define the units and limits.
 
 Record application schedules a frame rather than rebuilding DOM for
@@ -516,16 +538,14 @@ The working mark belongs to the turn, not a Markdown block. It moves
 between its own row and a running step without being rebuilt for each
 token. Run rows are patched in place. Keeping the node attached lets
 WebKit's compositor animate it while the main thread is busy. The
-bare row's height is not removed mid-turn merely because a tool
-starts. A transcript that ends with a message ends in an ending row
-of the bare row's height: blank while idle, the bare row while the
-turn works. A transcript whose last visible element is a run has
-none; the run's last line takes its place, and a run that arrives
-occupies it. The exception is a filtered view whose run is followed
-by hidden content of a working turn: the bare row then stands under
-the run, and the floor holds its height at the turn's end. So a
-turn's start and end never change the transcript's height, in every
-view; a job view has no ending row. Reduced motion makes the dots static and disables grow and
+transcript view always ends in one ending row (`#tail-slot`), under
+a message and under a run alike; it is never hidden or removed. Only
+the dots move: they stand on the ending row while the turn works and
+the transcript ends in a message, on the run's line when it ends in a
+visible run (also when a filter hides the prose after it), and go at
+the turn's end or an abort. A run that arrives is a new row above the
+ending row. So a turn's start and end never change the transcript's
+height, in every view; a job view has no ending row. Reduced motion makes the dots static and disables grow and
 scroll travel; it does not disable chunking or fence folds.
 
 ### Windowing, scrolling, find and copy
@@ -598,8 +618,7 @@ reader into a follower by itself.
 
 **Following.** Growth puts the transcript at the new bottom in the
 same frame. No follow is animated: an animated follow and a
-streaming layout fight each other. While following, the written
-position never decreases.
+streaming layout fight each other.
 
 **Reader.** A reader has an anchor: an item, or a row inside it, and
 the pixel offset of that row from the top of the view. Layout
@@ -628,7 +647,9 @@ events never are. The page's own send is never unread, and its row
 keeps that status through later filter switches and restorations. A
 message becomes unread when it arrives while the view is a reader,
 or without focus. One "new messages" divider stands above the first
-unread message that the view shows. Unread state ends when a focused
+unread message that the view shows. It takes no height: it is a
+decoration of that row, drawn in the gap above it, so it changes no
+scroll decision. Unread state ends when a focused
 follower shows the bottom, when the reader scrolls the message into
 view, on the user's send, and on a view or session switch, a reload,
 a restart and a new session. The state machine's candidates are the
@@ -668,25 +689,24 @@ with or without focus, until the view stands at a bottom that is not
 empty or reader input cancels it. Only growth after that makes an
 unfocused view a reader. Unread state is in memory only.
 
-**A follower's view does not move up.** While following, the
-written position never decreases. The transcript ends in the ending
-row ("Runs, Markdown and rendering"), so the start and the end of a
-turn change only that row's content. For the shrinks that remain (a
-revised reveal slice, the ending row of a filtered view, the unread
-divider, a `!` command's live card that its folded row replaces), a
-follower keeps a floor: the largest transcript height that it saw.
-The page applies it as the minimum height of the transcript's
-wrapper, so a shrink leaves blank space under the content and later
-growth fills it. A reader keeps only the part of the floor that its
-position needs. The floor goes at a full re-landing: a reset, a
-view, session or filter switch, a resize, a reload.
+**While following, nothing moves down and no blank space appears at
+the bottom.** A follower's position is the content's bottom in every
+frame; the scroll state keeps no height floor. This holds because the rendering of
+the tail only grows ("Runs, Markdown and rendering" lists the
+rules and the accepted exceptions): the ending row stays, the unread
+divider takes no height, the reveal's clip never decreases, the
+caret stands inside the last line, and a `!` command keeps one open
+shape. A height change above the view (a remeasured row, a
+measurement that replaces an estimate) does not move visible content:
+the follower is pinned to the bottom and the reader to its anchor,
+in the frame of the change. A dock that grows or shrinks moves the
+last row with it, as a resize does.
 
-The floor has known faults. It also holds the estimated heights of
-unmounted rows and the dock's height, so blank space can stay at the
-bottom after a landing or a dialog, and a filter switch can land on
-a view with no row. Its space goes at a re-landing, so a view is not
-the same after a switch away and back. `plans/koa-scroll.md` has the
-causes and the work that removes the floor.
+**A fresh render equals the live view.** A switch away and back, a
+reload or a reset shows the same rows at the same places and the
+same bottom space as the live view did. The scroll height can differ
+while rows outside the window are estimates, and folds that the user
+opened are forgotten at a reset.
 
 **History.** Older history loads by itself while the top of the
 transcript is in or near the view, and a reader keeps their anchor
@@ -773,9 +793,25 @@ it before aborting the agent turn. Attachments are refused.
 
 Live command output is view state. The saved pi bash message becomes
 the transcript item. Completed commands can wait for pi to record
-them at turn settlement; reconciliation removes their temporary
-state before rebuilding, and restores it on failure. This prevents
-duplicate rows. Live output retains a bounded tail, not its start.
+them at turn settlement. When the view is not working, a completed
+command is already in pi's entries, so koa rebuilds the transcript
+at settlement, also while another command still runs, and the
+rebuild drops the completed cards. Every reset that the page gets
+while koa is not working therefore holds each completed command, and
+the page drops its completed cards in the frame that renders that
+reset: the card and its finished row never show together, and no
+frame shows neither. Live output retains a bounded tail, not its
+start.
+
+A running card and a finished row have one shape: open by default,
+with the output in a box of at most twelve lines that scrolls inside
+and shows the end of the output, unless the user scrolled the box
+up. The running box never gets shorter. Pending cards stand after
+all transcript rows, in their order, above the ending row, where
+the finished rows arrive. pi does not keep the execution id in its
+bash message, so a finished row is not joined to its card: the swap
+loses a fold or an inner scroll position of the card, and a
+finished command shows its exit status but no duration.
 
 ### Completion and editors
 

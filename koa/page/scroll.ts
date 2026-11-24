@@ -11,7 +11,6 @@ type Geometry = { top: number; max: number; viewport: number; width: number; ori
 type Candidate = { row?: RowId; index: number; visible: boolean; status: 'read' | 'unread' | 'own' };
 type Common = {
   scope: Scope;
-  floor?: number;
   last?: Geometry;
   written?: { top: number; echo: boolean };
   pendingSend?: true;
@@ -52,7 +51,6 @@ export type Lookup =
   | { kind: 'unloaded' }
   | { kind: 'removed'; next?: Row };
 export type Measure = Geometry & {
-  naturalHeight: number;
   now: number;
   focused: boolean;
   visible: boolean;
@@ -64,7 +62,6 @@ export type Measure = Geometry & {
 };
 export type Decision = {
   scrollTop?: number;
-  minHeight?: number;
   latest: { show: boolean; count: number };
   divider?: { seq: number; row?: RowId };
   windowTop: number;
@@ -120,7 +117,6 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
   let filtering = false, sawScroll = false;
   let force = state.forceItem !== undefined;
   let scrollTop: number | undefined;
-  let minHeight: number | undefined;
   let request: Decision['request'];
   const focused = m.focused && m.visible;
   const overscrolled = m.top < -1 || m.top > m.max + 1;
@@ -216,7 +212,6 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         state.saved = new Map(scrollMemory(state).map(saved => [scopeKey(saved.scope), saved]));
         const target = state.saved.get(scopeKey(scope));
         state.scope = scope;
-        state.floor = undefined;
         state.pendingSend = undefined;
         state.forceItem = undefined;
         state.last = undefined;
@@ -240,7 +235,6 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         break;
       }
       case 'reset':
-        state.floor = undefined;
         state.pendingSend = undefined;
         state.forceItem = undefined;
         state.last = undefined;
@@ -310,7 +304,6 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     else if (events.some(event => event.type === 'frame' || event.type === 'layout')) follow();
   }
   const resized = state.last && (state.last.viewport !== m.viewport || state.last.width !== m.width);
-  if (resized || events.some(event => event.type === 'resize')) state.floor = undefined;
   if (resized) {
     instant = true;
     newInstant = true;
@@ -318,7 +311,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
   }
   if (!overscrolled && state.kind === 'following' && !focused && !force && !state.positioning && m.max - m.top > 1) reader(previous.kind === 'following' ? m.anchor : undefined);
   if (!overscrolled && state.kind === 'following') {
-    if (force || focused || state.positioning) scrollTop = Math.max(0, Math.max(state.floor ?? 0, m.naturalHeight) - m.viewport);
+    if (force || focused || state.positioning) scrollTop = m.max;
     if (focused) clear();
   } else if (!overscrolled && state.kind === 'reader') {
     if (state.travel) {
@@ -339,15 +332,8 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
       else scrollTop = m.max;
     }
   }
-  if (state.kind === 'following') {
-    state.floor = Math.max(state.floor ?? 0, m.naturalHeight);
-    minHeight = state.floor;
-  } else if (state.kind === 'reader' && state.floor !== undefined) {
-    minHeight = Math.max(m.naturalHeight, Math.min(state.floor, (scrollTop ?? m.top) + m.viewport));
-    state.floor = minHeight > m.naturalHeight ? minHeight : undefined;
-  }
-  if (state.kind === 'following' && scrollTop === Math.max(0, (minHeight ?? 0) - m.viewport) && scrollTop > 0 && !events.some(event => event.type === 'reset' || event.type === 'switch')) state.positioning = undefined;
-  if (scrollTop !== undefined) scrollTop = Math.max(0, Math.min(Math.max(m.max, (minHeight ?? 0) - m.viewport), scrollTop));
+  if (state.kind === 'following' && scrollTop === m.max && scrollTop > 0 && !events.some(event => event.type === 'reset' || event.type === 'switch')) state.positioning = undefined;
+  if (scrollTop !== undefined) scrollTop = Math.max(0, Math.min(m.max, scrollTop));
   const top = scrollTop ?? (overscrolled ? state.last?.top ?? Math.max(0, Math.min(m.max, m.top)) : m.top);
   const distance = m.max - top;
   if (state.kind !== 'reader') state.threshold = false;
@@ -386,7 +372,6 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     state,
     decision: {
       scrollTop,
-      minHeight,
       latest: { show: state.kind === 'reader' && (counted.size > 0 || state.threshold), count: counted.size },
       divider,
       windowTop,

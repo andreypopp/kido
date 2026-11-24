@@ -1,8 +1,15 @@
 # koa scrolling: a tail that only grows, no floor, less state
 
-Status: proposal, 2026-11-24, at `f83172843`. No code is changed.
-The behaviour contract is in
-[docs/design-koa.md](../docs/design-koa.md), "The scroll contract".
+Status: unit 1 landed (2026-11-24); its behaviour is in
+[docs/design-koa.md](../docs/design-koa.md), "Runs, Markdown and
+rendering" and "The scroll contract", and the sections below that
+describe the floor and the shrink sources are history. Deviations
+from D9 in unit 1: pi's bash message has no execution id, so the
+finished row replaces the card in the frame of the reset that brings
+it (no node adoption), and a finished command shows no duration.
+The streaming tail's Markdown is kept a prefix of its final render
+(user, 2026-11-24), which narrows C1 to the residuals that
+"Runs, Markdown and rendering" lists. Unit 2 is open.
 
 ## Recommendation
 

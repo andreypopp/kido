@@ -1682,7 +1682,9 @@ Open WebUI): the scroll has two states and one animation.
   they were. Everything the layout does under a following reader is
   instant in the scroll, because an animated follow and a streaming
   layout fight each other.
-- **The ending row** (user, 2026-11-23). A transcript that ends
+- **The ending row** (user, 2026-11-23; superseded 2026-11-24 by
+  "The tail only grows", D2: the ending row is always there, also
+  under a run). A transcript that ends
   with a message (the user's or the agent's) ends in one row of the
   bare working row's height, with the same space above it as that
   row has. With nothing running the row is blank; while the turn
@@ -1698,7 +1700,9 @@ Open WebUI): the scroll has two states and one animation.
   filter, an agent), following or reading, after a restore or a
   reload. A job page has no ending row.
 - **The tail reserve** (user, 2026-11-23: nothing visible moves
-  when content shrinks). While following, the scroll never moves
+  when content shrinks; superseded 2026-11-24: no reserve, the tail
+  only grows, "The tail only grows" below and docs/design-koa.md,
+  "The scroll contract"). While following, the scroll never moves
   up. Content that grows is at the new bottom in the same frame,
   with no slide. Content that still shrinks at the tail (a folded
   run's parallel step lines that go when the calls end, a revealed

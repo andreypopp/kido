@@ -60,6 +60,9 @@ export class Context {
     const locale = "for(const method of ['toLocaleTimeString','toLocaleDateString']){const native=Date.prototype[method];Date.prototype[method]=function(locale,options){return native.call(this,locale,{...options,timeZone:'America/Los_Angeles'})}};Date.prototype.toDateString=function(){return this.toLocaleDateString('en-US')};";
     await context.addInitScript({ content: [locale, this.themeScript("light"), ...scripts].join(";\n") });
     const page = await context.newPage();
+    const errors: Error[] = [];
+    page.on('pageerror', error => errors.push(error));
+    this.cleanup.push(async () => { if (errors.length) throw new AggregateError(errors, 'Webview page errors'); });
     this.browser = page;
     page.on("load", () => { this.documents++; });
     let stderr = Buffer.alloc(0);

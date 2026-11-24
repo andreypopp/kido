@@ -46,6 +46,33 @@ test('saved compaction adds one summary without resetting the live transcript', 
   assert.equal(records.filter(record => record.type === 'reset').length, 2);
 });
 
+test('a completed command reset arrives before the state that removes its live card', t => {
+  const dir=mkdtempSync('/tmp/koa-view-'), entries: SessionEntry[]=[];
+  const session: AgentSession=Object.assign(Object.create(null),{sessionId:'session',sessionName:'test',getSessionStats:()=>({totalMessages:entries.length}),getAvailableThinkingLevels:()=>[],sessionManager:{getEntries:()=>entries,getBranch:()=>entries,getLeafId:()=>entries.at(-1)?.id??null}});
+  const runtime: AgentSessionRuntime=Object.assign(Object.create(null),{cwd:dir});
+  const view=createView({sessionEntryToContextMessages,branch:()=>[],kind:'root',dir,metrics:false,attached:attachments(dir),name:'test',cwd:dir,home:dir,agent:()=>({session,runtime}),compose:own=>({...own,agents:[],pathEditor:false,view:{id:'root',path:[],type:'root'},topics:[]}),status(){},title(){},closed:()=>false,cancelEditor(){},shutdown(){},agentsChanged(){},changed(){}});
+  t.after(()=>view.close());view.refresh();
+  const req=new IncomingMessage(new Socket());req.method='GET';req.url='/events';
+  const res=new ServerResponse(req),records:{type:string;items?:{kind:string}[];bash?:unknown[]}[]=[];
+  res.write=chunk=>{records.push(JSON.parse(String(chunk).slice(6)));return true};
+  view.feed.handle(req,res,{type:'selected'});records.length=0;
+  view.state.bash.push({id:'command',command:'pwd',excludeFromContext:false,started:4,phase:'completed',ended:5,result:{output:{text:dir,cut:0},exit:0,cancelled:false,truncated:false}});
+  entries.push({type:'message',id:'command',parentId:null,timestamp:new Date(5).toISOString(),message:{role:'bashExecution',command:'pwd',output:dir,exitCode:0,cancelled:false,truncated:false,timestamp:5}});
+  view.rebuild();
+  assert.deepEqual(records.map(record=>record.type),['reset','state']);
+  assert.equal(records[0].items?.some(item=>item.kind==='bash'),true);
+  assert.deepEqual(records[1].bash,[]);
+  view.hooks.onEvent({type:'agent_start'});
+  view.state.bash.push({id:'A',command:'pwd',excludeFromContext:false,started:6,phase:'completed',ended:7,result:{output:{text:dir,cut:0},exit:0,cancelled:false,truncated:false}},{id:'B',command:'make',excludeFromContext:false,started:8,phase:'running',output:{text:'running',cut:0}});
+  entries.push({type:'message',id:'A',parentId:'command',timestamp:new Date(7).toISOString(),message:{role:'bashExecution',command:'pwd',output:dir,exitCode:0,cancelled:false,truncated:false,timestamp:7}});
+  records.length=0;view.hooks.onEvent({type:'agent_settled',aborted:false});
+  const reset=records.findIndex(record=>record.type==='reset');
+  assert.ok(reset>=0,'settling publishes a completed execution while another command runs');
+  assert.equal(records[reset].items?.filter(item=>item.kind==='bash').length,2);
+  assert.deepEqual(view.state.bash.map(card=>card.id),['B']);
+  assert.deepEqual(records.slice(reset).map(record=>record.type),['reset','state']);
+});
+
 test('root status keeps the latest visible message through work, errors and resume', t => {
   const dir = mkdtempSync('/tmp/koa-view-');
   const entries: SessionEntry[] = [];

@@ -121,7 +121,6 @@ export function stepParts(step: StepInput & { args: Record<string, unknown> }, i
   }
   if (step.kind !== 'block') return [];
   const { block } = step, parts: Part[] = [];
-  if (block.type === 'tool' && block.name === 'async_bash' && block.job && block.state.type === 'done' && !block.state.error) return parts;
   const log = (job: NonNullable<Extract<Block, { type: 'tool' }>['job']>): Part => ({ kind: 'log', job, text: 'log: ' + job.log + (job.gone ? '' : ' open') });
   if (block.type === 'thinking' && block.redacted) parts.push({ kind: 'redacted', text: block.text || 'Redacted thinking' });
   else if (block.type === 'tool') {

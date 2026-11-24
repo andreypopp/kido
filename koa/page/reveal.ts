@@ -1,4 +1,5 @@
 import type { Token } from 'marked';
+import type { Frontier } from './markdown.ts';
 
 export type Unit = { bottom: number; complete: boolean };
 type Line = { top: number; bottom: number };
@@ -6,7 +7,7 @@ type Line = { top: number; bottom: number };
 const nested = (tokens: Token[]): boolean => tokens.some(token => token.type === 'code' || token.type === 'blockquote' || nested(('items' in token ? token.items : 'tokens' in token ? token.tokens : undefined) ?? []));
 
 export function revealHeight(units: Unit[], shown: number, cap: number, expired: boolean): number | undefined {
-  const base = units.findLast(unit => unit.complete && unit.bottom <= shown + .5)?.bottom ?? 0;
+  const base = (shown > .5 ? units.find(unit => unit.complete && unit.bottom >= shown - .5)?.bottom : undefined) ?? units.findLast(unit => unit.complete && unit.bottom <= shown + .5)?.bottom ?? 0;
   const next = (units.at(-1)?.bottom ?? 0) - base < cap && !expired ? undefined : units.findLast(unit => unit.complete && unit.bottom > base)?.bottom;
   const height = next ?? base;
   return Math.abs(height - shown) > .5 ? height : undefined;
@@ -31,7 +32,8 @@ function boxes(rects: Line[], complete: (index: number) => boolean): Unit[] {
   });
 }
 
-export function unitsOf(wrapper: HTMLElement, token: Token): Unit[] {
+export function unitsOf(wrapper: HTMLElement, token: Token, frontier: Frontier): Unit[] {
+  if (frontier.kind === 'closed') return [];
   const root = wrapper.firstElementChild;
   if (!root) return [];
   const origin = root.getBoundingClientRect().top;
@@ -47,7 +49,7 @@ export function unitsOf(wrapper: HTMLElement, token: Token): Unit[] {
     case 'code': {
       const code = root.querySelector('code');
       if (!code) return [];
-      const done = Math.max(0, token.raw.split('\n').length - 2), result = boxes(text(code), index => index < done), last = result.at(-1);
+      const done = frontier.kind === 'lines' ? frontier.count : 0, result = boxes(text(code), index => index < done), last = result.at(-1);
       if (last?.complete) last.bottom = Math.max(last.bottom, relative(root.getBoundingClientRect()).bottom);
       return result;
     }
@@ -57,10 +59,6 @@ export function unitsOf(wrapper: HTMLElement, token: Token): Unit[] {
       const last = result.at(-1);
       if (last) last.complete = false;
       return result;
-    }
-    case 'table': {
-      const done = token.raw.split('\n').length - 1;
-      return [...root.querySelectorAll('tr')].map((row, index) => ({ bottom: relative(row.getBoundingClientRect()).bottom, complete: done >= 3 && (index === 0 ? 0 : index + 1) < done }));
     }
     default: return [];
   }

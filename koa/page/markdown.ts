@@ -2,7 +2,8 @@ import { Marked, type Token, type TokensList, type MarkedExtension } from 'marke
 import remend from 'remend';
 
 export type Mark = { offset: number; mark: string; side: 'open' | 'close' };
-export type Tail = { start: number; token: Token };
+export type Frontier = { kind: 'closed' } | { kind: 'visual' } | { kind: 'lines'; count: number };
+export type Tail = { start: number; token: Token; frontier: Frontier };
 type RenderedBlock = { streaming: boolean; html?: string; marks: string; tail?: Tail };
 
 const escape = (text: string) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
@@ -108,8 +109,20 @@ export function markdown(user = false) {
       unchanged = false;
       let marked = token.raw;
       for (const mark of [...local].reverse()) marked = marked.slice(0, mark.offset - start) + mark.mark + marked.slice(mark.offset - start);
-      const selected: TokensList = !streaming && !local.length ? Object.assign([token], { links: tokens.links }) : lex(streaming ? remend(marked) : marked);
-      return { streaming, html: selectedParser.parser(selected), marks: signature, ...streaming && { tail: { start, token } } };
+      const selected: TokensList = !streaming && !local.length ? Object.assign([token], { links: tokens.links }) : lex(streaming ? remend(marked, { linkMode: 'text-only' }) : marked);
+      let frontier: Frontier = { kind: 'visual' };
+      if (streaming) {
+        const trimmed = token.raw.trimEnd(), last = trimmed.slice(trimmed.lastIndexOf('\n') + 1);
+        if (token.type === 'table' || token.type === 'paragraph' && last.trimStart().startsWith('|')) frontier = { kind: 'closed' };
+        else if (token.type === 'code') {
+          const fence = token.raw.match(/^ {0,3}(`{3,}|~{3,})/);
+          const closed = fence && token.raw.includes('\n') && new RegExp('^ {0,3}' + fence[1][0] + '{' + fence[1].length + ',}[ \\t]*$').test(last);
+          let lines = 1;
+          for (let at = token.text.indexOf('\n'); at !== -1; at = token.text.indexOf('\n', at + 1)) lines++;
+          frontier = { kind: 'lines', count: closed || token.raw.endsWith('\n') ? lines : Math.max(0, lines - 1) };
+        }
+      }
+      return { streaming, html: selectedParser.parser(selected), marks: signature, ...streaming && { tail: { start, token, frontier } } };
     });
     const result = blocks;
     if (final) { blocks = []; raw = []; links = ''; lexed = undefined; }

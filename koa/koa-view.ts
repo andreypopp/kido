@@ -137,9 +137,9 @@ export function createView(options: ViewOptions) {
     const completed: Bash[] = state.working ? [] : state.bash.filter(item => item.phase === "completed");
     const previous = state.bash;
     state.bash = previous.filter(item => !completed.includes(item));
-    if (state.bash.length !== previous.length) publish();
     try { feed.rebuild(session.sessionManager.getEntries(), state.sessionId, session.sessionManager.getLeafId()); }
-    catch (error) { state.bash = previous; publish(); throw error; }
+    catch (error) { state.bash = previous; throw error; }
+    if (state.bash.length !== previous.length) publish();
   };
   const restoreMessage = () => {
     lastText = '';
@@ -167,7 +167,7 @@ export function createView(options: ViewOptions) {
   const dropBash = () => { clearTimeout(bashTimer); bashTimer = undefined; state.bash = []; };
   let bashSerial = 0;
   const settleBash = () => {
-    if (state.working || !state.bash.length || state.bash.some(item => item.phase !== "completed")) return;
+    if (state.working || !state.bash.some(item => item.phase === "completed")) return;
     rebuild();
   };
   let userAttachments: Attachment[] = [];

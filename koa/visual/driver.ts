@@ -5,6 +5,7 @@ import { Context, require, equal, koaIdle, koaWorking, paneFocus, hideLatest } f
 import { js, ready, type Insets } from "./capture.ts";
 import { image } from "./images.ts";
 import { fixtures } from "./cases.ts";
+import { followMonitor } from '../testdata/follow-monitor.ts';
 type Scenario = "transcript" | "dialogs" | "controls" | "exit" | "failed" | "completion" | "markdown" | "media" | "attachments" | "userMarkdown" | "thinkingMarkdown" | "reveal" | "lightbox" | "agents" | "composer" | "questions" | "bang" | "commands" | "notices" | "latest" | "sessions" | "views" | "jobs" | "paths" | "topics";
 function writeAsset(path: string, bytes: string | Buffer): void { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); }
 function requireValue<T>(value: T | null | undefined): T { require(value !== undefined && value !== null); return value; }
@@ -30,7 +31,7 @@ async function koaComponentSnapshot(capture: string, selector: string, padding: 
     for (let attempt = 0; attempt < 3; attempt++) {
       const [growth] = await js<number[]>(web, `(()=>{const nodes=[...document.querySelectorAll(${encoded})],scroll=document.querySelector('#scroll');if(!nodes.length||!nodes.every(node=>scroll.contains(node)))return [0];const rects=nodes.map(node=>node.getBoundingClientRect()),height=Math.max(...rects.map(r=>r.bottom))-Math.min(...rects.map(r=>r.top)),inset=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ko-inset-top'))||0;return [height+document.querySelector('#dock').getBoundingClientRect().height+inset+${padding.top + padding.bottom}+32-innerHeight]})()`);
       if (Number.isFinite(growth) && growth > 0) await resizeKoa(web, drivingSize.width, viewport().height + Math.ceil(growth));
-      await js(web, `(()=>{const nodes=[...document.querySelectorAll(${encoded})],scroll=document.querySelector('#scroll');if(!nodes.length||!nodes.every(node=>scroll.contains(node)))return true;const rects=nodes.map(node=>node.getBoundingClientRect()),top=Math.min(...rects.map(r=>r.top)),bottom=Math.max(...rects.map(r=>r.bottom));if(top<${padding.top}||bottom>document.querySelector('#dock').getBoundingClientRect().top-${padding.bottom}){scroll.dispatchEvent(new WheelEvent('wheel',{deltaY:-1,bubbles:true}));scroll.scrollTop+=top-scroll.getBoundingClientRect().top-${padding.top + 8}}return true})()`);
+      await js(web, `(()=>{const nodes=[...document.querySelectorAll(${encoded})],scroll=document.querySelector('#scroll');if(!nodes.length||!nodes.every(node=>scroll.contains(node)))return true;const rects=nodes.map(node=>node.getBoundingClientRect()),top=Math.min(...rects.map(r=>r.top)),bottom=Math.max(...rects.map(r=>r.bottom));if(top<${padding.top}||bottom>document.querySelector('#dock').getBoundingClientRect().top-${padding.bottom}){window.koaFollowEnabled=false;scroll.dispatchEvent(new WheelEvent('wheel',{deltaY:-1,bubbles:true}));scroll.scrollTop+=top-scroll.getBoundingClientRect().top-${padding.top + 8}}return true})()`);
       await ready(web);
       if (await js(web, `(()=>{const nodes=[...document.querySelectorAll(${encoded})];return nodes.length>0&&nodes.every(node=>{const r=node.getBoundingClientRect();return r.top>=${padding.top}&&r.bottom+${padding.bottom}<=innerHeight&&r.left>=${padding.left}&&r.right+${padding.right}<=innerWidth})})()`) === true) break;
     }
@@ -112,7 +113,7 @@ function captureTarget(name: string, scenario: Scenario): { selector: string; pa
     case "failed/exited":
       return { selector: "#exited .card", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
     case "latest/latest-divider":
-      return { selector: ".newmsgs", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
+      return { selector: "#unread-gap-crop", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
     case "latest/latest-new":
       return { selector: "#latest", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
     case "topics/topics-filter-composer":
@@ -211,20 +212,26 @@ function captureTarget(name: string, scenario: Scenario): { selector: string; pa
 }
 async function takeKoaSnapshot(name: string, appearance: string, scenario: Scenario): Promise<void> {
   const target = captureTarget(name, scenario), capture = name + appearance;
-  if (target) await koaComponentSnapshot(capture, target.selector, target.padding, "testKoaWebviewMockupStates()");
-  else await context.pageSnapshot(capture, "testKoaWebviewMockupStates()");
+  const gap = target?.selector === '#unread-gap-crop', web = requireValue(context.browser);
+  if (gap) await webviewJS(web,"(()=>{const rect=document.querySelector('.unread-first').getBoundingClientRect(),crop=document.createElement('div');crop.id='unread-gap-crop';crop.style.cssText='position:fixed;pointer-events:none;left:'+rect.left+'px;top:'+(rect.top-14)+'px;width:'+rect.width+'px;height:14px';document.body.append(crop);return true})()");
+  try {
+    if (target) await koaComponentSnapshot(capture, target.selector, target.padding, "testKoaWebviewMockupStates()");
+    else await context.pageSnapshot(capture, "testKoaWebviewMockupStates()");
+  } finally { if (gap) await webviewJS(web,"document.querySelector('#unread-gap-crop').remove()"); }
 }
-async function scrollPage(module: string, key: string, condition = ""): Promise<Page> {
-  const initial = paneFocus + "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[1700000012000]))}static now(){return 1700000012000}};" + (['ExplicitRowExtents', 'ViewSwitchAtomic'].includes(key) ? '' : 'window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;') + "const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};";
-  const web = await context.start(browser, module, key, replayRoot(), { width: 680, height: 557 }, [initial, hideLatest]);
+const followingChecks = `window.koaFollowCheck=(${followMonitor.toString()})();window.koaFollowSample=()=>{const scroll=document.querySelector('#scroll'),slot=document.querySelector('#tail-slot'),dock=document.querySelector('#dock');if(!scroll||!slot||!dock)return;const bounds=dock.getBoundingClientRect(),rows=[...document.querySelectorAll('#items>[data-seq]')].flatMap(root=>[...root.querySelectorAll('.msg.prose,.run,.cmdrun,.nrow,.user')].map((row,index)=>{const rect=row.getBoundingClientRect();return {key:root.dataset.seq+':'+index,top:rect.top,bottom:rect.bottom}}));const reveals=document.querySelectorAll('.reveal').length,exemption=window.koaFollowExemption??(window.koaPriorReveals>reveals?'completion':undefined);window.koaFollowExemption=undefined;window.koaPriorReveals=reveals;koaFollowCheck({scope:document.body.dataset.sessionId+':'+document.querySelector('#topics .selected')?.textContent+':'+document.querySelector('#bar')?.textContent,viewport:scroll.clientHeight,width:scroll.clientWidth,dock:bounds.top,following:window.koaFollowEnabled===true,covered:!!document.querySelector('#presentation')||slot.hidden,max:scroll.scrollHeight-scroll.clientHeight,rows,bottomSpace:bounds.top-slot.getBoundingClientRect().bottom,exemption})};document.addEventListener('click',event=>{if(event.target.closest('.line,button.more'))window.koaFollowExemption='fold'},true);`;
+const followingTick = "const followRequest=requestAnimationFrame;window.requestAnimationFrame=callback=>followRequest(time=>{callback(time);if(callback.name==='tick')koaFollowSample()});";
+async function scrollPage(module: string, key: string, condition = "", follow = false): Promise<Page> {
+  const initial = paneFocus + `window.koaFollowEnabled=${follow};` + "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[1700000012000]))}static now(){return 1700000012000}};" + (['ExplicitRowExtents', 'ViewSwitchAtomic'].includes(key) ? '' : 'window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;') + "const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};";
+  const web = await context.start(browser, module, key, replayRoot(), { width: 680, height: 557 }, [initial, followingChecks + followingTick, hideLatest]);
   await webviewUntil(web, `window.composer&&${condition}${koaIdle}&&document.querySelector('#items').childElementCount>0`);
   return web;
 }
 const followHelpers = `        const s=document.querySelector('#scroll'),dock=document.querySelector('#dock'),wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-        const push=record=>scrollSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify(record)}));
+        const push=record=>{if(record.type==='reset')window.koaFollowExemption='source';scrollSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify(record)}))};
         const gap=()=>s.scrollHeight-s.scrollTop-s.clientHeight;
         const until=async(test,ms=60000)=>{const end=performance.now()+ms;while(!test()&&performance.now()<end)await wait(50)};
-        const moveTo=value=>{s.dispatchEvent(new WheelEvent('wheel',{deltaY:value<s.scrollTop?-1:1,bubbles:true}));s.scrollTop=value;s.dispatchEvent(new Event('scroll'))};
+        const moveTo=value=>{window.koaFollowEnabled=false;s.dispatchEvent(new WheelEvent('wheel',{deltaY:value<s.scrollTop?-1:1,bubbles:true}));s.scrollTop=value;s.dispatchEvent(new Event('scroll'))};
         const root={id:'s1',name:'ko',type:'agent'};
         const view=(node,path,extra={})=>({type:'state',view:{id:node.id,path,type:node.type},agents:[],bash:[],compaction:'idle',life:{type:'ready'},working:false,aborted:false,name:'t',levels:[],cwd:'/w',home:'/h',statuses:{},queue:{steering:[],followUp:[],classifying:[]},dialogs:[],sessionId:'s1',...extra});
         `;
@@ -350,7 +357,7 @@ async function prepareCapture(name: string, scenario: Scenario, measured: boolea
         equal(viewportWidth, viewport().width, `The page fills the native webview width at capture ${name}`)
         const initialScroll = top || aboveBottom ? "0" : scenario == "latest" ? "scroll.scrollTop" : "scroll.scrollHeight"
         const stopFollowing = top || aboveBottom
-        await webviewJS(web, `(()=>{if(!document.querySelector('.topic-input')&&!document.querySelector('.topic-rename')&&!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');if(${stopFollowing})scroll.dispatchEvent(new WheelEvent('wheel',{deltaY:-1,bubbles:true}));scroll.scrollTop=${initialScroll};if(${ordered})document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()`)
+        await webviewJS(web, `(()=>{if(!document.querySelector('.topic-input')&&!document.querySelector('.topic-rename')&&!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');if(${stopFollowing}){window.koaFollowEnabled=false;scroll.dispatchEvent(new WheelEvent('wheel',{deltaY:-1,bubbles:true}));}scroll.scrollTop=${initialScroll};if(${ordered})document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()`)
         await webviewUntil(web, "(()=>{const dock=document.querySelector('#dock');return Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===dock.getBoundingClientRect().height})()")
         const latestAtTop = top || scenario == "latest" && name.endsWith("new")
         const scrollPosition = latestAtTop ? "0" : scenario == "latest" ? "scroll.scrollTop" : aboveBottom ? "0" : "scroll.scrollHeight"
@@ -475,9 +482,9 @@ async function driveTopics(web: Page, phases: string[], capture: (name: string) 
             if (name.endsWith('-block')) {
                 await webviewJS(web, "(()=>{for(let seq=100;seq<112;seq++)window.topicSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'item',item:{kind:'assistant',seq,revision:0,at:Date.now(),final:true,stop:'stop',error:'',blocks:[{type:'text',topic:'palette',text:seq===100?'Unread palette start.':'More unread palette content. '.repeat(50)}]}})}));return true})()")
                 await web.locator('.topic-entry[data-topic=palette]').click()
-                await webviewUntil(web, "document.querySelector('.newmsgs')!==null")
+                await webviewUntil(web, "document.querySelector('.unread-first')!==null")
                 await koaMeasured(web, '#items')
-                const divider = await web.locator('.newmsgs').boundingBox(), viewport = await web.locator('#scroll').boundingBox()
+                const divider = await web.locator('.unread-first').boundingBox(), viewport = await web.locator('#scroll').boundingBox()
                 require(divider !== null && viewport !== null && divider.y >= viewport.y && divider.y <= viewport.y + 20, `Filter placement keeps the divider visible at the top: ${JSON.stringify({divider,viewport})}`)
             }
             if (!name.endsWith('-restored')) {
@@ -735,7 +742,7 @@ async function assertMessageHeader(web: Page) {
         require(result.every(gap => Math.abs(gap - 2) < 1), `Reply headers keep a 2px gap above prose and final or streaming headings: ${result}`)
     }
 async function testKoaWebviewDots() {
-        const web = await scrollPage( "dots", "testKoaWebviewDots")
+        const web = await scrollPage( "dots", "testKoaWebviewDots", '', true)
         await webviewJS(web, "(()=>{const style=document.createElement('style');style.textContent='*,*::before,*::after{transition:none!important}.grow{animation:none!important}';document.head.append(style);return true})()")
         async function pinAnimations(phase = 330) {
             await webviewJS(web, `new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Dot animations did not pause')),5000);for(const dot of document.querySelectorAll('.dots i')){for(const property of ['animation','transform','opacity'])dot.style.removeProperty(property);getComputedStyle(dot).animationName}const animations=document.getAnimations();for(const animation of animations){if(animation.animationName==='grow'){animation.finish();continue}const dot=animation.effect.target;animation.pause();animation.currentTime=${phase}-150*[...dot.parentNode.children].indexOf(dot)}Promise.all(animations.map(animation=>animation.ready)).then(()=>{for(const animation of animations){const dot=animation.effect.target;if(!dot.matches('.dots i'))continue;const style=getComputedStyle(dot),transform=style.transform,opacity=style.opacity;dot.style.transform=transform;dot.style.opacity=opacity;dot.style.setProperty('animation','none','important');animation.cancel()}clearTimeout(timer);resolve(true)},error=>{clearTimeout(timer);reject(error)})})`)
@@ -765,12 +772,13 @@ async function testKoaWebviewDots() {
         async function appearance(name: string, base: number) {
             const first = await measure()
             const empty = first["live"]
-            await webviewJS(web, "(()=>{window.dotRow=document.querySelector('.run');window.dotLine=window.dotRow.querySelector('.line');return true})()")
+            await webviewJS(web, "(()=>{window.dotSlot=document.querySelector('#tail-slot');window.dotRow=document.querySelector('#items .run');return true})()")
             await patch(base, "running")
-            const retained = await webviewJS(web, "document.querySelector('.run')===window.dotRow&&window.dotRow.querySelector('.line')===window.dotLine")
-            equal(retained, true, "The bare row and its line become the run")
-            const noTail = await webviewJS(web, "(()=>{const slot=document.querySelector('#tail-slot'),transcript=document.querySelector('#transcript');return slot.hidden&&slot.getBoundingClientRect().height===0&&transcript.getBoundingClientRect().bottom-parseFloat(getComputedStyle(transcript).paddingBottom)===document.querySelector('#items').getBoundingClientRect().bottom})()")
-            equal(noTail, true, 'A run ending uses its own last line, with no blank ending row')
+            const retained = await webviewJS(web, "document.querySelector('#tail-slot')===window.dotSlot&&(!window.dotRow||document.querySelector('#items .run')===window.dotRow)")
+            equal(retained, true, "A run is inserted above the retained ending slot")
+            await webviewJS(web, "window.dotRow=document.querySelector('#items .run')")
+            const noTail = await webviewJS(web, "(()=>{const slot=document.querySelector('#tail-slot'),transcript=document.querySelector('#transcript');return !slot.hidden&&slot.getBoundingClientRect().height>0&&transcript.getBoundingClientRect().bottom-parseFloat(getComputedStyle(transcript).paddingBottom)>=slot.getBoundingClientRect().bottom})()")
+            equal(noTail, true, 'The ending row remains blank under a working run')
             const tool = await measure()
             if (name == "light") { await webviewPageSnapshot("light-tool", ".run", { top: 4, left: 4, bottom: 4, right: 4 }, "testKoaWebviewDots()") }
             await patch(base + 1, "done")
@@ -826,8 +834,106 @@ async function testKoaWebviewDots() {
         await webviewUntil(web, "!!document.querySelector('.run.working')&&document.querySelector('.run')===window.dotRow")
         await pinAnimations(0)
     }
+async function testKoaWebviewRevealTail() {
+  const web=await scrollPage('dots','RevealTail','',true);
+  await web.emulateMedia({reducedMotion:'reduce'});
+  for(const appearance of ['light','dark'] as const) {
+    await setTheme(appearance);
+    const original=Array(80).fill('streaming').join(' '),revised=Array(45).fill('streaming').join(' ');
+    await webviewJS(web,'(()=>{'+followHelpers+`push(view(root,[root],{working:true,since:1700000000000}));push({type:'reset',epoch:'reveal-${appearance}',more:false,items:[{seq:0,at:0,revision:0,kind:'assistant',final:false,stop:'',error:'',blocks:[{type:'text',text:${JSON.stringify(original)}}]}]});return true})()`);
+    await webviewUntil(web,"parseFloat(document.querySelector('.reveal')?.style.maxHeight)>0");
+    await context.pageSnapshot('reveal-landing'+appearance,'testKoaWebviewRevealTail()','#transcript',{top:0,left:0,bottom:0,right:0});
+    await webviewJS(web,'(()=>{'+followHelpers+`push({type:'patch',seq:0,baseRevision:0,revision:1,final:false,stop:'',error:'',blocks:[{index:0,block:{type:'text',text:${JSON.stringify(revised)}}}]});return true})()`);
+    await webviewUntil(web,"(()=>{const clip=document.querySelector('.reveal');return clip&&parseFloat(clip.style.minHeight)>parseFloat(clip.style.maxHeight)&&getComputedStyle(clip).clipPath!=='none'})()");
+    await context.pageSnapshot('reveal-revised'+appearance,'testKoaWebviewRevealTail()','#transcript',{top:0,left:0,bottom:0,right:0});
+    await webviewJS(web,'(()=>{'+followHelpers+"push({type:'patch',seq:0,baseRevision:1,revision:2,final:true,stop:'stop',error:'',blocks:[]});return true})()");
+    await webviewUntil(web,"!document.querySelector('.reveal')");
+    await context.pageSnapshot('reveal-complete'+appearance,'testKoaWebviewRevealTail()','#transcript',{top:0,left:0,bottom:0,right:0});
+  }
+}
+async function testKoaWebviewThinkingCaret() {
+  const web=await scrollPage('dots','ThinkingCaret','',true);
+  await web.emulateMedia({reducedMotion:'reduce'});
+  for(const appearance of ['light','dark'] as const) {
+    await setTheme(appearance);
+    for(const [name,text,selector] of [['list','- first\n- last','li'],['table','| a | b |\n| - | - |\n| c | last |','td'],['fence','```ts\nconst value = 1;\n','code']]) {
+      await webviewJS(web,'(()=>{'+followHelpers+`push(view(root,[root],{working:true,since:1700000000000}));push({type:'reset',epoch:'caret-${name}-${appearance}',more:false,items:[{seq:0,at:0,revision:0,kind:'assistant',final:false,stop:'',error:'',blocks:[{type:'thinking',text:${JSON.stringify(text)},started:1700000000000}]}]});return true})()`);
+      await webviewUntil(web,"!!document.querySelector('.run:not(.working) .step')");
+      await webviewJS(web,"document.querySelectorAll('#items .run>.line,#items .step>.line').forEach(line=>{if(!line.parentElement.classList.contains('open'))line.click()})");
+      await webviewUntil(web,"!!document.querySelector('.think .caret')");
+      equal(await webviewJS(web,`!!document.querySelector('.think .caret').parentElement.closest('${selector}')`),true,'The caret stays in the last text-bearing element');
+      await context.pageSnapshot('caret-'+name+appearance,'testKoaWebviewThinkingCaret()','.think',{top:4,left:4,bottom:4,right:4});
+      await webviewJS(web,'(()=>{'+followHelpers+"push({type:'patch',seq:0,baseRevision:0,revision:1,final:true,stop:'stop',error:'',blocks:[]});return true})()");
+      await webviewUntil(web,"!document.querySelector('.think .caret')");
+    }
+  }
+}
+async function testKoaWebviewUnreadGap() {
+  const web = await scrollPage('dots', 'UnreadGap', '', true);
+  await web.emulateMedia({ reducedMotion: 'reduce' });
+  for (const appearance of ['light','dark'] as const) {
+    await setTheme(appearance);
+    for (const kind of ['assistant','user']) {
+      await webviewJS(web,'(()=>{' + followHelpers + `push(view(root,[root]));push({type:'reset',epoch:'unread-${appearance}-${kind}',more:false,items:[{seq:0,at:0,revision:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{type:'text',text:${JSON.stringify('Earlier response.\n\n'.repeat(30))}}]}]});return true})()`);
+      await webviewUntil(web,"document.querySelector('#scroll').scrollHeight-document.querySelector('#scroll').clientHeight-document.querySelector('#scroll').scrollTop<=1");
+      await webviewJS(web,'(()=>{' + followHelpers + "moveTo(s.scrollTop-200);window.koaFocused=false;window.dispatchEvent(new Event('blur'));return true})()");
+      const message=kind==='assistant'?{seq:1,at:1,revision:0,kind,final:true,stop:'stop',error:'',blocks:[{type:'text',text:'New assistant message'}]}:{seq:1,at:1,revision:0,kind,final:true,text:'External user message',images:[],attachments:[]};
+      await webviewJS(web,'(()=>{' + followHelpers + `push({type:'item',item:${JSON.stringify(message)}});return true})()`);
+      await webviewUntil(web,"!!document.querySelector('.unread-first')");
+      await webviewJS(web,'(()=>{' + followHelpers + "const row=document.querySelector('.unread-first');moveTo(s.scrollTop+row.getBoundingClientRect().top-dock.getBoundingClientRect().top+6);return true})()");
+      await webviewJS(web,"new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))");
+      await webviewUntil(web,"(()=>{const row=document.querySelector('.unread-first:not(.unread-clearing)');return row&&getComputedStyle(row,'::before').opacity==='1'})()");
+      await webviewJS(web,"(()=>{const rect=document.querySelector('.unread-first:not(.unread-clearing)').getBoundingClientRect(),crop=document.createElement('div');crop.id='unread-gap-crop';crop.style.cssText='position:fixed;pointer-events:none;left:'+rect.left+'px;top:'+(rect.top-14)+'px;width:'+rect.width+'px;height:14px';document.body.append(crop);return true})()");
+      await context.pageSnapshot('unread-'+kind+appearance,'testKoaWebviewUnreadGap()','#unread-gap-crop');
+      await webviewJS(web,"document.querySelector('#unread-gap-crop').remove()");
+    }
+  }
+}
+async function testKoaWebviewBangTail() {
+  const web = await scrollPage('dots', 'BangTail', '', true);
+  await web.emulateMedia({ reducedMotion: 'reduce' });
+  for (const appearance of ['light','dark'] as const) {
+    await setTheme(appearance);
+    const id='bounded-'+appearance;
+    await webviewJS(web,'(()=>{'+followHelpers+`window.koaFollowEnabled=false;push({type:'reset',epoch:'bang-${appearance}',more:false,items:[{seq:0,at:0,revision:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{type:'text',text:${JSON.stringify('Earlier response.\n\n'.repeat(30))}}]}]});s.dispatchEvent(new WheelEvent('wheel',{deltaY:1,bubbles:true}));s.scrollTop=s.scrollHeight;s.dispatchEvent(new Event('scroll'));return true})()`);
+    const output=Array.from({length:30},(_,index)=>'output line '+index).join('\n');
+    await webviewJS(web,'(()=>{' + followHelpers + `window.boundedCommand={id:${JSON.stringify(id)},phase:'running',command:'make verify',excludeFromContext:false,started:1700000000000,output:{text:${JSON.stringify(output)},cut:0}};push(view(root,[root],{bash:[boundedCommand]}));return true})()`);
+    await webviewUntil(web,"document.querySelector('.cmdrun.open pre')?.scrollTop>0&&document.querySelector('#scroll').scrollHeight-document.querySelector('#scroll').clientHeight-document.querySelector('#scroll').scrollTop<=1");
+    await webviewJS(web,"window.koaFollowEnabled=true");
+    const bounded=await webviewJS(web,"(()=>{const pre=document.querySelector('.cmdrun pre');return pre.getBoundingClientRect().height<=18*parseFloat(getComputedStyle(pre).fontSize)+.5&&pre.scrollHeight>pre.clientHeight})()");
+    equal(bounded,true,'Command output is bounded by twelve lines');
+    await context.pageSnapshot('bang-bounded'+appearance,'testKoaWebviewBangTail()','.cmdrun',{top:4,left:4,bottom:4,right:4});
+    await webviewJS(web,"(()=>{const pre=document.querySelector('.cmdrun pre');pre.scrollTop=30;pre.dispatchEvent(new Event('scroll'));return true})()");
+    await webviewJS(web,'(()=>{' + followHelpers + "boundedCommand={...boundedCommand,output:{text:boundedCommand.output.text+'\\nreader patch',cut:0}};push(view(root,[root],{bash:[boundedCommand]}));return true})()");
+    await webviewUntil(web,"document.querySelector('.cmdrun pre').textContent.endsWith('reader patch')");
+    equal(await webviewJS(web,"document.querySelector('.cmdrun pre').scrollTop"),30,'A command patch leaves its inner reader in place');
+    await context.pageSnapshot('bang-inner-reader'+appearance,'testKoaWebviewBangTail()','.cmdrun',{top:4,left:4,bottom:4,right:4});
+    await webviewJS(web,"(()=>{const pre=document.querySelector('.cmdrun pre');pre.scrollTop=pre.scrollHeight;pre.dispatchEvent(new Event('scroll'));return true})()");
+    await webviewJS(web,'(()=>{' + followHelpers + "boundedCommand={...boundedCommand,output:{text:boundedCommand.output.text+'\\nresumed patch',cut:0}};push(view(root,[root],{bash:[boundedCommand]}));return true})()");
+    await webviewUntil(web,"(()=>{const pre=document.querySelector('.cmdrun pre');return pre.textContent.endsWith('resumed patch')&&pre.scrollHeight-pre.clientHeight-pre.scrollTop<=1})()");
+    await context.pageSnapshot('bang-resumed-tail'+appearance,'testKoaWebviewBangTail()','.cmdrun',{top:4,left:4,bottom:4,right:4});
+    await webviewJS(web,"(()=>{window.koaFollowEnabled=false;document.querySelector('.cmdrun>.line').click();return true})()");
+    await webviewUntil(web,"!document.querySelector('.cmdrun').classList.contains('open')&&document.querySelector('.cmdrun .count').textContent==='· 32 lines'");
+    await context.pageSnapshot('bang-folded-count'+appearance,'testKoaWebviewBangTail()','.cmdrun',{top:4,left:4,bottom:4,right:4});
+  }
+}
+async function testKoaWebviewEndingRow() {
+  const web = await scrollPage('dots', 'EndingRow', '', true);
+  await web.emulateMedia({ reducedMotion: 'reduce' });
+  for (const appearance of ['light','dark'] as const) {
+    await setTheme(appearance);
+    for (const kind of ['prose','run']) for (const mode of ['idle','working','abort']) {
+      const block = kind === 'prose' ? {type:'text',text:'The final response.'} : {type:'thinking',text:'Checking the result',started:1700000000000,ended:1700000002000};
+      await webviewJS(web, '(()=>{' + followHelpers + `push(view(root,[root],{working:${mode === 'working'},since:1700000000000}));push({type:'reset',epoch:'ending-${kind}-${mode}',more:false,items:[{seq:0,at:0,revision:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{type:'text',text:${JSON.stringify('Earlier response.\n\n'.repeat(30))}}]},{seq:1,at:1,revision:0,kind:'assistant',final:true,stop:'${mode === 'abort' ? 'aborted' : 'stop'}',error:'',blocks:[${JSON.stringify(block)}]}]});return true})()`);
+      await webviewUntil(web, `(()=>{const content=document.querySelector(${JSON.stringify(kind === 'prose' ? '#items>[data-seq="1"] .prose p' : '#items>[data-seq="1"] .run>.line')}),scroll=document.querySelector('#scroll'),slot=document.querySelector('#tail-slot'),dock=document.querySelector('#dock');if(!content||document.querySelector('#presentation'))return false;const bounds=content.getBoundingClientRect(),ending=slot.getBoundingClientRect();return !slot.hidden&&document.querySelectorAll('.dots').length===${mode === 'working' ? 1 : 0}&&bounds.height>0&&bounds.top>=0&&bounds.bottom<=dock.getBoundingClientRect().top&&ending.top>=bounds.bottom&&scroll.scrollHeight-scroll.clientHeight-scroll.scrollTop<=1})()`);
+      await webviewJS(web,"new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))");
+      equal(await webviewJS(web,"(()=>{const row=document.querySelector('#items>[data-seq=\"1\"]'),bounds=row.getBoundingClientRect();return bounds.height>0&&bounds.top<document.querySelector('#dock').getBoundingClientRect().top&&bounds.bottom>0})()"),true,'A committed ending capture contains a visible final row');
+      await context.pageSnapshot(`ending-${kind}-${mode}${appearance}`, 'testKoaWebviewEndingRow()');
+    }
+  }
+}
 async function testKoaWebviewRunStepsTransitions() {
-        const web = await scrollPage( "runsteps", "testKoaWebviewRunStepsTransitions");
+        const web = await scrollPage( "runsteps", "testKoaWebviewRunStepsTransitions", '', true);
         await web.emulateMedia({ reducedMotion: "reduce" });
         await webviewJS(web, "(()=>{const style=document.createElement('style');style.textContent='.dots i,.grow{animation:none!important}';document.head.append(style);return true})()")
         async function advance(condition: string) {
@@ -848,10 +954,11 @@ async function testKoaWebviewRunStepsTransitions() {
             await koaComponentSnapshot(name, selector, { top: 4, left: 4, bottom: 4, right: 4 }, "testKoaWebviewRunStepsTransitions()")
         }
         await advance("!!document.querySelector('.run.working')")
-        await webviewJS(web, "(()=>{window.firstRun=document.querySelector('.run');window.firstLine=window.firstRun.querySelector('.line');window.bareHeight=window.firstLine.getBoundingClientRect().height;return true})()")
+        await webviewJS(web, "(()=>{window.firstRun=document.querySelector('.run');window.endingSlot=document.querySelector('#tail-slot');return true})()")
         await advance("document.querySelectorAll('.step').length===6&&document.querySelectorAll('.dots').length===3")
-        const adopted = await webviewJS(web, "document.querySelector('.run')===window.firstRun&&window.firstRun.querySelector('.line')===window.firstLine&&window.firstLine.getBoundingClientRect().height===window.bareHeight")
-        equal(adopted, true, "Bare and adopted rows have the same node, line and height")
+        const adopted = await webviewJS(web, "document.querySelector('.run')!==window.firstRun&&document.querySelector('#tail-slot')===window.endingSlot&&!window.endingSlot.hidden")
+        equal(adopted, true, "A run has a new node above the retained ending slot")
+        await webviewJS(web, "window.firstRun=document.querySelector('#items .run')")
         await capture("mixed-folded")
 
         await webviewJS(web, "(()=>{document.querySelector('.run>.line').click();document.querySelectorAll('.agent-step>.line,.job-step>.line').forEach(line=>line.click());return true})()")
@@ -871,8 +978,8 @@ async function testKoaWebviewRunStepsTransitions() {
         equal(growth, true, "Text adds a bare row without removing the preceding run")
         await webviewJS(web, "(()=>{window.nextBare=document.querySelector('.run.working');window.nextHeight=document.querySelector('#items').getBoundingClientRect().height;return true})()")
         await advance("document.querySelectorAll('.step').length===10&&!document.querySelector('.run.working')")
-        const next = await webviewJS(web, "[...document.querySelectorAll('.run')].at(-1)===window.nextBare&&document.querySelector('#items').getBoundingClientRect().height>=window.nextHeight")
-        equal(next, true, "The next run adopts the bare row without a shrink")
+        const next = await webviewJS(web, "[...document.querySelectorAll('.run')].at(-1)!==window.nextBare&&document.querySelector('#items').getBoundingClientRect().height>=window.nextHeight")
+        equal(next, true, "The next run is inserted above the ending row without a shrink")
         await advance("!document.querySelector('.dots')&&document.querySelector('#items').textContent.includes('aborted')")
         await capture("aborted")
         await advance("document.querySelectorAll('.run .names .err .who').length===2")
@@ -881,7 +988,7 @@ async function testKoaWebviewRunStepsTransitions() {
     }
 async function testKoaWebviewViewSwitchAtomic() {
         const web = await scrollPage('views', 'ViewSwitchAtomic')
-        await webviewJS(web, `(()=>{const s=document.querySelector('#scroll');s.dispatchEvent(new WheelEvent('wheel',{deltaY:-100,bubbles:true}));s.scrollTop=1000;s.dispatchEvent(new Event('scroll'));return true})()`)
+        await webviewJS(web, `(()=>{window.koaFollowEnabled=false;const s=document.querySelector('#scroll');s.dispatchEvent(new WheelEvent('wheel',{deltaY:-100,bubbles:true}));s.scrollTop=1000;s.dispatchEvent(new Event('scroll'));return true})()`)
         await webviewJS(web, `new Promise((resolve,reject)=>{let previous,stable=0;const end=performance.now()+5000;function sample(){const s=document.querySelector('#scroll'),rows=[...document.querySelectorAll('#items>[data-seq]')];const row=rows.find(row=>row.getBoundingClientRect().bottom>0);const current=JSON.stringify([s.scrollTop,row?.dataset.seq,row?.getBoundingClientRect().top]);stable=current===previous?stable+1:0;previous=current;if(stable===4){window.atomicAnchor={row:row.dataset.seq,top:row.getBoundingClientRect().top};resolve()}else if(performance.now()>end)reject(Error('Reader anchor did not settle'));else requestAnimationFrame(sample)}requestAnimationFrame(sample)})`)
         await web.locator('#bar .back').click()
         await webviewUntil(web, "!document.querySelector('#presentation')&&document.querySelector('#bar').hidden&&document.querySelector('#items').textContent.includes('Review the sidebar')&&" + koaIdle)
@@ -1111,13 +1218,14 @@ async function koaWebview(key: string, width: number, height: number, scenario: 
             initialScript = measurementClock + "window.koaPendingFrames=new Set();window.requestAnimationFrame=callback=>{const id=setTimeout(()=>{koaPendingFrames.delete(id);callback(performance.now())},0);koaPendingFrames.add(id);return id};window.cancelAnimationFrame=id=>{koaPendingFrames.delete(id);clearTimeout(id)};"
         }
         if (scenario == "reveal") {
-            initialScript = measurementClock + "Object.defineProperty(document,'hidden',{value:false});window.koaClock=0;window.koaFrames=new Map();window.koaFrame=0;performance.now=()=>koaClock;window.requestAnimationFrame=callback=>{koaFrames.set(++koaFrame,callback);return koaFrame};window.cancelAnimationFrame=id=>koaFrames.delete(id);const nativeTimeout=window.setTimeout,nativeClear=window.clearTimeout;window.koaTimers=new Map();window.setTimeout=(callback,ms,...args)=>{if(!(ms>=1000&&ms<=1500))return nativeTimeout(callback,ms,...args);const id=-(++koaFrame);koaTimers.set(id,{at:koaClock+ms,callback});return id};window.clearTimeout=id=>{koaTimers.delete(id);nativeClear(id)};window.koaStep=ms=>{koaClock+=ms;for(const [id,timer] of [...koaTimers])if(timer.at<=koaClock){koaTimers.delete(id);timer.callback()}for(const [id,callback] of [...koaFrames]){koaFrames.delete(id);callback(koaClock)}};"
+            initialScript = measurementClock + "window.koaFollowEnabled=true;Object.defineProperty(document,'hidden',{value:false});window.koaClock=0;window.koaFrames=new Map();window.koaFrame=0;performance.now=()=>koaClock;window.requestAnimationFrame=callback=>{koaFrames.set(++koaFrame,callback);return koaFrame};window.cancelAnimationFrame=id=>koaFrames.delete(id);const nativeTimeout=window.setTimeout,nativeClear=window.clearTimeout;window.koaTimers=new Map();window.setTimeout=(callback,ms,...args)=>{if(!(ms>=1000&&ms<=1500))return nativeTimeout(callback,ms,...args);const id=-(++koaFrame);koaTimers.set(id,{at:koaClock+ms,callback});return id};window.clearTimeout=id=>{koaTimers.delete(id);nativeClear(id)};window.koaStep=ms=>{koaClock+=ms;for(const [id,timer] of [...koaTimers])if(timer.at<=koaClock){koaTimers.delete(id);timer.callback()}for(const [id,callback] of [...koaFrames]){koaFrames.delete(id);callback(koaClock)}};"
         }
         if (phases.includes("foot-responsive") || phases.includes("foot-editing") || phases.includes("narrow-foot-editing")) {
             initialScript = initialScript + "const FootSource=EventSource;window.EventSource=class extends FootSource{constructor(...args){super(...args);window.footSource=this;this.addEventListener('message',event=>{const record=JSON.parse(event.data);if(record.type==='state')window.footState=record})}};"
         }
         if (key === 'TopicsGeometry') initialScript += "const TopicSource=EventSource;window.EventSource=class extends TopicSource{constructor(...args){super(...args);window.topicSource=this}};"
         if (key === 'TopicsFilterRestored') initialScript += "history.replaceState({scroll:[],drafts:[],filters:[['00000000-0000-7000-8000-000000000001:00000000-0000-7000-8000-000000000001','sidebar']],composerTopics:[]},'');"
+        initialScript += followingChecks + followingTick;
         let initial = initialScript
         initial = "Element.prototype.animate=function(){return {}};" + paneFocus + (scenario == "latest" || scenario == "jobs" ? "" : hideLatest) + initial
 
@@ -1217,8 +1325,9 @@ echo release
             const history = await webviewJS(web, "document.querySelector('.assistant pre').classList.contains('folded')&&!document.querySelector('.grow,.dots')")
             equal(history, true, "A history fence is folded and nothing is revealed")
             await capture("reveal-fold")
-            const opened = await webviewJS(web, "(()=>{const pre=document.querySelector('.assistant pre'),before=pre.getBoundingClientRect().height;document.querySelector('.more').click();return !document.querySelector('.more')&&!pre.classList.contains('folded')&&pre.getBoundingClientRect().height>before})()")
+            const opened = await webviewJS(web, "(()=>{window.koaFollowEnabled=false;const pre=document.querySelector('.assistant pre'),before=pre.getBoundingClientRect().height;document.querySelector('.more').click();return !document.querySelector('.more')&&!pre.classList.contains('folded')&&pre.getBoundingClientRect().height>before})()")
             equal(opened, true, "A click expands the fence in place")
+            await webviewJS(web,"(()=>{const scroll=document.querySelector('#scroll');scroll.dispatchEvent(new WheelEvent('wheel',{deltaY:1,bubbles:true}));scroll.scrollTop=scroll.scrollHeight;scroll.dispatchEvent(new Event('scroll'));koaStep(0);window.koaFollowEnabled=true;return true})()");
             await advance(); await advance()
             await webviewJS(web, "(()=>{koaStep(0);return true})()")
             await webviewUntil(web, "document.querySelector('.dots')&&document.querySelectorAll('.assistant')[1]?.querySelector('.reveal pre')")
@@ -1278,13 +1387,11 @@ echo release
                 await resize(557)
                 await advance()
                 await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===5")
-                await webviewJS(web, "(()=>{const lines=document.querySelectorAll('.cmdrun>.line');lines[0].click();lines[2].click();lines[4].click();return true})()")
                 await capture(prefix + "bang-runs")
                 await resize(327)
                 for (const [name, command] of [["done", "make checks DRY=1"], ["error", "make verify STAGES=unit"], ["cancelled", "make e2e"], ["truncated", "find . -type f"], ["quiet", "git status --short"]]) {
                     await advance()
                     await webviewUntil(web, `document.querySelectorAll('.cmdrun').length===1&&document.querySelector('.cmdrun .cmd')?.textContent===${JSON.stringify(command)}`)
-                    if (name != "quiet") { await webviewJS(web, "(()=>{document.querySelector('.cmdrun>.line').click();return true})()") }
                     await capture(prefix + "bang-" + name)
                 }
                 await advance()
@@ -1327,11 +1434,11 @@ echo release
             await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');return scroll.scrollTop===0&&scroll.scrollHeight-scroll.clientHeight>1})()")
             await advance()
             await webviewUntil(web, "document.querySelectorAll('.assistant').length===9")
-            await webviewUntil(web, "document.querySelector('.newmsgs')!==null")
+            await webviewUntil(web, "document.querySelector('.unread-first')!==null")
             await webviewUntil(web, "document.querySelector('#latest').textContent==='↓ 3 new'")
             latestText = "↓ 3 new"
             await capture(prefix + "new")
-            await webviewJS(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=Math.round(document.querySelector('.newmsgs').offsetTop-300);scroll.dispatchEvent(new Event('scroll'));return true})()")
+            await webviewJS(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=Math.round(document.querySelector('.unread-first').offsetTop-300);scroll.dispatchEvent(new Event('scroll'));return true})()")
             await webviewJS(web, "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))")
             await webviewUntil(web, "document.querySelector('#latest').textContent==='↓ 1 new'")
             latestText = "↓ 1 new"
@@ -1988,6 +2095,11 @@ const entries: Record<string, () => Promise<void>> = {
   "ViewSwitchAtomic": testKoaWebviewViewSwitchAtomic,
   "ReloadKeepsView": testKoaWebviewReloadKeepsView,
   "Dots": testKoaWebviewDots,
+  "EndingRow": testKoaWebviewEndingRow,
+  "BangTail": testKoaWebviewBangTail,
+  "UnreadGap": testKoaWebviewUnreadGap,
+  "ThinkingCaret": testKoaWebviewThinkingCaret,
+  "RevealTail": testKoaWebviewRevealTail,
   "RunStepsTransitions": testKoaWebviewRunStepsTransitions,
   "ScrollbarJumpMountsHistory": testKoaWebviewScrollbarJumpMountsHistory,
   "ReaderImageRemount": testKoaWebviewReaderImageRemount,

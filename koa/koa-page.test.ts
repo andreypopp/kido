@@ -7,6 +7,7 @@ import remend from "remend";
 
 import { assemblePage, readPage } from "./koa-assemble.ts";
 import { markdown, type Mark } from "./page/markdown.ts";
+import { followMonitor, type FollowSample } from './testdata/follow-monitor.ts';
 import { markdownLine } from "./markdown-line.ts";
 import { revealHeight, type Unit } from "./page/reveal.ts";
 import { estimateExtent, windowOf } from "./page/extent.ts";
@@ -85,7 +86,7 @@ const full = (source: string, final = false) => {
   parser.use({ renderer: { link(token) { return /^(https?:\/\/[^/\s]+|mailto:.+)/.test(token.href) ? false : parser.Parser.parseInline(token.tokens, parser.defaults); } } });
   const tokens = parser.lexer(source);
   const tail = tokens.at(-1);
-  if (!final && tail) tokens.splice(-1, 1, ...parser.lexer(remend(tail.raw)));
+  if (!final && tail) tokens.splice(-1, 1, ...parser.lexer(remend(tail.raw, { linkMode: 'text-only' })));
   return parser.parser(tokens);
 };
 
@@ -222,9 +223,42 @@ test('revealHeight shows the last complete unit above the clip once the hidden h
   assert.equal(revealHeight([unit(18), unit(50), unit(53)], 0, 40, false), 53, 'unequal heights');
   assert.equal(revealHeight([unit(20), unit(40)], 0, 30, false), 40, 'complete trailing code lines show whole');
   assert.equal(revealHeight([unit(20), unit(40, false)], 60, 1000, false), 20, 'a widened paragraph snaps the clip down to its last whole line');
-  assert.equal(revealHeight([unit(20), unit(40), unit(60, false)], 45, 1000, false), 40, 'a patch that rewraps snaps the clip to a line boundary');
+  assert.equal(revealHeight([unit(20), unit(40), unit(60), unit(80, false)], 45, 1000, false), 60, 'a patch that rewraps rounds up to a complete line boundary');
   assert.equal(revealHeight([unit(20), unit(40), unit(60, false)], 40.2, 1000, false), undefined, 'a clip on a boundary stays');
   assert.equal(revealHeight([unit(20, false)], 20, 1000, false), 0, 'no whole line left');
+});
+
+test('the per-frame following monitor detects downward rows and bottom gaps but rebases on a landing', () => {
+  const sample: FollowSample = {scope:'root',viewport:300,width:700,dock:220,following:true,covered:false,max:900,rows:[{key:'1:0',top:30,bottom:100}],bottomSpace:22};
+  const down=followMonitor();down(sample);
+  assert.throws(()=>down({...sample,rows:[{key:'1:0',top:32,bottom:102}]}),/row 1:0 moved down/);
+  const gap=followMonitor();gap(sample);
+  assert.throws(()=>gap({...sample,bottomSpace:25}),/bottom space changed/);
+  const landing=followMonitor();landing(sample);landing({...sample,scope:'other',rows:[{key:'1:0',top:80,bottom:150}],bottomSpace:30});
+});
+
+test('streaming links render their formatted label as text before the destination exists', () => {
+  assert.match(markdown()('[**hello').map(block => block.html).join(''), /<strong>hello<\/strong>/);
+});
+
+test('a streaming table has no reveal frontier before a non-table line follows', () => {
+  const tail = markdown()('| a | b |\n| - | - |\n| c | d |\n')[0].tail;
+  assert.deepEqual(tail && Reflect.get(tail, 'frontier'), { kind: 'closed' });
+});
+
+test('the reveal frontier holds a candidate table header and counts only decided fence body lines', () => {
+  const render = markdown();
+  assert.deepEqual(render('| a | b |')[0].tail?.frontier, { kind: 'closed' });
+  assert.deepEqual(render('| a | b |\nnot a delimiter')[0].tail?.frontier, { kind: 'visual' });
+  for (const [source, count] of [['```\nalpha',0],['```\nalpha\n',1],['```\nalpha\n``',1],['```\nalpha\n```',1],['```\nalpha\n```x',1],['```\nalpha\n```x\n',2]] as const) {
+    assert.deepEqual(markdown()(source)[0].tail?.frontier, {kind:'lines',count}, source);
+  }
+  assert.equal(markdown()('| a | b |\n| - | - |\n| c | d |\n\nAfter')[0].tail, undefined);
+});
+
+test('a revised reveal rounds up to a complete boundary without exposing an unfinished unit', () => {
+  assert.equal(revealHeight([{ bottom: 20, complete: true }, { bottom: 50, complete: true }, { bottom: 70, complete: false }], 40, 1000, false), 50);
+  assert.equal(revealHeight([{ bottom: 20, complete: true }, { bottom: 70, complete: false }], 40, 1000, false), 20);
 });
 
 test('an append re-lexes only the tail of a long document', () => {
