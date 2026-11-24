@@ -959,7 +959,9 @@ the command in the terminal font .92em in `--fg` (`--err` when the
 exit is not 0, as a failed tool's name), and at the right in the
 time's place, `.8em` terminal faint: "exit N" in `--err` when N is not
 0, "cancelled" for a cancelled run, then the duration. The output is
-folded by default and opens on a click of the line: a step's guide
+folded by default (superseded 2026-11-24: open by default, 12 lines
+at most, one shape running and finished; "The tail only grows",
+D9) and opens on a click of the line: a step's guide
 (4pt margin, 1pt `--hair`, 13pt padding) and a `pre` as a step's
 output (.88em, `--well`, `--hair` edge, max 260pt, own scroll), in
 `--fg`. While it runs, the spinner takes the `!`'s slot, the output
@@ -1625,7 +1627,10 @@ Open WebUI): the scroll has two states and one animation.
   the divider stands above the first new message, and the rows
   between it and the previous content (a run, a job row) are above
   the rule.
-- **The divider.** One rule across the transcript's text width: a
+- **The divider.** (Its box is superseded 2026-11-24: it takes no
+  height and is drawn in the gap above the first unread message;
+  "The tail only grows", D7, below. The old box, for the record:)
+  One rule across the transcript's text width: a
   1px line in the accent at 35%, the label "new messages" centred in
   a 6pt gap, prose .8em 500 in the accent, 14pt above and below. It
   appears above the first assistant message that appends while the
@@ -2394,7 +2399,11 @@ these:
   Reply text appends above it (the text block is inserted before the
   row), so the row stays last and the text grows over it; the row
   never moves above the text, and the caret carries no second mark.
-- **Bare row → run widget is a change of the same node.** When a
+- **Bare row → run widget** (superseded 2026-11-24 by "The tail
+  only grows", D2: the ending row is always there, and a run is a
+  new row inserted above it; the dots move from the ending row to
+  the run's line in that frame. The old rule, for the record:) is a
+  change of the same node. When a
   tool call or a thinking block starts while the bare row shows, the
   row becomes that run's own line: the same element gains the
   chevron and the name, the mark moves from the name's place to
@@ -2412,12 +2421,105 @@ these:
 - **Nothing else moves the row.** A step that finishes, a parallel
   step, a message, a job event: the mark changes place inside the
   run, the bare row (if any, under text) stays.
-- **The turn's end** removes the bare row in one frame, with the
+- **The turn's end** (superseded 2026-11-24, D2: the ending row
+  stays, blank; nothing is removed) removes the bare row in one frame, with the
   Auto-scroll rule (following keeps the bottom, so the content moves
   up by one row's height at most, once, when the agent is done); an
   abort turns a running step into the "aborted" row and removes the
   bare row in the same frame. These are the only removals.
 - **Reduce Motion**: the same frames, static dots.
+
+## The tail only grows: the ending row, the divider in the gap, the open `!` row (2026-11-24, spec for plans/koa-scroll.md unit 1)
+
+The user's invariants (plans/koa-scroll.md, "The invariants"): while
+following nothing moves against the output and no blank space
+appears at the bottom; a fresh render equals the live view. Three
+visual rules follow; every size at the 13px base, every length in
+CSS px.
+
+- **D2, the ending row.** The transcript view (not the job view)
+  always ends with one ending row, under a message and under a run
+  alike; it is never hidden and never removed. Its box is a run
+  line's: height `calc(1.5em + 2px)` at the run's .95em (20.5px),
+  the run line's left padding, margin-bottom 14px before the dock's
+  padding; the gap above it is the preceding row's rhythm margin:
+  2px after a run (the ending row counts as a line of that group),
+  14px after prose, a user message, a notice or a job line. So the
+  tail is 34.5px of reserved space under prose and 36.5px under a
+  run, in every state. Content: idle, blank. While the turn runs and
+  the transcript ends in prose, a user message, a notice or a job
+  line: the working dots (the 15×8 box, `--faint`, the 1.1s bounce)
+  at the row's left, vertically centred, nothing else. While the
+  turn runs and the transcript ends in a run: the ending row is
+  blank, and the dots are on the run as today (the running step's
+  line when the run is open, the summary when it is folded). A run
+  that starts is a new row inserted above the ending row, and the
+  dots move from the ending row to the run's line in that frame
+  (growth by one run row; the ending row itself does not move
+  relative to the dock). Streaming text after a run: the text block
+  is inserted above the ending row and the dots return to it in the
+  same frame. The turn's end and an abort: the dots go, the row
+  stays blank; nothing is removed. Reduce Motion: static dots, the
+  same box. This supersedes "The bare dots row never leaves
+  mid-turn" where that says the bare row becomes the run's node or
+  is removed at the turn's end.
+- **D7, the divider in the gap.** The "new messages" divider takes
+  no height: the first unread assistant message's row gets a class
+  (`unread-first`), and the divider is its `::before`, absolutely
+  positioned in the 14px rhythm gap above the row: a 1px line across
+  the transcript's text width (left 0 to right 0 of the row's box)
+  at `top: -7.5px` (the middle of the gap, rounded to the pixel by
+  the backing scale), the accent (`--ko-color-4`) at 35%, light and
+  dark alike; on the line, centred, the label "new messages" in the
+  accent, prose .8em 500 at line-height 1 (11px high), padding 0
+  6px, the page background (`--ko-bg`) behind it so it breaks the
+  line, `pointer-events: none`. The row's content is untouched and
+  the row's measured height is the same with or without the
+  divider, so no scroll decision depends on it. The gap is always
+  14px: the divider sits only above an assistant message, whose gap
+  above is the group gap (a notice or a job line between it and the
+  previous content stays above the rule, as today); a 2px gap does
+  not occur. The message's header row (its time, its chip) sits
+  under the line as any first line. Clearing: the class goes with
+  the state (the "Auto-scroll" rules); the divider fades to opacity
+  0 over 120ms ease-out (the page's fade duration), then the class
+  is removed; its disappearance changes no height. Reduce Motion:
+  removed at once, no fade. The "↓ N new" pill is unchanged.
+- **D9, the open `!` row.** A `!` command row has one shape, running
+  and finished, open by default; the row of the finished command
+  takes the live card's node in place. The header line (the run
+  line's geometry, .95em/1.5, `padding: 1px 0`): the `!` in its 9px
+  slot (`--ko-color-4` 600; faint for a quiet `!`), the command in
+  the terminal font at .92em in `--ko-fg`, ellipsized; while it runs
+  the working dots follow the command (margin-left 6px, as after a
+  running tool's name) and the right end shows the elapsed time in
+  the time's place (.8em terminal, faint, tabular, "12s", once a
+  second); finished: no dots, the right end shows "exit N" in
+  `--ko-color-1` when N is not 0, "cancelled" in the faint colour for
+  a cancel, then the duration; exit 0 shows the duration alone. The
+  command turns `--ko-color-1` when the exit is not 0, as today. The
+  output box under the line, as today in geometry (margin 3px 0 0
+  4px, a 1px `--hair` guide at the left, padding-left 13px; the
+  `pre` margin 3px 12px 4px 0, the terminal font at .88em, `--muted`
+  while running and `--ko-fg` when finished): its height grows with
+  the output to at most 12 lines of that font (12 × 1.5 × .88em,
+  about 206px; the old bound was 260px) and then scrolls inside
+  (`overflow: auto`, the page's thin scroller). While it runs the box
+  shows the tail: each output patch scrolls the box to its bottom,
+  unless the user has scrolled the box up, which holds the box's
+  position until the next patch arrives after the user returns to
+  its bottom (the box's own two states, the transcript's rule in
+  small). Finished: the box stays where it is; a fresh render of a
+  finished row shows the open box scrolled to its bottom. The box's
+  height never decreases while it runs (growth only; a finished
+  output shorter than the live one is accepted as C1). The truncated
+  note ("… full output: <path>") stays as the `.ft` line under the
+  box. The fold control: the header line is the click target
+  (`cursor: pointer`, the whole line), as today; folded, the command
+  is followed by the output's line count in the faint terminal
+  .8em ("· 42 lines"), so the fold is visible; a fold is the user's
+  and is forgotten at a reset (C4). Keys: Escape cancels a running
+  command, as today.
 
 ## Agent messages and jobs are steps of the run (user, 2026-11-20, spec; steps.html section 2)
 
