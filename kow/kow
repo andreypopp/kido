@@ -3513,8 +3513,8 @@ WORKSPACE_FILES = {
 CHECKOUT = Path(__file__).resolve().parent.parent
 KO_VERSION = '0.7.2'
 KO_SHA256 = '51ca0c348ae76fdaa8621f9331a839a370ff3fe7dc257a8897ecb75c97a554ae'
-KOA_VERSION = '0.3.3'
-KOA_SHA256 = '74c26720ade1effa38ed134abe506f3e534ed01113098935e129014cd0130513'
+KOA_VERSION = '0.3.5'
+KOA_SHA256 = '1aee1aeb26e99aaf47fc425d9e726e00a5892652405e9991d044848b4bca469d'
 REPOSITORY = 'https://api.github.com/repos/andreypopp/kido'
 
 
