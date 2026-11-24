@@ -14,7 +14,7 @@ function requireFalse(value: boolean, message = ""): void { require(!value, mess
 function requireLess(a: number, b: number, message = ""): void { require(a < b, message); }
 function requireLessEqual(a: number, b: number, message = ""): void { require(a <= b, message); }
 function requireGreaterEqual(a: number, b: number, message = ""): void { require(a >= b, message); }
-export async function run(context: Context, browser: Browser): Promise<void> {
+export async function run(context: Context, browser: Browser, shared?: Page): Promise<void> {
 const fixture = requireValue(fixtures.find(value => value.name === context.fixture));
 const webviewJS = js, webviewUntil = context.until.bind(context), koaMeasured = context.measured.bind(context), setTheme = context.setTheme.bind(context), replayRoot = context.replayRoot.bind(context);
 async function advanceReplay(web: Page): Promise<void> {
@@ -222,6 +222,12 @@ async function takeKoaSnapshot(name: string, appearance: string, scenario: Scena
 const followingChecks = `window.koaFollowCheck=(${followMonitor.toString()})();window.koaFollowSample=()=>{const scroll=document.querySelector('#scroll'),slot=document.querySelector('#tail-slot'),dock=document.querySelector('#dock');if(!scroll||!slot||!dock)return;const bounds=dock.getBoundingClientRect(),rows=[...document.querySelectorAll('#items>[data-seq]')].flatMap(root=>[...root.querySelectorAll('.msg.prose,.run,.cmdrun,.nrow,.user')].map((row,index)=>{const rect=row.getBoundingClientRect();return {key:root.dataset.seq+':'+index,top:rect.top,bottom:rect.bottom}}));const reveals=document.querySelectorAll('.reveal').length,exemption=window.koaFollowExemption??(window.koaPriorReveals>reveals?'completion':undefined);window.koaFollowExemption=undefined;window.koaPriorReveals=reveals;koaFollowCheck({scope:document.body.dataset.sessionId+':'+document.querySelector('#topics .selected')?.textContent+':'+document.querySelector('#bar')?.textContent,viewport:scroll.clientHeight,width:scroll.clientWidth,dock:bounds.top,following:window.koaFollowEnabled===true,covered:!!document.querySelector('#presentation')||slot.hidden,max:scroll.scrollHeight-scroll.clientHeight,rows,bottomSpace:bounds.top-slot.getBoundingClientRect().bottom,exemption})};document.addEventListener('click',event=>{if(event.target.closest('.line,button.more'))window.koaFollowExemption='fold'},true);`;
 const followingTick = "window.koaTickRequests=0;const followRequest=requestAnimationFrame;window.requestAnimationFrame=callback=>{if(callback.name==='tick')koaTickRequests++;return followRequest(time=>{callback(time);if(callback.name==='tick')koaFollowSample()})};";
 async function scrollPage(module: string, key: string, condition = "", follow = false): Promise<Page> {
+  if (shared && module === 'dots') {
+    context.browser = shared;
+    await setTheme('light');
+    await webviewJS(shared, '(()=>{' + followHelpers + "window.koaFocused=true;window.dispatchEvent(new Event('focus'));window.koaFollowEnabled=true;push(view(root,[root]));push({type:'reset',epoch:'shared-'+Math.random(),more:false,items:[]});window.koaFollowCheck=(" + followMonitor.toString() + ")();return true})()");
+    return shared;
+  }
   const initial = paneFocus + `window.koaFollowEnabled=${follow};` + "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[1700000012000]))}static now(){return 1700000012000}};" + (['ExplicitRowExtents', 'ViewSwitchAtomic'].includes(key) ? '' : 'window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;') + "const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};";
   const web = await context.start(browser, module, key, replayRoot(), { width: 680, height: 557 }, [initial, followingChecks + followingTick, hideLatest]);
   await webviewUntil(web, `window.composer&&${condition}${koaIdle}&&document.querySelector('#items').childElementCount>0`);
@@ -287,8 +293,8 @@ async function assertCaptureWidth(web: Page, name: string, scenario: Scenario) {
         case "completion": case "bang":
             const popup = await webviewJS(web, "document.querySelector('.koa-complete')!==null")
             if (popup == true) {
-                const fits = await webviewJS(web, "(()=>{const popup=document.querySelector('.koa-complete').getBoundingClientRect(),field=document.querySelector('#field').getBoundingClientRect();return popup.top>=0&&popup.bottom<=field.top-5&&popup.left>=field.left-.5&&popup.right<=field.right+.5})()")
-                equal(fits, true, "Completion fits the current viewport and field")
+                const condition = "(()=>{const popup=document.querySelector('.koa-complete').getBoundingClientRect(),field=document.querySelector('#field').getBoundingClientRect();return popup.top>=0&&popup.bottom<=field.top-5&&popup.left>=field.left-.5&&popup.right<=field.right+.5})()";
+                await webviewUntil(web, condition);
                 if (key == "bang-tab-cap") {
                     const aboveDock = await webviewJS(web, "(()=>{const popup=document.querySelector('.koa-complete').getBoundingClientRect(),dock=document.querySelector('#dock').getBoundingClientRect(),user=document.querySelector('.user').getBoundingClientRect();return popup.top>=user.bottom&&popup.bottom<=dock.top})()")
                     equal(aboveDock, true, "Shell completion stays between the user and dock at the current width")
@@ -346,7 +352,7 @@ async function prepareCapture(name: string, scenario: Scenario, measured: boolea
             }
             await webviewUntil(web, ready)
         }
-        await webviewJS(web, `(async()=>{${scenario == "reveal" ? "" : "for(let i=0;i<100&&document.querySelector('#items .hold');i++)await new Promise(resolve=>setTimeout(resolve,20));if(document.querySelector('#items .hold'))throw Error('hold deadline');document.getAnimations().filter(animation=>animation.animationName==='grow'&&animation.effect?.target?.closest('#items')).forEach(animation=>animation.finish());document.querySelectorAll('#items .grow').forEach(block=>block.classList.remove('grow'));"}await new Promise(resolve=>setTimeout(resolve,50));return true})()`)
+        await webviewJS(web, `(async()=>{${scenario == "reveal" ? "" : "for(let i=0;i<100&&document.querySelector('#items .hold');i++)await new Promise(resolve=>setTimeout(resolve,20));if(document.querySelector('#items .hold'))throw Error('hold deadline');document.getAnimations().filter(animation=>animation.animationName==='grow'&&animation.effect?.target?.closest('#items')).forEach(animation=>animation.finish());document.querySelectorAll('#items .grow').forEach(block=>block.classList.remove('grow'));"}await document.fonts.ready;await new Promise(resolve=>koaPaintFrame(()=>koaPaintFrame(resolve)));return true})()`)
         if (scenario == "dialogs") { await webviewUntil(web, "document.querySelector('#tokens').textContent==='88k / 200k'&&document.querySelector('#percent').textContent==='44%'") }
         const ordered = name == "questions-ordered" || name == "narrow-questions-ordered"
         const aboveBottom = scenario == "jobs" && name.includes("service")
@@ -741,9 +747,13 @@ async function assertMessageHeader(web: Page) {
         const result = await webviewJS<number[]>(web, "(()=>{const header=document.querySelector('.assistant .message-header'),body=header?.nextElementSibling;if(!header||!body)throw Error('Missing reply header or body');const gap=(row,block)=>block.getBoundingClientRect().top-row.getBoundingClientRect().bottom,values=[gap(header,body)],message=header.parentElement.cloneNode(true);for(const child of [...message.children])if(!child.classList.contains('message-header'))child.remove();const heading=document.createElement('h2');heading.textContent='Heading';message.append(heading);header.parentElement.after(message);try{const row=message.querySelector('.message-header');values.push(gap(row,heading));const wrapper=document.createElement('div');wrapper.className='reveal';wrapper.style.maxHeight='none';heading.replaceWith(wrapper);wrapper.append(heading);values.push(gap(row,heading));return values}finally{message.remove()}})()")
         require(result.every(gap => Math.abs(gap - 2) < 1), `Reply headers keep a 2px gap above prose and final or streaming headings: ${result}`)
     }
+async function pinComposerCaret(web: Page, visible: boolean) {
+  await webviewJS(web, `document.querySelector('.cm-cursorLayer').style.setProperty('opacity','${visible ? 1 : 0}','important')`);
+  await webviewUntil(web, `getComputedStyle(document.querySelector('.cm-cursorLayer')).opacity==='${visible ? 1 : 0}'`);
+}
 async function testKoaWebviewDots() {
         const web = await scrollPage( "dots", "testKoaWebviewDots", '', true)
-        await webviewJS(web, "(()=>{const style=document.createElement('style');style.textContent='*,*::before,*::after{transition:none!important}.grow{animation:none!important}';document.head.append(style);return true})()")
+        await webviewJS(web, "(()=>{const style=document.createElement('style');style.id='dots-animations';style.textContent='*,*::before,*::after{transition:none!important}.grow{animation:none!important}';document.head.append(style);return true})()")
         async function pinAnimations(phase = 330) {
             await webviewJS(web, `new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Dot animations did not pause')),5000);for(const dot of document.querySelectorAll('.dots i')){for(const property of ['animation','transform','opacity'])dot.style.removeProperty(property);getComputedStyle(dot).animationName}const animations=document.getAnimations();for(const animation of animations){if(animation.animationName==='grow'){animation.finish();continue}const dot=animation.effect.target;animation.pause();animation.currentTime=${phase}-150*[...dot.parentNode.children].indexOf(dot)}Promise.all(animations.map(animation=>animation.ready)).then(()=>{for(const animation of animations){const dot=animation.effect.target;if(!dot.matches('.dots i'))continue;const style=getComputedStyle(dot),transform=style.transform,opacity=style.opacity;dot.style.transform=transform;dot.style.opacity=opacity;dot.style.setProperty('animation','none','important');animation.cancel()}clearTimeout(timer);resolve(true)},error=>{clearTimeout(timer);reject(error)})})`)
         }
@@ -833,6 +843,7 @@ async function testKoaWebviewDots() {
         await webviewJS(web, "(()=>{" + followHelpers + "push({type:'item',item:{kind:'assistant',seq:2,revision:0,at:1700000004000,final:false,blocks:[{type:'text',text:'The run is complete.'}],stop:'',error:''}});return true})()")
         await webviewUntil(web, "!!document.querySelector('.run.working')&&document.querySelector('.run')===window.dotRow")
         await pinAnimations(0)
+        await webviewJS(web, "document.querySelector('#dots-animations').remove()")
     }
 async function testKoaWebviewRevealTail() {
   const web=await scrollPage('dots','RevealTail','',true);
@@ -928,6 +939,7 @@ async function testKoaWebviewEndingRow() {
       await webviewUntil(web, `(()=>{const content=document.querySelector(${JSON.stringify(kind === 'prose' ? '#items>[data-seq="1"] .prose p' : '#items>[data-seq="1"] .run>.line')}),scroll=document.querySelector('#scroll'),slot=document.querySelector('#tail-slot'),dock=document.querySelector('#dock');if(!content||document.querySelector('#presentation'))return false;const bounds=content.getBoundingClientRect(),ending=slot.getBoundingClientRect();return !slot.hidden&&document.querySelectorAll('.dots').length===${mode === 'working' ? 1 : 0}&&bounds.height>0&&bounds.top>=0&&bounds.bottom<=dock.getBoundingClientRect().top&&ending.top>=bounds.bottom&&scroll.scrollHeight-scroll.clientHeight-scroll.scrollTop<=1})()`);
       await webviewJS(web,"new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))");
       equal(await webviewJS(web,"(()=>{const row=document.querySelector('#items>[data-seq=\"1\"]'),bounds=row.getBoundingClientRect();return bounds.height>0&&bounds.top<document.querySelector('#dock').getBoundingClientRect().top&&bounds.bottom>0})()"),true,'A committed ending capture contains a visible final row');
+      await pinComposerCaret(web, kind === 'prose' ? mode !== 'abort' : mode === 'abort');
       await context.pageSnapshot(`ending-${kind}-${mode}${appearance}`, 'testKoaWebviewEndingRow()');
     }
   }
@@ -1214,7 +1226,7 @@ async function koaWebview(key: string, width: number, height: number, scenario: 
         break;
         default: measured = completionCaptures
         }
-        const measurementClock = `const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[${stamp + 12000}]))}static now(){return ${stamp + 12000}}};`
+        const measurementClock = `window.koaPaintFrame=requestAnimationFrame.bind(window);const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[${stamp + 12000}]))}static now(){return ${stamp + 12000}}};`
         let initialScript = measurementClock
         
         if (measured) {
@@ -1816,6 +1828,7 @@ echo release
                     equal(shadow, true, "The lightbox image has a shadow")
                     await webviewJS(web, "(()=>{const style=document.createElement('style');style.id='capture-lightbox';style.textContent='.lightbox img{box-shadow:none!important}';document.head.append(style);return true})()")
                     await settleKoa(web, measured)
+                    await pinComposerCaret(web, false);
                     await takeKoaSnapshot( "media-lightbox", "-light", scenario)
                     await webviewJS(web, "(()=>{document.querySelector('#capture-lightbox').remove();return true})()")
                     await setTheme("dark")

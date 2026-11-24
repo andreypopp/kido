@@ -29,25 +29,41 @@ function message(error: unknown): string {
   if (error instanceof AggregateError) return `${error.message}: ${error.errors.map(message).join("; ")}`;
   return error instanceof Error ? error.stack ?? error.message : String(error);
 }
+async function finish(context: Context): Promise<void> {
+  try { await context.finish(); }
+  catch (error) {
+    const failure = `${context.fixture} cleanup: ${message(error)}`;
+    failures.push(failure); console.log(`FAIL ${failure}`);
+  }
+}
+let shared: Context | undefined;
 try {
   for (const fixture of fixtures) {
     if (selected.size && !selected.has(fixture.name)) continue;
+    if (!fixture.setup && shared) { const previous = shared; shared = undefined; await finish(previous); }
+    const started = performance.now();
     await new Promise<void>(resolve => process.stdout.write(`FIXTURE ${fixture.name}\n`, () => resolve()));
     const context = new Context(root, fixture.name, selected.get(fixture.name), pixels);
+    const differences = pixels.different + pixels.missing;
+    let failed = false;
     try {
-      await run(context, browser);
+      await run(context, browser, fixture.setup ? shared?.browser : undefined);
       if (context.selection) for (const capture of context.selection) require(context.captured.has(capture), `Unknown capture selection: ${capture}`);
     } catch (error) {
+      failed = true;
       const failure = `${fixture.name}: ${message(error)}`;
       failures.push(failure); console.log(`FAIL ${failure}`);
     } finally {
-      try { await context.finish(); }
-      catch (error) {
-        const failure = `${fixture.name} cleanup: ${message(error)}`;
-        failures.push(failure); console.log(`FAIL ${failure}`);
-      }
+      failed ||= pixels.different + pixels.missing !== differences;
+      if (fixture.setup && !shared && !failed) shared = context;
+      if (failed && shared) { const previous = shared; shared = undefined; await finish(previous); }
+      if (context !== shared) await finish(context);
+      console.log(`TIME ${fixture.name} ${((performance.now() - started) / 1000).toFixed(3)}s`);
     }
   }
-} finally { await deadline("browser shutdown", 5, browser.close()); }
+} finally {
+  try { if (shared) { const previous = shared; shared = undefined; await finish(previous); } }
+  finally { await deadline("browser shutdown", 5, browser.close()); }
+}
 console.log(`VISUAL pass=${pixels.equal} diff=${pixels.different} missing=${pixels.missing} errors=${failures.length}`);
 if (failures.length || pixels.different || pixels.missing) process.exitCode = 1;

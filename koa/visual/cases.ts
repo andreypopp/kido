@@ -1,13 +1,13 @@
 type Policy = "geometry" | "light" | "dark" | "both";
-export const fixtures: { name: string; captures: Record<string, Policy> }[] = [
+export const fixtures: { name: string; setup?: "dots"; captures: Record<string, Policy> }[] = [
   {"name": "ViewSwitchAtomic", "captures": {}},
   {"name": "ReloadKeepsView", "captures": {}},
-  {"name": "Dots", "captures": {}},
-  {"name": "RevealTail", "captures": {"reveal-landing":"both","reveal-revised":"both","reveal-complete":"both"}},
-  {"name": "ThinkingCaret", "captures": {"caret-list":"both","caret-table":"both","caret-fence":"both"}},
-  {"name": "UnreadGap", "captures": {"unread-assistant":"both","unread-user":"both"}},
-  {"name": "BangTail", "captures": {"bang-bounded":"both","bang-inner-reader":"both","bang-resumed-tail":"both","bang-folded-count":"both"}},
-  {"name": "EndingRow", "captures": {"ending-prose-idle":"both","ending-prose-working":"both","ending-prose-abort":"both","ending-run-idle":"both","ending-run-working":"both","ending-run-abort":"both"}},
+  {"name": "Dots", "setup": "dots", "captures": {}},
+  {"name": "RevealTail", "setup": "dots", "captures": {"reveal-landing":"both","reveal-revised":"both","reveal-complete":"both"}},
+  {"name": "ThinkingCaret", "setup": "dots", "captures": {"caret-list":"both","caret-table":"both","caret-fence":"both"}},
+  {"name": "UnreadGap", "setup": "dots", "captures": {"unread-assistant":"both","unread-user":"both"}},
+  {"name": "BangTail", "setup": "dots", "captures": {"bang-bounded":"both","bang-inner-reader":"both","bang-resumed-tail":"both","bang-folded-count":"both"}},
+  {"name": "EndingRow", "setup": "dots", "captures": {"ending-prose-idle":"both","ending-prose-working":"both","ending-prose-abort":"both","ending-run-idle":"both","ending-run-working":"both","ending-run-abort":"both"}},
   {"name": "RunStepsTransitions", "captures": {}},
   {"name": "ScrollbarJumpMountsHistory", "captures": {}},
   {"name": "ReaderImageRemount", "captures": {}},
