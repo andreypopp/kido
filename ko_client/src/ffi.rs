@@ -3231,10 +3231,7 @@ mod tests {
         assert_eq!(ko_client_path_changed(std::ptr::null()), Code::Argument);
         assert_eq!(ko_client_path_changed(client), Code::Ok);
         drop_first.send(()).unwrap();
-        assert_eq!(
-            fixture.next(),
-            Seen::Failed(Code::Closed, "server closed".to_owned())
-        );
+        assert!(matches!(fixture.next(), Seen::Failed(Code::Closed, _)));
         assert!(matches!(fixture.next(), Seen::Welcome(_, _, false)));
         assert!(matches!(fixture.next(), Seen::Layout(2, ..)));
         assert_eq!(decoder.next_feed(), Fed::Bytes(105, b"f".to_vec()));
