@@ -4,18 +4,18 @@ import { scoped } from './http.ts';
 
 type Snapshot = Extract<PageRecord, { type: 'reset' }>;
 type Buffered = Patch | Extract<PageRecord, { type: 'item' }>;
-type Request = { before: number; topic?: TopicName; patches: Buffered[]; done: Promise<void>; transition: 'history' | 'filter' };
+type Request = { before: number; topic?: TopicName; patches: Buffered[]; done: Promise<void>; transition: 'history' | 'filter'; anchor?: { seq: number; generation: number } };
 export function createTranscriptHistory(deps: {
   epoch(): string; session(): string | undefined; view(): 'root' | 'job' | 'subagent'; filter(): TopicName | undefined; first(): number | undefined;
   viewport(): { scrollHeight: number; clientHeight: number; scrollTop: number };
   has(seq: number): boolean; accept(items: readonly WireItem[]): void; apply(record: Buffered): void;
-  history(): void; filtered(): void; rendered(): Promise<void>; error(error: unknown): void;
+  history(): void; filtered(): void; rendered(): Promise<void>; error(error: unknown): void; changed(): void; failed(generation: number): void;
 }) {
   let before: number | undefined, filled: number | undefined, more = false, request: Request | undefined;
-  let boundary = Infinity, catchup: { patches: Buffered[] } | undefined;
-  function cancel(mode: 'request' | 'scope') { request = undefined; catchup = undefined; if (mode === 'scope') { before = undefined; filled = undefined; } }
+  let boundary = Infinity, catchup: { patches: Buffered[] } | undefined, caught: number | undefined;
+  function cancel(mode: 'request' | 'scope') { request = undefined; catchup = undefined; caught = undefined; deps.changed(); if (mode === 'scope') { before = undefined; filled = undefined; } }
   function reset(snapshot: Snapshot) {
-    request = undefined; catchup = undefined; filled = undefined; more = snapshot.more;
+    request = undefined; catchup = undefined; caught = undefined; filled = undefined; more = snapshot.more;
     boundary = snapshot.more ? snapshot.items.reduce((lowest, item) => Math.min(lowest, item.seq), Infinity) : -Infinity;
     before = snapshot.items.filter(item => !deps.filter() || item.kind !== 'annotations' && item.kind !== 'topics').reduce((lowest, item) => Math.min(lowest, item.seq), Infinity);
   }
@@ -33,7 +33,9 @@ export function createTranscriptHistory(deps: {
     const mine = request = { before: Number.MAX_SAFE_INTEGER, ...(deps.filter() ? { topic: deps.filter() } : {}), patches: [], done: Promise.resolve(), transition };
     mine.done = load(mine); return mine.done;
   }
-  async function catchUp(last: number): Promise<'done' | 'cancelled' | 'failed'> {
+  async function catchUp(last: number): Promise<void> {
+    if (catchup || caught !== undefined && caught <= last || !Number.isFinite(boundary) || boundary <= last) return;
+    caught = last;
     const mine: { patches: Buffered[] } = { patches: [] };
     catchup = mine;
     const epoch = deps.epoch(), session = deps.session();
@@ -43,27 +45,27 @@ export function createTranscriptHistory(deps: {
         const response = await fetch(scoped('/items?before=' + cursor, session));
         if (!response.ok) throw Error('Could not load unread messages');
         const result: Snapshot = await response.json();
-        if (catchup !== mine || result.epoch !== epoch || deps.epoch() !== epoch || deps.session() !== session) return 'cancelled';
+        if (catchup !== mine || result.epoch !== epoch || deps.epoch() !== epoch || deps.session() !== session) return;
         deps.history();
         deps.accept(result.items.filter(item => !deps.has(item.seq)));
         for (const patch of mine.patches.splice(0)) {
           if (patch.type === 'patch' || deps.has(patch.item.seq)) deps.apply(patch);
-          if (catchup !== mine) return 'cancelled';
+          if (catchup !== mine) return;
         }
         const next = result.items.reduce((lowest, item) => Math.min(lowest, item.seq), cursor);
         if (!result.more) { cursor = -Infinity; break; }
         if (next >= cursor) break;
         cursor = next;
       }
-      if (catchup !== mine) return 'cancelled';
+      if (catchup !== mine) return;
       boundary = cursor;
-      return 'done';
+      return;
     } catch (error) {
-      if (catchup !== mine) return 'cancelled';
+      if (catchup !== mine) return;
       deps.error(error);
-      return 'failed';
+      return;
     }
-    finally { if (catchup === mine) catchup = undefined; }
+    finally { if (catchup === mine) { catchup = undefined; deps.changed(); } }
   }
   async function load(mine: Request) {
     try {
@@ -78,12 +80,17 @@ export function createTranscriptHistory(deps: {
           if (request !== mine) return;
         }
         if (mine.transition === 'filter') { mine.transition = 'history'; deps.filtered(); }
+        if (mine.anchor && before >= mine.before && !deps.has(mine.anchor.seq)) deps.failed(mine.anchor.generation);
         await deps.rendered();
       }
-    } catch (error) { deps.error(error); } finally { if (request === mine) { if (mine.transition === 'filter') deps.filtered(); request = undefined; deps.history(); } }
+    } catch (error) { if (request === mine) { if (mine.anchor) deps.failed(mine.anchor.generation); deps.error(error); } } finally { if (request === mine) { if (mine.transition === 'filter') deps.filtered(); request = undefined; deps.history(); deps.changed(); } }
   }
   return { get more() { return more; }, get pending() { return request !== undefined || catchup !== undefined; }, cancel, reset, earlier, reload, fill, catchUp,
-    needsCatchUp(last: number) { return Number.isFinite(boundary) && boundary > last; },
+    anchor(seq: number, generation: number) {
+      void earlier();
+      if (request) request.anchor = { seq, generation };
+      else deps.failed(generation);
+    },
     buffer(record: Buffered) { request?.patches.push(record); catchup?.patches.push(record); },
     outside(seq: number) { return before !== undefined && Number.isFinite(before) && seq < before; },
   };

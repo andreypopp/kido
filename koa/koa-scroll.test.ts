@@ -1,7 +1,25 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { scrollInitial, scrollMemory, scrollStored, scrollUpdate, type State, type ScrollEvent, type Measure, type Row, type ItemId, type Lookup } from './page/scroll.ts';
+import { scrollInitial, scrollMemory, scrollStored, reduce, place, type State, type Row, type ItemId, type Lookup } from './page/scroll.ts';
 
+type Event = import('./page/scroll.ts').ScrollEvent;
+type Placement = import('./page/scroll.ts').Measure;
+type ScrollEvent = Event extends infer E ? E extends import('./page/scroll.ts').Observation ? Omit<E, keyof import('./page/scroll.ts').Observation | 'layout'> : E extends { type: 'item' } ? Omit<E, 'focused'> : E : never;
+type TestEvent = ScrollEvent | { type: 'frame' };
+type Measure = Omit<Placement, 'settled' | 'layout' | 'scrolled'> & Partial<Pick<Placement, 'settled' | 'layout' | 'scrolled'>>;
+function scrollUpdate(state: State, events: readonly TestEvent[], m: Measure) {
+  const layout = events.some(event => event.type === 'layout' || event.type === 'history' || event.type === 'resize');
+  const observations: Event[] = events.filter(event => event.type !== 'frame').map(event => {
+    switch (event.type) {
+      case 'input': case 'focus': case 'visibility': case 'latest': case 'resize': case 'scope': return { ...m, ...event };
+      case 'scroll': return { ...m, ...event, layout };
+      case 'item': return { ...event, focused: m.focused && m.visible };
+      default: return event;
+    }
+  });
+  const reduced = reduce(state, observations);
+  return place(reduced.state, { ...m, settled: m.settled ?? !reduced.state.unread.pendingSend, layout: events.some(event => event.type === 'layout' && event.cause === 'toggle') ? 'toggle' : layout ? 'layout' : 'none', scrolled: reduced.scrolled });
+}
 const scope = { view: 'root', sessionId: 's' };
 const row = (seq: number, top: number, bottom = top + 100): Row => ({ item: { kind: 'message', seq }, top, bottom });
 type FixtureMeasure = Omit<Measure, 'lookup'> & { rows: readonly Row[]; loaded: readonly ItemId[]; mounted?: readonly ItemId[]; more: boolean };
@@ -9,7 +27,7 @@ const same = (a: ItemId, b: ItemId) => a.kind === b.kind && (a.kind === 'message
 function fixture() {
   let state: State = scrollInitial(scope);
   let measurement: FixtureMeasure = { now: 1000, top: 900, max: 900, viewport: 300, width: 700, dock: 250, origin: 0, focused: true, visible: true, reducedMotion: false, rows: [row(0, 0), row(1, 100)], loaded: [{ kind: 'message', seq: 0 }, { kind: 'message', seq: 1 }], more: false, anchor: { item: { kind: 'message', seq: 0 }, edge: 'row', offset: -900 } };
-  const step = (events: ScrollEvent[] = [], changes: Partial<FixtureMeasure> = {}) => {
+  const step = (events: TestEvent[] = [], changes: Partial<FixtureMeasure> = {}) => {
     measurement = { ...measurement, ...changes };
     const result = scrollUpdate(state, events, {
       ...measurement,
@@ -30,6 +48,35 @@ function fixture() {
   step();
   return { step, state: () => state, store: (top: number) => { state = scrollStored(state, top); measurement.top = top; } };
 }
+test('an unfocused landing ends only when settled and then stops following growth', () => {
+  const m = { now: 1000, top: 0, max: 900, viewport: 300, width: 700, dock: 250, origin: 0, focused: false, visible: true, reducedMotion: true, settled: false, lookup: (): Lookup => ({ kind: 'removed' }) };
+  const pending = scrollUpdate(scrollInitial(scope), [], m);
+  const settled = { ...m, top: 900, settled: true };
+  const completed = scrollUpdate(scrollStored(pending.state, 900), [], settled);
+  assert.equal(completed.state.mode.kind, 'following');
+  const growth = scrollUpdate(completed.state, [layout], { ...settled, max: 1000 });
+  assert.deepEqual([growth.state.mode.kind, growth.decision.scrollTop], ['reader', undefined]);
+  assert.equal(pending.state.mode.kind, 'landing');
+});
+
+test('a topic landing write echo keeps its unread divider', () => {
+  const f = fixture();
+  const rows = [row(1, 100), row(2, 600)];
+  f.step([intent, item(2)], { top: 100, rows, anchor: { item: { kind: 'message', seq: 1 }, offset: 0, edge: 'row' } });
+  const landed = f.step([{ type: 'scope', scope: { ...scope, topic: 'one' }, filtered: true }, item(2, true, false)], { rows });
+  assert.equal(landed.decision.divider?.seq, 2);
+  const echo = f.step([scroll], { anchor: { item: { kind: 'message', seq: 2 }, offset: 0, edge: 'row' } });
+  assert.equal(echo.decision.divider?.seq, 2);
+});
+
+test('a same-scope reader reset treats snapshot rows as the unread baseline', () => {
+  const f = fixture();
+  f.step([intent], { top: 100, anchor: { item: { kind: 'message', seq: 1 }, offset: 0, edge: 'row' } });
+  const reset = f.step([{ type: 'reset' }, item(2, true, false)], { rows: [row(1, 100), row(2, 600)] });
+  assert.equal(reset.decision.scrollTop, 100);
+  assert.equal(reset.decision.divider, undefined);
+});
+
 test('a follower is at the content bottom after an estimate or dock shrinks', () => {
   const page = fixture();
   page.step([{ type: 'layout', cause: 'layout' }], { max: 1200 });
@@ -38,31 +85,31 @@ test('a follower is at the content bottom after an estimate or dock shrinks', ()
 
 test('scope switches retain the restored topic filter mode', () => {
   const f = fixture();
-  const event = { type: 'switch' as const, loaded: false, scope: { view: 'other', sessionId: 's' }, filtered: true };
-  assert.equal(f.step([event]).state.filtered, true);
+  const event = { type: 'scope' as const, scope: { view: 'other', sessionId: 's' }, filtered: true };
+  assert.equal(f.step([event]).state.unread.filtered, true);
 });
 
 test('filter switches follow the new bottom without keeping the previous reader anchor', () => {
   const f = fixture();
   f.step([intent], { top: 400, anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: -300 } });
-  const result = f.step([{ type: 'filter', active: true, topic: 'new' }, item(20, true, false)], { max: 1200, rows: [row(20, 1100)], loaded: [{ kind: 'message', seq: 20 }] });
-  assert.deepEqual([result.state.kind,result.decision.scrollTop,result.decision.divider?.seq], ['following',1200,undefined]);
+  const result = f.step([{type:'scope',filtered:true,scope:{...scope,topic:'new'}}, item(20, true, false)], { max: 1200, rows: [row(20, 1100)], loaded: [{ kind: 'message', seq: 20 }] });
+  assert.deepEqual([result.state.mode.kind,result.decision.scrollTop,result.decision.divider?.seq], ['following',1200,undefined]);
 });
 
 test('filter switches position at the first visible unread row and show its divider', () => {
   const f = fixture();
   f.step([intent,item(10)], { top: 100, rows: [row(1,100),row(10,700)], loaded: [{kind:'message',seq:1},{kind:'message',seq:10}], anchor: {item:{kind:'message',seq:1},edge: 'row', offset:0} });
-  const result = f.step([{type:'filter',active:true,topic:'first'},item(10,true,false)], { rows: [{...row(10,700),leading:688}] });
-  assert.deepEqual([result.state.kind,result.decision.scrollTop,result.decision.divider?.seq,result.decision.latest], ['reader',688,10,{show:true,count:0}]);
+  const result = f.step([{type:'scope',filtered:true,scope:{...scope,topic:'first'}},item(10,true,false)], { rows: [{...row(10,700),leading:688}] });
+  assert.deepEqual([result.state.mode.kind,result.decision.scrollTop,result.decision.divider?.seq,result.decision.latest], ['reader',688,10,{show:true,count:0}]);
   assert.equal(result.decision.windowTop,688);
 });
 
 test('seeing a later row under one filter does not mark another filters hidden unread row seen', () => {
   const f = fixture();
   f.step([intent,item(10)], {top:100,rows:[row(1,100),row(10,700)],loaded:[{kind:'message',seq:1},{kind:'message',seq:10}],anchor:{item:{kind:'message',seq:1},edge: 'row', offset:0}});
-  f.step([{type:'filter',active:true,topic:'second'},item(20,true,false)], {rows:[row(20,800)],loaded:[{kind:'message',seq:20}]});
-  const result = f.step([{type:'filter',active:true,topic:'first'},item(10,true,false)], {rows:[row(10,500)],loaded:[{kind:'message',seq:10}]});
-  assert.deepEqual([result.state.kind,result.decision.scrollTop,result.decision.divider?.seq], ['reader',500,10]);
+  f.step([{type:'scope',filtered:true,scope:{...scope,topic:'second'}},item(20,true,false)], {rows:[row(20,800)],loaded:[{kind:'message',seq:20}]});
+  const result = f.step([{type:'scope',filtered:true,scope:{...scope,topic:'first'}},item(10,true,false)], {rows:[row(10,500)],loaded:[{kind:'message',seq:10}]});
+  assert.deepEqual([result.state.mode.kind,result.decision.scrollTop,result.decision.divider?.seq], ['reader',500,10]);
 });
 
 test('scrolling an unread item into a normal view clears it', () => {
@@ -75,11 +122,11 @@ test('scrolling an unread item into a normal view clears it', () => {
 test('hidden arrivals stay unread across filters but streaming sections do not add unread items', () => {
   for (const active of [true,false]) for (const section of [false,true]) {
     const f = fixture();
-    f.step([{type:'filter',active:true,topic:'initial'}]);
+    f.step([{type:'scope',filtered:true,scope:{...scope,topic:'initial'}}]);
     if (section) f.step([{type:'item',seq:10,kind:'assistant',visible:true,appended:false,rows:[{row:{kind:'text' as const,source:{kind:'block' as const,seq:10,index:0}},visible:true}]}]);
     f.step([{type:'item',seq:10,kind:'assistant',visible:section,appended:!section,rows:[...(section?[{row:{kind:'text' as const,source:{kind:'block' as const,seq:10,index:0}},visible:true}]:[]),{row:{kind:'text' as const,source:{kind:'block' as const,seq:10,index:1}},visible:false}]}]);
-    const result=f.step([{type:'filter',active,topic:active?'other':undefined},{type:'item',seq:10,kind:'assistant',visible:true,appended:false,rows:[{row:{kind:'text' as const,source:{kind:'block' as const,seq:10,index:1}},visible:true}]}], {rows:[{item:{kind:'message',seq:10,row:{kind:'text',source:{kind:'block',seq:10,index:1}}},top:500,bottom:600}],loaded:[{kind:'message',seq:10}]});
-    assert.deepEqual([result.state.kind,result.decision.divider?.seq,result.decision.divider?.row,result.decision.scrollTop], active && !section ? ['reader',10,{kind:'text',source:{kind:'block',seq:10,index:1}},500] : ['following',undefined,undefined,900]);
+    const result=f.step([{type:'scope',filtered:active,scope:{...scope,topic:active?'other':undefined}},{type:'item',seq:10,kind:'assistant',visible:true,appended:false,rows:[{row:{kind:'text' as const,source:{kind:'block' as const,seq:10,index:1}},visible:true}]}], {rows:[{item:{kind:'message',seq:10,row:{kind:'text',source:{kind:'block',seq:10,index:1}}},top:500,bottom:600}],loaded:[{kind:'message',seq:10}]});
+    assert.deepEqual([result.state.mode.kind,result.decision.divider?.seq,result.decision.divider?.row,result.decision.scrollTop], active && !section ? ['reader',10,{kind:'text',source:{kind:'block',seq:10,index:1}},500] : ['following',undefined,undefined,900]);
   }
 });
 
@@ -89,43 +136,43 @@ test('view memory restores readers, records following and rejects another sessio
   const memory = scrollMemory(f.state());
   assert.deepEqual(memory, [{ scope, anchor: { item: { kind: 'message' as const, seq: 1 }, edge: 'row' as const, offset: -400 }, last: 7 }]);
   const m: Measure = { now: 1000, top: 0, max: 900, viewport: 300, width: 700, dock: 250, origin: 0, focused: true, visible: true, reducedMotion: true, lookup: () => ({ kind: 'unloaded' }) };
-  const restored = scrollUpdate(scrollInitial({ view: '', sessionId: undefined }, memory), [{ type: 'switch', filtered: false, loaded: false, scope }], m);
-  assert.equal(restored.state.kind, 'restoring');
-  if (restored.state.kind === 'restoring') assert.deepEqual(restored.state.target, memory[0]);
+  const restored = scrollUpdate(scrollInitial({ view: '', sessionId: undefined }, memory), [{ type: 'scope', filtered: false, scope }], m);
+  assert.equal(restored.state.mode.kind, 'landing');
+  if (restored.state.mode.kind === 'landing' && restored.state.mode.target.at === 'anchor') assert.deepEqual(restored.state.mode.target.saved, memory[0]);
   const missing = scrollUpdate(restored.state, [{ type: 'reset' }, { type: 'frame' }], { ...m, lookup: () => ({ kind: 'removed' }) });
-  assert.equal(missing.state.kind, 'following');
+  assert.equal(missing.state.mode.kind, 'following');
   assert.equal(missing.decision.scrollTop, 900);
-  assert.equal(scrollUpdate(scrollInitial({ view: '', sessionId: undefined }, memory), [{ type: 'switch', filtered: false, loaded: false, scope: { ...scope, sessionId: 'other' } }], m).state.kind, 'following');
+  assert.equal(scrollUpdate(scrollInitial({ view: '', sessionId: undefined }, memory), [{ type: 'scope', filtered: false, scope: { ...scope, sessionId: 'other' } }], m).state.mode.kind, 'following');
   assert.deepEqual(scrollMemory(fixture().state()), [{ scope, last: -1 }]);
-  assert.deepEqual(scrollMemory({ ...f.state(), kind: 'following' }), [{ scope, last: 7 }]);
+  assert.deepEqual(scrollMemory({ ...f.state(), mode: { kind: 'following' } }), [{ scope, last: 7 }]);
   const current = memory[0];
   assert.ok(current && 'anchor' in current);
   const other = { ...current, scope: { view: 'other', sessionId: 's' } };
-  const travelling: State = { ...f.state(), kind: 'reader', anchor: current.anchor, travel: { from: 500, start: 1000 }, saved: new Map([[JSON.stringify([scope.view, null]), current], [JSON.stringify(['other', null]), other]]) };
+  const travelling: State = { ...f.state(), mode: { kind: 'travel', anchor: current.anchor, from: 500, start: 1000 }, saved: new Map([[JSON.stringify([scope.view, null]), current], [JSON.stringify(['other', null]), other]]) };
   assert.deepEqual(scrollMemory(travelling), [{ scope, last: 7 }, other]);
 });
 
 test('following memory waits for non-empty positioning before background growth becomes reader', () => {
   const memory = scrollMemory(fixture().state());
   const m: Measure = { now: 1000, top: 0, max: 0, viewport: 300, width: 700, dock: 250, origin: 0, focused: false, visible: true, reducedMotion: true, lookup: () => ({ kind: 'removed' }) };
-  let result = scrollUpdate(scrollInitial({ view: '', sessionId: undefined }, memory), [{ type: 'switch', filtered: false, loaded: false, scope }, { type: 'reset' }], m);
-  result = scrollUpdate(result.state, [layout], { ...m, max: 900 });
-  assert.equal(result.state.kind, 'following');
+  let result = scrollUpdate(scrollInitial({ view: '', sessionId: undefined }, memory), [{ type: 'scope', filtered: false, scope }, { type: 'reset' }], { ...m, settled: false });
+  result = scrollUpdate(result.state, [layout], { ...m, max: 900, settled: true });
+  assert.equal(result.state.mode.kind, 'following');
   assert.equal(result.decision.scrollTop, 900);
   result = scrollUpdate(scrollStored(result.state, 900), [{ type: 'focus' }], { ...m, top: 900, max: 900, focused: true });
-  assert.equal(result.state.kind, 'following');
+  assert.equal(result.state.mode.kind, 'following');
   result = scrollUpdate(result.state, [layout], { ...m, top: 900, max: 1000 });
-  assert.equal(result.state.kind, 'reader');
+  assert.equal(result.state.mode.kind, 'reader');
 });
 
 test('background reset waits for new layout rather than completing against old content', () => {
   const f = fixture();
-  f.step([{ type: 'reset' }], { focused: false, top: 500, max: 500 });
-  const placed = f.step([layout], { max: 900 });
-  assert.equal(placed.state.kind, 'following');
+  f.step([{ type: 'reset' }], { focused: false, top: 500, max: 500, settled: false });
+  const placed = f.step([layout], { max: 900, settled: true });
+  assert.equal(placed.state.mode.kind, 'following');
   assert.equal(placed.decision.scrollTop, 900);
   const growth = f.step([layout], { max: 1000 });
-  assert.equal(growth.state.kind, 'reader');
+  assert.equal(growth.state.mode.kind, 'reader');
   assert.equal(growth.decision.scrollTop, undefined);
 });
 
@@ -134,20 +181,20 @@ test('completed Latest travel does not retain positioning intent during backgrou
   f.step([intent], { top: 500 });
   f.step([{ type: 'latest' }]);
   const placed = f.step([{ type: 'frame' }], { now: 1300 });
-  assert.equal(placed.state.kind, 'following');
+  assert.equal(placed.state.mode.kind, 'following');
   assert.equal(placed.decision.scrollTop, 900);
   const growth = f.step([layout], { focused: false, max: 1000 });
-  assert.equal(growth.state.kind, 'reader');
+  assert.equal(growth.state.mode.kind, 'reader');
   assert.equal(growth.decision.scrollTop, undefined);
 });
 
 test('reader input cancels initial positioning even at an empty bottom', () => {
   const m: Measure = { now: 1000, top: 0, max: 0, viewport: 300, width: 700, dock: 250, origin: 0, focused: false, visible: true, reducedMotion: true, lookup: () => ({ kind: 'removed' }) };
   const cancelled = scrollUpdate(scrollInitial(scope), [intent], m);
-  assert.equal(cancelled.state.kind, 'following');
-  assert.ok(cancelled.state.kind === 'following' && !cancelled.state.positioning);
+  assert.equal(cancelled.state.mode.kind, 'following');
+  assert.deepEqual(cancelled.state.mode, { kind: 'following' });
   const result = scrollUpdate(cancelled.state, [layout], { ...m, max: 900 });
-  assert.equal(result.state.kind, 'reader');
+  assert.equal(result.state.mode.kind, 'reader');
   assert.equal(result.decision.scrollTop, undefined);
 });
 
@@ -158,7 +205,7 @@ test('a toggle holds its anchor, cancels travel, and follows only at the bottom'
     if (mode === 'travel') f.step([{ type: 'latest' }]);
     const result = f.step([{ type: 'layout', cause: 'toggle', anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: -800 } }], { max: 1200 });
     assert.equal(result.decision.scrollTop ?? 900, 900);
-    assert.equal(result.state.kind, 'reader');
+    assert.equal(result.state.mode.kind, 'reader');
     assert.equal(result.decision.divider?.seq, undefined);
     assert.equal(f.step([{ type: 'frame' }], { now: 1100 }).decision.scrollTop, undefined);
   }
@@ -167,10 +214,10 @@ test('a toggle holds its anchor, cancels travel, and follows only at the bottom'
   const fractional = fixture();
   const held = fractional.step([{ type: 'layout', cause: 'toggle', anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: -799.5 } }]);
   assert.equal(held.decision.scrollTop, 899.5);
-  assert.equal(held.state.kind, 'reader');
+  assert.equal(held.state.mode.kind, 'reader');
   const f = fixture();
   const result = f.step([{ type: 'layout', cause: 'toggle', anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: -800 } }], { max: 800, top: 800 });
-  assert.equal(result.state.kind, 'following');
+  assert.equal(result.state.mode.kind, 'following');
   assert.equal(result.decision.scrollTop, 800);
 });
 
@@ -182,7 +229,7 @@ const item = (seq: number, visible = true, appended = true): ScrollEvent => ({ t
 test('fractional bottom rounding still follows and writes the bottom', () => {
   const f = fixture();
   const result = f.step([scroll], { top: 900.5 });
-  assert.equal(result.state.kind, 'following');
+  assert.equal(result.state.mode.kind, 'following');
   assert.equal(result.decision.scrollTop, 900);
 });
 
@@ -192,16 +239,16 @@ test('elastic measurements never write or change follow state or its geometry', 
     if (mode !== 'following') f.step([intent], { top: 0 });
     if (mode === 'travel') f.step([{ type: 'latest' }]);
     const before = f.state();
-    const batches: ScrollEvent[][] = [[scroll], [intent, scroll], [layout], [{ type: 'resize' }], [{ type: 'frame' }]];
+    const batches: TestEvent[][] = [[scroll], [intent, scroll], [layout], [{ type: 'resize' }], [{ type: 'frame' }]];
     for (const events of batches) {
       const result = f.step(events, { top, width: 650, now: 1001 });
       assert.equal(result.decision.scrollTop, undefined, `${mode} at ${top}: ${events[0]?.type}`);
-      assert.equal(result.state.kind, before.kind);
-      assert.deepEqual(result.state.last, before.last);
-      if (result.state.kind === 'reader' && before.kind === 'reader') assert.deepEqual(result.state.anchor, before.anchor);
+      assert.equal(result.state.mode.kind, before.mode.kind);
+      assert.deepEqual(result.state.seen, before.seen);
+      if (result.state.mode.kind === 'reader' && before.mode.kind === 'reader') assert.deepEqual(result.state.mode.anchor, before.mode.anchor);
     }
     const rebound = f.step([scroll], { top: mode === 'following' ? 900 : 0, width: 700, now: 1002 });
-    assert.equal(rebound.state.kind, before.kind);
+    assert.equal(rebound.state.mode.kind, before.mode.kind);
   }
 });
 
@@ -209,7 +256,7 @@ test('focused following writes the measured bottom, including deferred layout an
   const f = fixture();
   for (const max of [1000, 1300, 800, 1400]) {
     const result = f.step([layout], { max, ...(max === 800 ? { top: 800 } : {}) });
-    assert.equal(result.state.kind, 'following');
+    assert.equal(result.state.mode.kind, 'following');
     assert.equal(result.decision.scrollTop, max);
   }
   assert.equal(f.step([{ type: 'frame' }], { max: 1700 }).decision.scrollTop, 1700);
@@ -218,11 +265,11 @@ test('focused following writes the measured bottom, including deferred layout an
 test('a scroll of any size above the bottom leaves following, a clamp does not, and a move down to the bottom follows again', () => {
   const f = fixture();
   const clamp = f.step([scroll], { top: 700, max: 700 });
-  assert.deepEqual([clamp.state.kind, clamp.decision.scrollTop], ['following', 700]);
+  assert.deepEqual([clamp.state.mode.kind, clamp.decision.scrollTop], ['following', 700]);
   f.step([layout], { max: 900 });
   const read = f.step([scroll], { top: 899.5, anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: -799.5 } });
-  assert.deepEqual([read.state.kind, read.decision.scrollTop], ['reader', undefined]);
-  assert.equal(f.step([scroll], { top: 899.8 }).state.kind, 'following');
+  assert.deepEqual([read.state.mode.kind, read.decision.scrollTop], ['reader', undefined]);
+  assert.equal(f.step([scroll], { top: 899.8 }).state.mode.kind, 'following');
 });
 
 test('a reader sub-pixel scroll moves the anchor and is never written back', () => {
@@ -232,7 +279,7 @@ test('a reader sub-pixel scroll moves the anchor and is never written back', () 
     const anchor = { item: { kind: 'message', seq: 1 }, edge: 'row', offset: 100 - top } as const;
     const result = f.step([scroll], { top, anchor });
     assert.equal(result.decision.scrollTop, undefined, `scroll to ${top}`);
-    assert.deepEqual(result.state.kind === 'reader' && result.state.anchor, anchor);
+    assert.deepEqual(result.state.mode.kind === 'reader' && result.state.mode.anchor, anchor);
   }
   assert.equal(f.step([{ type: 'frame' }]).decision.scrollTop, undefined);
 });
@@ -242,7 +289,7 @@ test('up input without scroll range keeps following and adds no unread divider',
   f.step([layout], { top: 0, max: 0 });
   f.step([intent]);
   const result = f.step([item(2)]);
-  assert.deepEqual([result.state.kind, result.decision.divider?.seq], ['following', undefined]);
+  assert.deepEqual([result.state.mode.kind, result.decision.divider?.seq], ['following', undefined]);
 });
 
 test('a slow wheel up from the bottom leaves following, and its sub-pixel scrolls never snap back', () => {
@@ -250,7 +297,7 @@ test('a slow wheel up from the bottom leaves following, and its sub-pixel scroll
   f.step([intent]);
   for (const top of [899.6, 899.2, 898.8]) {
     const result = f.step([scroll], { top, anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: 100 - top } });
-    assert.deepEqual([result.state.kind, result.decision.scrollTop], ['reader', undefined], `scroll to ${top}`);
+    assert.deepEqual([result.state.mode.kind, result.decision.scrollTop], ['reader', undefined], `scroll to ${top}`);
   }
   assert.equal(f.step([{ type: 'frame' }]).decision.scrollTop, undefined);
 });
@@ -260,7 +307,7 @@ test('a layout during reader input keeps the movement that the reader made after
   f.step([intent, scroll], { top: 100, anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: 0 } });
   const result = f.step([layout], { top: 120, rows: [row(1, 150)], max: 1000 });
   assert.equal(result.decision.scrollTop, 170);
-  assert.deepEqual(result.state.kind === 'reader' && result.state.anchor, { item: { kind: 'message', seq: 1 }, edge: 'row', offset: -20 });
+  assert.deepEqual(result.state.mode.kind === 'reader' && result.state.mode.anchor, { item: { kind: 'message', seq: 1 }, edge: 'row', offset: -20 });
 });
 
 test('a scroll below the last written frame cancels Latest, its echo does not', () => {
@@ -269,9 +316,9 @@ test('a scroll below the last written frame cancels Latest, its echo does not', 
   f.step([{ type: 'latest' }]);
   const frame = f.step([{ type: 'frame' }], { now: 1125 }).decision.scrollTop ?? 0;
   const echo = f.step([scroll]).state;
-  assert.ok(echo.kind === 'reader' && echo.travel);
+  assert.ok(echo.mode.kind === 'travel');
   const cancel = f.step([scroll], { top: frame - 0.5, anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: 100.5 - frame } });
-  assert.deepEqual([cancel.state.kind === 'reader' && cancel.state.travel, cancel.decision.scrollTop, cancel.decision.frame], [undefined, undefined, 'none']);
+  assert.deepEqual([cancel.state.mode.kind === 'travel', cancel.decision.scrollTop, cancel.decision.frame], [false, undefined, false]);
 });
 
 test('the echo of a write that the browser rounded is not a reader move', () => {
@@ -286,17 +333,17 @@ test('the echo of a write that the browser rounded is not a reader move', () => 
 test('a scroll below the bottom leaves following and below the last travel frame cancels Latest, also with a layout in the same batch', () => {
   const f = fixture();
   const read = f.step([layout, scroll], { top: 850, anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: -750 } });
-  assert.deepEqual([read.state.kind, read.decision.scrollTop], ['reader', undefined]);
+  assert.deepEqual([read.state.mode.kind, read.decision.scrollTop], ['reader', undefined]);
   f.step([{ type: 'latest' }]);
   const frame = f.step([{ type: 'frame' }], { now: 1125 }).decision.scrollTop ?? 0;
   const cancel = f.step([layout, scroll], { top: frame - 0.5, anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: 100.5 - frame } });
-  assert.deepEqual([cancel.state.kind === 'reader' && cancel.state.travel, cancel.decision.scrollTop], [undefined, undefined]);
+  assert.deepEqual([cancel.state.mode.kind === 'travel', cancel.decision.scrollTop], [false, undefined]);
 });
 
 test('a clamp to a fractional position at the shrunk bottom is no move in reader or following', () => {
   const following = fixture();
   const kept = following.step([scroll], { top: 699.6, max: 700 });
-  assert.deepEqual([kept.state.kind, kept.decision.scrollTop], ['following', 700]);
+  assert.deepEqual([kept.state.mode.kind, kept.decision.scrollTop], ['following', 700]);
   const f = fixture();
   f.step([intent, scroll], { top: 650, rows: [row(1, 650)], anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: 0 } });
   f.step([scroll], { top: 299.6, max: 300, anchor: { item: { kind: 'message', seq: 0 }, edge: 'row', offset: -299.6 } });
@@ -329,20 +376,21 @@ test('reader movement while history loads replaces the old anchor', () => {
 test('unfocused growth becomes reader; focus alone cannot follow; first arrival makes an unread divider', () => {
   const f = fixture();
   const background = f.step([layout], { focused: false, max: 1000 });
-  assert.equal(background.state.kind, 'reader');
+  assert.equal(background.state.mode.kind, 'reader');
   assert.equal(background.decision.scrollTop, undefined);
   const fresh = f.step([item(2)], { rows: [row(0, 0), row(1, 100), row(2, 1200)] });
   assert.deepEqual([fresh.decision.divider?.seq, fresh.decision.latest.count], [2, 1]);
-  assert.equal(f.step([{ type: 'focus' }], { focused: true }).state.kind, 'reader');
+  assert.equal(f.step([{ type: 'focus' }], { focused: true }).state.mode.kind, 'reader');
 });
 
 test('Enter follows from every prior mode after background growth and from a delayed composer clamp', () => {
   const f = fixture();
   f.step([{ type: 'submit' }]);
-  assert.equal(f.step([layout], { focused: false, max: 1000 }).state.kind, 'reader');
+  const growth = f.step([layout], { focused: false, max: 1000 });
+  assert.deepEqual([growth.state.mode.kind, growth.decision.scrollTop], ['landing', 1000]);
   const sent: ScrollEvent = { type: 'item', seq: 2, kind: 'user', visible: true, appended: true };
   const appended = f.step([sent], { max: 1300, rows: [row(2, 1200)], loaded: [{ kind: 'message', seq: 2 }] });
-  assert.deepEqual([appended.state.kind, appended.decision.scrollTop, appended.decision.divider?.seq], ['following', 1300, undefined]);
+  assert.deepEqual([appended.state.mode.kind, appended.decision.scrollTop, appended.decision.divider?.seq], ['following', 1300, undefined]);
   f.step([{ type: 'submit' }], { focused: true });
   assert.equal(f.step([sent, scroll], { top: 1200, max: 1500 }).decision.scrollTop, 1500);
 });
@@ -354,10 +402,10 @@ test('queued and started sends follow immediately; handled, failed and switched 
   }
   for (const result of ['handled', 'failed'] as const) {
     const f = fixture(); f.step([{ type: 'submit' }, { type: 'send-result', result }, intent]);
-    assert.equal(f.step([{ type: 'item', seq: 2, kind: 'user', visible: true, appended: true }]).state.kind, 'reader');
+    assert.equal(f.step([{ type: 'item', seq: 2, kind: 'user', visible: true, appended: true }]).state.mode.kind, 'reader');
   }
-  const f = fixture(); f.step([{ type: 'submit' }, { type: 'switch', filtered: false, loaded: false, scope: { view: 'other', sessionId: 's' } }]);
-  assert.equal(f.state().pendingSend, undefined);
+  const f = fixture(); f.step([{ type: 'submit' }, { type: 'scope', filtered: false, scope: { view: 'other', sessionId: 's' } }]);
+  assert.equal(f.state().unread.pendingSend, undefined);
 });
 
 test('unread eligibility is data input, counts once after empty growth, and can disappear', () => {
@@ -388,12 +436,12 @@ test('Latest travel retargets the moving bottom, is interrupted by intent, and c
   const f = fixture();
   f.step([intent, scroll], { top: 100, anchor: undefined });
   const start = f.step([{ type: 'latest' }]);
-  assert.equal(start.state.kind, 'reader');
+  assert.equal(start.state.mode.kind, 'travel');
   assert.equal(f.step([{ type: 'frame' }], { now: 1125, max: 1000 }).decision.scrollTop, 887.5);
-  assert.equal(f.step([intent], { now: 1130 }).decision.frame, 'none');
+  assert.equal(f.step([intent], { now: 1130 }).decision.frame, false);
   f.step([{ type: 'latest' }], { now: 1200 });
   const end = f.step([{ type: 'frame' }], { now: 1450, max: 1200 });
-  assert.deepEqual([end.state.kind, end.decision.scrollTop], ['following', 1200]);
+  assert.deepEqual([end.state.mode.kind, end.decision.scrollTop], ['following', 1200]);
   f.step([intent]);
   assert.equal(f.step([{ type: 'latest' }], { reducedMotion: true }).decision.scrollTop, 1200);
 });
@@ -405,13 +453,13 @@ test('either input direction cancels Latest at the current measured anchor', () 
     f.step([{ type: 'latest' }]);
     f.step([{ type: 'frame' }], { now: 1125 });
     const result = f.step([{ type: 'input', direction }], { rows: [row(5, 780)], anchor: { item: { kind: 'message', seq: 5 }, edge: 'row', offset: -20 } });
-    assert.deepEqual(result.state.kind === 'reader' && result.state.anchor, { item: { kind: 'message', seq: 5 }, edge: 'row', offset: -20 });
-    assert.equal(result.decision.frame, 'none');
+    assert.deepEqual(result.state.mode.kind === 'reader' && result.state.mode.anchor, { item: { kind: 'message', seq: 5 }, edge: 'row', offset: -20 });
+    assert.equal(result.decision.frame, false);
   }
 });
 
 test('hiding or leaving Latest saves the anchor at the intermediate position', () => {
-  for (const event of [{ type: 'visibility' }, { type: 'switch', filtered: false, loaded: false, scope: { view: 'child', sessionId: 'c' } }] satisfies ScrollEvent[]) {
+  for (const event of [{ type: 'visibility' }, { type: 'scope', filtered: false, scope: { view: 'child', sessionId: 'c' } }] satisfies ScrollEvent[]) {
     const f = fixture();
     f.step([intent, scroll], { top: 100, anchor: undefined });
     f.step([{ type: 'latest' }]);
@@ -419,7 +467,7 @@ test('hiding or leaving Latest saves the anchor at the intermediate position', (
     const current = { item: { kind: 'message', seq: 5 }, edge: 'row', offset: -20 } satisfies import('./page/scroll.ts').Anchor;
     const result = f.step([event], { visible: event.type !== 'visibility', rows: [row(5, 780)], anchor: current });
     const saved = result.state.saved.get(JSON.stringify(['root', null]));
-    assert.deepEqual(event.type === 'switch' ? saved && 'anchor' in saved && saved.anchor : result.state.kind === 'reader' && result.state.anchor, current);
+    assert.deepEqual(event.type === 'scope' ? saved && 'anchor' in saved && saved.anchor : result.state.mode.kind === 'reader' && result.state.mode.anchor, current);
   }
 });
 
@@ -427,48 +475,48 @@ test('an animation frame reuses maps and mutation leaves the previous state unch
   const f = fixture();
   const before = f.state();
   const animated = f.step([{ type: 'frame' }], { now: 1050 }).state;
-  assert.equal(animated.candidates, before.candidates);
+  assert.equal(animated.unread.candidates, before.unread.candidates);
   assert.equal(animated.saved, before.saved);
   const changed = f.step([intent, item(2)], { rows: [row(2, 1200)] }).state;
-  assert.notEqual(changed.candidates, animated.candidates);
-  assert.equal(animated.candidates.has(2), false);
+  assert.notEqual(changed.unread.candidates, animated.unread.candidates);
+  assert.equal(animated.unread.candidates.has(2), false);
 });
 
 test('a reader send keeps its force until the actual row is mounted', () => {
   const f = fixture();
   f.step([intent, scroll], { top: 100, anchor: undefined });
   f.step([{ type: 'submit' }]);
-  const beforeMount = f.step([{ type: 'item', seq: 2, kind: 'user', visible: true, appended: true }], { focused: false, max: 1100, rows: [row(2, 1000, 1030)], loaded: [{ kind: 'message', seq: 2 }], mounted: [] });
-  assert.deepEqual([beforeMount.decision.scrollTop, beforeMount.state.forceItem?.seq], [1100, 2]);
-  const mounted = f.step([{ type: 'frame' }], { focused: true, max: 1200, rows: [row(2, 1100, 1150)], mounted: [{ kind: 'message', seq: 2 }] });
-  assert.deepEqual([mounted.decision.scrollTop, mounted.state.forceItem], [1200, undefined]);
+  const beforeMount = f.step([{ type: 'item', seq: 2, kind: 'user', visible: true, appended: true }], { focused: false, max: 1100, rows: [row(2, 1000, 1030)], settled: false, loaded: [{ kind: 'message', seq: 2 }], mounted: [] });
+  assert.deepEqual([beforeMount.decision.scrollTop, beforeMount.state.mode.kind], [1100, 'landing']);
+  const mounted = f.step([{ type: 'frame' }], { focused: true, settled: true, max: 1200, rows: [row(2, 1100, 1150)], mounted: [{ kind: 'message', seq: 2 }] });
+  assert.deepEqual([mounted.decision.scrollTop, mounted.state.mode.kind], [1200, 'following']);
 });
 
 test('view return restores reader instantly with away arrivals, but a followed view returns at bottom', () => {
   const f = fixture();
   f.step([intent, scroll], { top: 100, anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: 0 } });
-  f.step([{ type: 'switch', filtered: false, loaded: false, scope: { view: 'child', sessionId: 'c' } }]);
+  f.step([{ type: 'scope', filtered: false, scope: { view: 'child', sessionId: 'c' } }]);
   f.step([{ type: 'reset' }], { top: 0, max: 500, loaded: [], rows: [] });
-  f.step([{ type: 'switch', filtered: false, loaded: false, scope }]);
-  const restored = f.step([{ type: 'reset' }, item(2, true, false)], { loaded: [{ kind: 'message', seq: 1 }, { kind: 'message', seq: 2 }], rows: [row(1, 100), row(2, 700)], max: 900 });
-  assert.deepEqual([restored.state.kind, restored.decision.scrollTop, restored.decision.divider?.seq], ['reader', 100, 2]);
-  f.step([{ type: 'switch', filtered: false, loaded: false, scope: { view: 'child', sessionId: 'c' } }]);
+  f.step([{ type: 'scope', filtered: false, scope }], { settled: false });
+  const restored = f.step([{ type: 'reset' }, item(2, true, false)], { settled: true, loaded: [{ kind: 'message', seq: 1 }, { kind: 'message', seq: 2 }], rows: [row(1, 100), row(2, 700)], max: 900 });
+  assert.deepEqual([restored.state.mode.kind, restored.decision.scrollTop, restored.decision.divider?.seq], ['reader', 100, 2]);
+  f.step([{ type: 'scope', filtered: false, scope: { view: 'child', sessionId: 'c' } }]);
   assert.equal(f.step([{ type: 'reset' }], { max: 1500 }).decision.scrollTop, 1500);
 });
 
 test('restore requests unloaded anchors, mounts loaded anchors, rejects stale completions and falls back on failure', () => {
   const f = fixture();
   f.step([intent, scroll], { top: 100, anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: 0 } });
-  f.step([{ type: 'switch', filtered: false, loaded: false, scope: { view: 'child', sessionId: 'c' } }, { type: 'switch', filtered: false, loaded: false, scope }]);
+  f.step([{ type: 'scope', filtered: false, scope: { view: 'child', sessionId: 'c' } }, { type: 'scope', filtered: false, scope }]);
   const waiting = f.step([{ type: 'reset' }], { loaded: [], rows: [], more: true });
-  assert.deepEqual(waiting.decision.request, { type: 'load', item: { kind: 'message', seq: 1 }, generation: 2 });
-  assert.equal(f.step([{ type: 'restore-result', generation: 1, found: false }]).state.kind, 'restoring');
-  assert.equal(f.step([{ type: 'restore-result', generation: 2, found: true }], { loaded: [{ kind: 'message', seq: 1 }] }).decision.request?.type, 'mount');
+  assert.deepEqual(waiting.decision.request, { type: 'load', item: { kind: 'message', seq: 1 }, generation: 3 });
+  assert.equal(f.step([{ type: 'load-failed', generation: 1 }]).state.mode.kind, 'landing');
+  assert.equal(f.step([{ type: 'history' }], { loaded: [{ kind: 'message', seq: 1 }] }).decision.request?.type, 'mount');
   const missing = fixture();
   missing.step([intent, scroll], { top: 100, anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: 0 } });
-  missing.step([{ type: 'switch', filtered: false, loaded: false, scope: { view: 'child', sessionId: 'c' } }, { type: 'switch', filtered: false, loaded: false, scope }]);
+  missing.step([{ type: 'scope', filtered: false, scope: { view: 'child', sessionId: 'c' } }, { type: 'scope', filtered: false, scope }]);
   missing.step([{ type: 'reset' }], { loaded: [], rows: [], more: true });
-  assert.equal(missing.step([{ type: 'restore-result', generation: 2, found: false }]).state.kind, 'following');
+  assert.equal(missing.step([{ type: 'load-failed', generation: 3 }]).state.mode.kind, 'following');
 });
 
 test('virtualization uses the new table anchor before prepend renders and uses the intermediate Latest position', () => {
@@ -490,15 +538,15 @@ test('job byte anchors use the same reader corrections and never add unread mess
 
 for (const own of [false, true]) test(`return to a saved topic preserves ${own ? 'own' : 'read'} candidates`, () => {
   const f = fixture();
-  f.step([{ type: 'filter', active: true, topic: 'A' }, item(5, true, false)]);
+  f.step([{type:'scope',filtered:true,scope:{...scope,topic:'A'}}, item(5, true, false)]);
   f.step([{ type: 'navigate', anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: 0 } }], { top: 100 });
-  f.step([{ type: 'filter', active: false }]);
+  f.step([{type:'scope',filtered:false,scope:{...scope,topic:undefined}}]);
   f.step([{ type: own ? 'submit' : 'latest' }], { reducedMotion: true });
   const rows = [{ row: own ? undefined : { kind: 'text' as const, source: { kind: 'block' as const, seq: 6, index: 0 } }, visible: true }];
   const received = f.step([{ type: 'item', seq: 6, kind: own ? 'user' : 'assistant', visible: true, rows, appended: true }], { rows: [row(1, 100), row(6, 1200)] });
-  assert.equal(received.state.candidates.get(6)?.values().next().value?.status, own ? 'own' : 'read');
-  f.step([{ type: 'filter', active: true, topic: 'A' }]);
+  assert.equal(received.state.unread.candidates.get(6)?.values().next().value?.status, own ? 'own' : 'read');
+  f.step([{type:'scope',filtered:true,scope:{...scope,topic:'A'}}]);
   f.step([{ type: 'item', seq: 6, kind: own ? 'user' : 'assistant', visible: true, rows, appended: false }]);
-  const restored = f.step([{ type: 'catchup', generation: f.state().generation, pending: false }]);
-  assert.deepEqual([restored.state.candidates.get(6)?.values().next().value?.status, restored.decision.divider, restored.decision.latest.count], [own ? 'own' : 'read', undefined, 0]);
+  const restored = f.step([{ type: 'history' }]);
+  assert.deepEqual([restored.state.unread.candidates.get(6)?.values().next().value?.status, restored.decision.divider, restored.decision.latest.count], [own ? 'own' : 'read', undefined, 0]);
 });

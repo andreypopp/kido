@@ -2433,9 +2433,9 @@ these:
   bare row in the same frame. These are the only removals.
 - **Reduce Motion**: the same frames, static dots.
 
-## The tail only grows: the ending row, the divider in the gap, the open `!` row (2026-11-24, spec for plans/koa-scroll.md unit 1)
+## The tail only grows: the ending row, the divider in the gap, the open `!` row (2026-11-24, spec for the koa-scroll plan's unit 1)
 
-The user's invariants (plans/koa-scroll.md, "The invariants"): while
+The user's invariants (docs/design-koa.md, "The scroll contract"): while
 following nothing moves against the output and no blank space
 appears at the bottom; a fresh render equals the live view. Three
 visual rules follow; every size at the 13px base, every length in

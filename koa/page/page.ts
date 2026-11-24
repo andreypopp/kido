@@ -1,6 +1,6 @@
 import { annotations, update } from './annotations.ts';
 import { head, quote } from './answers.ts';
-import { scrollInitial, scrollMemory, type Saved, scrollRollback, scrollStored, scrollUpdate, scrollWindow, type ItemId, type ScrollEvent, type Measure, type Decision, type Row, type Lookup } from './scroll.ts';
+import { scrollInitial, scrollMemory, type Saved, scrollStored, reduce, place, scrollWindow, type ItemId, type ScrollEvent, type Measure, type Decision, type Row, type Lookup } from './scroll.ts';
 import { pathToken } from '../path-token.ts';
 import { markdown, type Tail } from './markdown.ts';
 import { markdownLine } from '../markdown-line.ts';
@@ -101,10 +101,10 @@ let pathWarningEpoch = 0;
 let state: State = { pathEditor: false, view: { id: '', path: [], type: 'root' }, topics: [], agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, dialogs: [] };
 let shownFilter: TopicName | undefined;
 type Transition = {
-  cover: HTMLElement; memory: PageMemory; scroll: ReturnType<typeof scrollInitial>; outgoingDraftSaved: boolean; generation: number;
-  phase: { kind: 'snapshot'; next: State } | { kind: 'state' } | { kind: 'layout'; prepared?: { layout: number; geometry: string } };
+  cover: HTMLElement; memory: PageMemory; outgoingDraftSaved: boolean; generation: number;
+  phase: { kind: 'snapshot'; next: State } | { kind: 'state' } | { kind: 'layout' };
 };
-let transition: Transition | undefined, transitionGeneration = 0, layoutGeneration = 0;
+let transition: Transition | undefined, transitionGeneration = 0;
 function cover(): HTMLElement {
   const host = document.createElement('div'); host.id = 'presentation';
   const shadow = host.attachShadow({ mode: 'open' });
@@ -137,30 +137,28 @@ function cover(): HTMLElement {
 function beginTransition(next?: State) {
   textBirths.clear();
   if (transition && next) {
-    scrolling = scrollRollback(transition.scroll); lastMeasurement = undefined; scrollEvents.length = 0; resets++; loadingAnchor = undefined; readerCatchup = undefined;
+    lastMeasurement = undefined; scrollEvents.length = 0;
     drafts.clear(); for (const [view, text] of transition.memory.drafts) drafts.set(view, text);
   }
   const phase: Transition['phase'] = next ? { kind: 'snapshot', next } : { kind: 'layout' };
   if (transition) { transition.phase = phase; transition.generation = ++transitionGeneration; }
   else {
     const current = new Map(drafts); current.set(state.view.id, editor.text());
-    transition = { cover: cover(), memory: { scroll: scrollMemory(scrolling), drafts: [...current], ...topics.memory() }, scroll: scrolling, outgoingDraftSaved: false, generation: ++transitionGeneration, phase };
+    transition = { cover: cover(), memory: { scroll: scrollMemory(scrolling), drafts: [...current], ...topics.memory() }, outgoingDraftSaved: false, generation: ++transitionGeneration, phase };
   }
   schedule();
 }
-function commitTransition() {
+function scrollSettled() {
+  return (!transition || transition.phase.kind === 'layout') && state.life.type !== 'switching' && !transcriptHistory.pending && !job.pending && !scrolling.unread.pendingSend && (state.view.type === 'job' || !(windowDirty || resetting || dirty.size || extentDirty.size || fitPending.size || revealPreparation.size || growing.length || measuredHolds.size));
+}
+function commitTransition(settled: boolean) {
   if (!transition || transition.phase.kind !== 'layout') return;
-  const phase = transition.phase;
-  if (state.life.type === 'switching' || transcriptHistory.pending || loadingAnchor || scrolling.kind === 'restoring' || scrolling.settling !== 'none' || scrollDecision.request || state.view.type !== 'job' && (windowDirty || resetting || dirty.size || extentDirty.size || fitPending.size || revealPreparation.size || growing.length || measuredHolds.size)) { phase.prepared = undefined; return; }
-  const geometry = JSON.stringify([element('scroll').scrollTop, ...['scroll', 'dock', 'bar'].map(id => { const box = element(id).getBoundingClientRect(); return [box.x, box.y, box.width, box.height]; }), ...Array.from(state.view.type === 'job' ? job.rows() : element('items').children).map(row => { const box = row.getBoundingClientRect(); return [row.getAttribute('data-seq') ?? row.getAttribute('data-byte'), box.top, box.height]; })]);
-  if (phase.prepared?.layout === layoutGeneration && phase.prepared.geometry === geometry) {
-    drafts.delete(state.view.id); transition.cover.remove(); transition = undefined;
-  } else phase.prepared = { layout: layoutGeneration, geometry };
+  if (settled && !scrollDecision.request) { drafts.delete(state.view.id); transition.cover.remove(); transition = undefined; }
 }
 function topicUnread(): Map<TopicName, number> {
   const counts = new Map<TopicName, number>();
   if (!('topics' in state)) return counts;
-  for (const [seq, rows] of scrolling.candidates) {
+  for (const [seq, rows] of scrolling.unread.candidates) {
     if (!Array.from(rows.values()).some(row => row.status === 'unread')) continue;
     for (const topic of state.topics) {
       const item = projectTopic(topicContext, seq, topic.name);
@@ -186,7 +184,6 @@ const topics = createTopics({
 }, memory);
 function projectTopicFilter() {
   refreshTopicItems();
-  enqueue({ type: 'filter', active: topics.filter() !== undefined, topic: topics.filter() });
   for (const seq of items.keys()) changedItem(seq, false);
 }
 function latestTopicInput(): WireItem | undefined {
@@ -207,8 +204,12 @@ function visible(seq: number): WireItem | undefined {
   projections.set(seq, projected);
   return projected;
 }
-function refreshTopicItems() {
+function refreshTopicItems(outgoing?: { anchor: Measure['anchor'] }) {
+  const anchor = outgoing ? outgoing.anchor : measure().anchor;
   textBirths.clear();
+  reduceEvents();
+  const scope = { view: state.view.id, sessionId: state.sessionId, topic: topics.filter() };
+  if (scrolling.scope.view !== scope.view || scrolling.scope.sessionId !== scope.sessionId || scrolling.scope.topic !== scope.topic) scrolling = reduce(scrolling, [{ type: 'scope', scope, filtered: topics.filter() !== undefined, anchor }]).state;
   shownFilter = topics.filter();
   topicContext.topics = undefined;
   projections.clear(); segmentCache.clear(); owners.clear(); find = undefined; selected = undefined;
@@ -218,7 +219,7 @@ function refreshTopicItems() {
   windowDirty = true; schedule();
 }
 let scrolling = scrollInitial({ view: '', sessionId: undefined }, memory?.scroll);
-let scrollDecision: Decision = { latest: { show: false, count: 0 }, windowTop: 0, frame: 'none' };
+let scrollDecision: Decision = { latest: { show: false, count: 0 }, windowTop: 0, frame: false };
 let lastMeasurement: Measure | undefined;
 let divider: HTMLElement | undefined;
 let dockHeight = 0;
@@ -229,7 +230,8 @@ const transcriptHistory = createTranscriptHistory({
   epoch: () => epoch, session: () => state.sessionId, view: () => state.view.type, filter: () => topics.filter(), first: () => first,
   viewport: () => element('scroll'), has: seq => items.has(seq), accept: rows => acceptHistory(rows),
   apply: record => { if (record.type === 'patch') applyPatch(record, false); else apply(record, 'landing'); },
-  history: () => enqueue({ type: 'history' }), filtered: projectTopicFilter, rendered: () => rendered(), error: reportError,
+  history: () => decide({ type: 'history' }), filtered: projectTopicFilter, rendered: () => rendered(), error: reportError,
+  changed: schedule, failed: generation => decide({ type: 'load-failed', generation }),
 });
 let editorOpening = false;
 const draft = attach(element('attachments'), () => refreshComposer(), () => state.edit ? 'editing' : editor.bash() ? 'command' : undefined);
@@ -414,7 +416,7 @@ function foldFence(pre: HTMLElement, key: string) {
   pre.after(bar);
 }
 const transcriptVisible = () => state.view.type !== 'job' && !element('items').hidden;
-const wanted = () => fontsReady && (transcriptVisible() && (extentDirty.size > 0 || commandTails.size > 0 || animating.size > 0 || windowDirty || revealDirty || fitPending.size > 0 || growing.length > 0 || measuredHolds.size > 0) || dirty.size > 0 || resetting || scrollEvents.length > 0 || scrollDecision.frame !== 'none' || waiters.length > 0 || transition?.phase.kind === 'layout' && !transcriptHistory.pending || !!metrics?.waiting.length);
+const wanted = () => fontsReady && (transcriptVisible() && (extentDirty.size > 0 || commandTails.size > 0 || animating.size > 0 || windowDirty || revealDirty || fitPending.size > 0 || growing.length > 0 || measuredHolds.size > 0) || dirty.size > 0 || resetting || scrollEvents.length > 0 || scrollDecision.frame || waiters.length > 0 || transition?.phase.kind === 'layout' && !transcriptHistory.pending || !!metrics?.waiting.length);
 function schedule() {
   if (pending || !wanted()) return;
   pending = document.hidden ? { kind: 'timer', id: setTimeout(tick, 50) } : { kind: 'frame', id: requestAnimationFrame(tick) };
@@ -437,6 +439,8 @@ function stopFrames() {
 function rendered() { return new Promise<void>(resolve => { waiters.push(resolve); schedule(); }); }
 function tick() {
   pending = undefined;
+  const { events, scrolled } = reduceEvents();
+  catchUpReader();
   const now = performance.now(), geo = geometry();
   const grown = [...measuredHolds];
   measuredHolds.clear();
@@ -472,26 +476,28 @@ function tick() {
   for (const [pre] of commandTails) if (pre.isConnected) pre.scrollTop = pre.scrollHeight;
   commandTails.clear();
   const layout = flushExtents();
-  if (layout) scrollEvents.push({ type: 'layout', cause: 'layout' });
+  reduceEvents();
   const scroll = element('scroll'), viewport = scroll.clientHeight;
-  const fresh = {
-    now, top: scroll.scrollTop, max: Math.max(0, scroll.scrollHeight - viewport),
-    viewport, width: scroll.clientWidth,
-  };
-  const measurement = !lastMeasurement || layout || scrollDecision.frame === 'measure'
-    || fresh.max !== lastMeasurement.max
-    || fresh.viewport !== lastMeasurement.viewport || fresh.width !== lastMeasurement.width
-    ? measure() : { ...lastMeasurement, ...fresh };
-  decide({ type: 'frame' }, measurement);
-  if (state.view.type !== 'job' && !resetting && !windowDirty && scrolling.kind !== 'restoring') transcriptHistory.fill();
-  commitTransition();
+  const fresh = { now, top: scroll.scrollTop, max: Math.max(0, scroll.scrollHeight - viewport), viewport, width: scroll.clientWidth };
+  const measurement = !lastMeasurement || layout || fresh.max !== lastMeasurement.max || fresh.viewport !== lastMeasurement.viewport || fresh.width !== lastMeasurement.width ? measure() : { ...lastMeasurement, ...fresh };
+  const settled = scrollSettled();
+  const result = place(scrolling, { ...measurement, settled, layout: events.some(event => event.type === 'layout' && event.cause === 'toggle') ? 'toggle' : layout || events.some(event => event.type === 'layout' || event.type === 'history' || event.type === 'resize') ? 'layout' : 'none', scrolled });
+  const candidates = scrolling.unread.candidates;
+  scrolling = result.state;
+  if (candidates !== scrolling.unread.candidates) topics.render();
+  if (scrollDecision.windowTop !== result.decision.windowTop) windowDirty = true;
+  scrollDecision = result.decision;
+  const stored = applyScroll(scrollDecision);
+  if (stored !== undefined) scrolling = scrollStored(scrolling, stored);
+  if (state.view.type !== 'job' && !resetting && !windowDirty && scrolling.mode.kind !== 'landing') transcriptHistory.fill();
+  commitTransition(settled);
   for (const resolve of waiters.splice(0)) resolve();
   for (const waiter of metrics?.waiting.splice(0) ?? []) waiter();
   schedule();
   armCap();
 }
 type Geo = { top: number; max: number; viewport: number; width: number; origin: number };
-const geometry = (): Geo => scrolling.last ?? lastMeasurement ?? measure();
+const geometry = (): Geo => { const m = lastMeasurement ?? measure(); return { ...m, top: scrolling.seen?.top ?? m.top }; };
 const messageRows = (): ArrayLike<Element> => state.view.type === 'job' ? job.rows() : element('items').children;
 const itemOf = (row: Element | undefined): ItemId | undefined => row instanceof HTMLElement ? row.dataset.seq !== undefined ? { kind: 'message', seq: Number(row.dataset.seq) } : row.dataset.byte !== undefined ? { kind: 'job', byte: Number(row.dataset.byte) } : undefined : undefined;
 const unitView = (row: RowId) => row.kind === 'run' ? openers.get(rowKey(row))?.view : texts.get(rowKey(row))?.view;
@@ -552,6 +558,7 @@ function measure(): Measure {
   }
   return lastMeasurement = {
     now: performance.now(),
+    settled: false, layout: 'none', scrolled: false,
     top,
     max: Math.max(0, scroll.scrollHeight - viewport),
     viewport,
@@ -621,24 +628,38 @@ function applyScroll(decision: Decision) {
     stored = scroll.scrollTop;
   }
   if (decision.request?.type === 'mount') windowDirty = true;
-  else if (decision.request?.type === 'load') void loadAnchor(decision.request.item, decision.request.generation);
-  if (decision.frame !== 'none') schedule();
+  else if (decision.request?.type === 'load') {
+    const { item, generation } = decision.request;
+    if (item.kind === 'message') transcriptHistory.anchor(item.seq, generation);
+    else {
+      const before = job.start();
+      void job.earlier().then(() => { if (generation === scrolling.generation && job.start() >= before) decide({ type: 'load-failed', generation }); schedule(); });
+    }
+  }
+  if (decision.frame) schedule();
   return stored;
 }
-function decide(event?: ScrollEvent, measurement = measure()) {
-  if (event) scrollEvents.push(event);
-  const events = scrollEvents.splice(0);
-  const result = scrollUpdate(scrolling, events, measurement);
-  const previousTop = scrollDecision.windowTop;
-  const unreadChanged = scrolling.candidates !== result.state.candidates;
-  scrolling = result.state; scrollDecision = result.decision;
-  if (events.some(event => event.type === 'filter')) catchUpReader();
-  if (unreadChanged) topics.render();
-  if (previousTop !== scrollDecision.windowTop) windowDirty = true;
-  const stored = applyScroll(scrollDecision);
-  if (stored !== undefined) scrolling = scrollStored(scrolling, stored);
+type PageScrollEvent = ScrollEvent extends infer E ? E extends import('./scroll.ts').Observation ? Omit<E, keyof import('./scroll.ts').Observation | 'layout'> : E extends { type: 'item' } ? Omit<E, 'focused'> : E : never;
+function reduceEvents() {
+  const events = scrollEvents.splice(0), before = scrolling.unread.candidates;
+  const reduced = reduce(scrolling, events);
+  scrolling = reduced.state;
+  if (before !== scrolling.unread.candidates) topics.render();
+  return { events, scrolled: reduced.scrolled };
 }
-function enqueue(event: ScrollEvent) { scrollEvents.push(event); schedule(); }
+function decide(event: PageScrollEvent) {
+  switch (event.type) {
+    case 'input': case 'focus': case 'visibility': case 'latest': case 'resize': scrollEvents.push({ ...measure(), ...event }); break;
+    case 'scroll': {
+      const input = scrollEvents.findLastIndex(event => event.type === 'input');
+      scrollEvents.push({ ...measure(), ...event, layout: scrollEvents.some((event, index) => index > input && (event.type === 'layout' || event.type === 'history' || event.type === 'resize')) });
+      break;
+    }
+    case 'item': scrollEvents.push({ ...event, focused: (window.koaFocused ?? document.hasFocus()) && (window.koaFocused ?? document.visibilityState === 'visible') }); break;
+    default: scrollEvents.push(event);
+  }
+  schedule();
+}
 function unitRows(seq: number, source: 'visible' | 'all' = 'visible'): RowId[] {
   const shown = source === 'all' ? (seq: number) => items.get(seq) : visible;
   const item = shown(seq), context: RunContext = source === 'all' ? allRuns : runContext(), keys: RowId[] = [];
@@ -649,21 +670,7 @@ function unitRows(seq: number, source: 'visible' | 'all' = 'visible'): RowId[] {
 }
 function changedItem(seq: number, appended: boolean) {
   const item = items.get(seq), shown = new Set(unitRows(seq).map(rowKey));
-  if (item) enqueue({ type: 'item', seq, kind: item.kind === 'user' ? 'user' : item.kind === 'assistant' ? 'assistant' : 'other', visible: countedMessage(visible(seq)), rows: item.kind === 'assistant' ? unitRows(seq, 'all').filter(row => row.kind === 'text').map(row => ({ row, visible: shown.has(rowKey(row)) })) : item.kind === 'user' && countedMessage(item) ? [{ visible: countedMessage(visible(seq)) }] : undefined, appended });
-}
-let resets = 0, loadingAnchor: string | undefined;
-async function loadAnchor(item: ItemId, generation: number) {
-  const reset = resets, key = generation + ':' + reset;
-  const current = () => scrolling.generation === generation && resets === reset;
-  if (loadingAnchor === key) return;
-  loadingAnchor = key;
-  try {
-    if (item.kind === 'job') {
-      while (current() && state.view.type === 'job' && job.start() > item.byte && await job.earlier());
-    } else for (let before = first; transcriptHistory.more && first !== undefined && item.seq < first && current();) { await transcriptHistory.earlier(); if (first === before) break; before = first; }
-    if (current()) enqueue({ type: 'restore-result', generation, found: item.kind === 'message' ? items.has(item.seq) : !!rowOf(item) });
-  } catch (error) { if (current()) enqueue({ type: 'restore-result', generation, found: false }); reportError(error); }
-  finally { if (loadingAnchor === key) loadingAnchor = undefined; }
+  if (item) decide({ type: 'item', seq, kind: item.kind === 'user' ? 'user' : item.kind === 'assistant' ? 'assistant' : 'other', visible: countedMessage(visible(seq)), rows: item.kind === 'assistant' ? unitRows(seq, 'all').filter(row => row.kind === 'text').map(row => ({ row, visible: shown.has(rowKey(row)) })) : item.kind === 'user' && countedMessage(item) ? [{ visible: countedMessage(visible(seq)) }] : undefined, appended });
 }
 function revealStep(memo: TextMemo, now: number, viewport: number) {
   const { reveal } = memo, tail = reveal?.tail;
@@ -734,7 +741,7 @@ function toggleAt(line: HTMLElement, change: () => void) {
   if (found.kind !== 'mounted') return;
   const delta = row.contains(line) ? line.getBoundingClientRect().top - before : row.getBoundingClientRect().top - rowBefore;
   const top = measurement.top + delta;
-  decide({ type: 'layout', cause: 'toggle', anchor: { item, offset: found.row.top - top, edge: 'row' } }, measurement);
+  decide({ type: 'layout', cause: 'toggle', anchor: { item, offset: found.row.top - top, edge: 'row' } });
 }
 function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLElement, show?: () => void, className = 'open', changed?: () => void) {
   view.classList.toggle(className, folds.get(key) === true);
@@ -1257,7 +1264,6 @@ function appendRow(t: Table, seq: number) {
 }
 const rowTop = (seq: number) => { const t = ensureTable(); return (t.starts[t.index.get(seq) ?? 0] ?? 0); };
 function dirtyExtent(target: Element) {
-  layoutGeneration++;
   const list = element('items');
   let row: Element | null = target;
   while (row && row.parentNode !== list) row = row.parentElement;
@@ -1744,16 +1750,9 @@ function applyPatch(record: Patch, buffer: boolean) {
   }
   accept(item);
 }
-let readerCatchup: object | undefined;
 function catchUpReader() {
-  if (scrolling.kind !== 'restoring' || scrolling.target.scope.sessionId !== state.sessionId) return;
-  const operation = readerCatchup = {};
-  const generation = scrolling.generation, session = state.sessionId, view = state.view.id, origin = epoch;
-  if (!topics.filter() || !transcriptHistory.needsCatchUp(scrolling.target.last)) { enqueue({ type: 'catchup', generation, pending: false }); return; }
-  enqueue({ type: 'catchup', generation, pending: true });
-  void transcriptHistory.catchUp(scrolling.target.last).then(outcome => {
-    if (readerCatchup === operation && outcome !== 'cancelled' && epoch === origin && state.sessionId === session && state.view.id === view) enqueue({ type: 'catchup', generation, pending: false });
-  });
+  const mode = scrolling.mode;
+  if (mode.kind === 'landing' && mode.target.at === 'anchor' && topics.filter() && mode.target.saved.scope.sessionId === state.sessionId) void transcriptHistory.catchUp(mode.target.saved.last);
 }
 function apply(record: PageRecord, origin: RenderOrigin = 'live') {
   if ((record.type === 'reset' || record.type === 'job-reset') && transition?.phase.kind === 'snapshot') {
@@ -1763,13 +1762,11 @@ function apply(record: PageRecord, origin: RenderOrigin = 'live') {
   }
   if (record.type === 'reset') {
     textBirths.clear();
-    readerCatchup = undefined;
     topics.cancel();
     pathWarnings.clear(); pathWarningEpoch++;
     editor.resetCompletion();
     find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); allRuns.owners.clear(); runKeys.clear(); topicContext.topics = undefined; order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); topicItems.clear(); projections.clear(); folds.clear(); transcriptHistory.cancel('request');
-    resets++;
-    enqueue({ type: 'reset' });
+    decide({ type: 'reset' });
     lastMeasurement = undefined;
     resetting = true;
     refreshTopicItems();
@@ -1787,7 +1784,7 @@ function apply(record: PageRecord, origin: RenderOrigin = 'live') {
     }
   } else if (record.type === 'patch') applyPatch(record, true);
   else if (record.type === 'reload') location.reload();
-  else if (record.type === 'job-reset') { resets++; enqueue({ type: 'reset' }); epoch = record.epoch; job.reset(record); after = job.cursor(); }
+  else if (record.type === 'job-reset') { refreshTopicItems(); decide({ type: 'reset' }); epoch = record.epoch; job.reset(record); after = job.cursor(); }
   else if (record.type === 'job-gone') job.gone(record);
   else if (record.type === 'job-append') { job.append(record); after = job.cursor(); }
   else if (record.type === 'state') {
@@ -1813,19 +1810,16 @@ function applyState(record: State, snapshot = false) {
     const wasEditing = !!state.edit, viewChanged = state.view.id !== record.view.id, transcriptWasVisible = transcriptVisible();
     if (viewChanged) leaveView(record.view.id);
     if (viewChanged || state.sessionId !== record.sessionId) { textBirths.clear(); pathWarnings.clear(); pathWarningEpoch++; }
-    const loaded = state.view.id === '' && epoch !== '';
     const scopeChanged = viewChanged || state.sessionId !== record.sessionId, previousFilter = topics.filter(), priorInput = latestTopicInput();
     if (previousFilter && priorInput?.kind === 'user') visible(priorInput.seq);
     const workingChanged = state.working !== record.working;
-    const previousScope = topics.scope();
+    const previousScope = topics.scope(), outgoingAnchor = scopeChanged ? measure().anchor : undefined;
     state = record;
     reportComposer();
     topics.update(record, previousScope);
     if (scopeChanged) transcriptHistory.cancel('scope');
-    if (scopeChanged) decide({ type: 'switch', scope: { view: record.view.id, sessionId: record.sessionId, topic: topics.filter() }, loaded, filtered: topics.filter() !== undefined });
-    if (scopeChanged && loaded) catchUpReader();
     topics.render();
-    if (scopeChanged) { refreshTopicItems(); if (!snapshot && epoch && record.view.type === 'root' && (previousFilter !== topics.filter() || topics.filter() !== undefined)) void transcriptHistory.reload(); }
+    if (scopeChanged) { refreshTopicItems({ anchor: outgoingAnchor }); if (!snapshot && epoch && record.view.type === 'root' && (previousFilter !== topics.filter() || topics.filter() !== undefined)) void transcriptHistory.reload(); }
     if (workingChanged && previousFilter === shownFilter && shownFilter && priorInput?.kind === 'user') accept({ ...priorInput });
     windowDirty = true; schedule(); if (agentsChanged || viewChanged) { for (const seq of views.keys()) dirty.add(seq); } document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
     showJobView();
@@ -1865,9 +1859,9 @@ function rescopeImages() {
 const job = createJobPage({
   root: element('jobv'), foot: { dot: element('job-dot'), word: element('job-word'), time: element('job-time'), count: element('job-count'), act: element('job-act') }, node, resync, reportError,
   log: link => previewFile(link, '/job/log'),
-  earlier: async (id, jobEpoch, before) => { const result = await fetchJSON('/job/earlier', { sessionId: state.sessionId, id, epoch: jobEpoch, before }); enqueue({ type: 'history' }); return result; },
+  earlier: async (id, jobEpoch, before) => { const result = await fetchJSON('/job/earlier', { sessionId: state.sessionId, id, epoch: jobEpoch, before }); decide({ type: 'history' }); return result; },
   act: (action, id) => { fetchJSON(action === 'stop' ? '/job/stop' : '/job/clear', { sessionId: state.sessionId, id }).catch(reportError); },
-  changed: () => enqueue({ type: 'layout', cause: 'layout' }),
+  changed: () => decide({ type: 'layout', cause: 'layout' }),
 });
 function showJobView() {
   const current = state.view.type === 'job' ? state.view : undefined;
@@ -1946,7 +1940,7 @@ function dockResized(height: number) {
   document.body.style.setProperty('--dock-h', height + 'px');
   if (height === dockHeight) return;
   dockHeight = height;
-  enqueue({ type: 'layout', cause: 'layout' });
+  decide({ type: 'layout', cause: 'layout' });
 }
 type Match = { seq: number; segment: number; start: number };
 type Find = { query: string; backwards: boolean; started: boolean; loadedFrom: number | undefined; cursor: Match | undefined };
@@ -2043,7 +2037,7 @@ async function reveal(mine: Find, match: Match, needle: string, backwards: boole
   const alive = () => find === mine && state.view.id === view && epoch === generation && segmentsOf(seq)[match.segment]?.text === segment.text && segmentsOf(seq)[match.segment]?.folds.join() === segment.folds.join();
   for (const key of segment.folds) folds.set(key, true);
   for (const key of segment.fences) openFences.add(key);
-  enqueue({ type: 'navigate', anchor: { item: { kind: 'message', seq }, offset: geometry().viewport / 3, edge: 'row' } });
+  decide({ type: 'navigate', anchor: { item: { kind: 'message', seq }, offset: geometry().viewport / 3, edge: 'row' } });
   windowDirty = true;
   for (let turn = 0; turn < 8; turn++) { await rendered(); if (!alive()) return false; if (views.has(seq) && !windowDirty) break; }
   for (const key of segment.folds) openers.get(key)?.open();
@@ -2317,7 +2311,7 @@ function composerReceivesKeys() { return document.hasFocus() && !element('field'
 function composerFocus() { element('field').classList.toggle('focus', composerReceivesKeys()); }
 function focusComposer() { composerFocus(); if (composerReceivesKeys() && !pickerButton && sessionPicker === 'closed' && (!isControl(document.activeElement) || editor.hasFocus())) editor.focus(); }
 window.addEventListener('focus', () => { focusComposer(); decide({ type: 'focus' }); });
-matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', () => decide({ type: 'frame' }));
+matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', () => schedule());
 window.addEventListener('load', focusComposer);
 const onEditingComposer = (event: Event) => !!state.edit && event.target instanceof Element && element('composer').contains(event.target);
 document.addEventListener('mousedown', event => { if (onEditingComposer(event)) event.preventDefault(); });
@@ -2331,6 +2325,7 @@ document.addEventListener('click', event => {
   else if (pane) window.ko?.focus?.(pane);
 });
 window.addEventListener('pagehide', () => {
+  reduceEvents();
   const scroll = scrollMemory(scrolling);
   decide({ type: 'visibility' }); stopFrames();
   const current = new Map(drafts);
@@ -2401,7 +2396,7 @@ element('scroll').onscroll = () => {
   decide({ type: 'scroll' });
   const geo = geometry(), top = geo.top - geo.origin, half = geo.viewport / 2, total = ensureTable().starts[order.length];
   if (!mountedSpans.some(span => span.start <= Math.max(0, top - half) && span.end >= Math.min(total, top + geo.viewport + half))) { windowDirty = true; schedule(); }
-  if (scrolling.kind !== 'restoring') transcriptHistory.fill();
+  if (scrolling.mode.kind !== 'landing') transcriptHistory.fill();
 };
 element('scroll').addEventListener('wheel', event => {
   if (event.deltaY && Math.abs(event.deltaY) >= Math.abs(event.deltaX)) decide({ type: 'input', direction: event.deltaY < 0 ? 'up' : 'down' });
@@ -2417,7 +2412,6 @@ element('latest').onmousedown = event => event.preventDefault();
 element('latest').onclick = () => decide({ type: 'latest' });
 const layoutObserver = new ResizeObserver(entries => probe ? probe.within('ResizeObserver', () => resized(entries)) : resized(entries));
 function resized(entries: ResizeObserverEntry[]) {
-  layoutGeneration++;
   if (fontsReady && transcriptVisible() && (element('items').clientWidth !== measured.width || lineHeight() !== measured.lh)) invalidateExtents();
   const column = entries.some(({ target }) => target === element('scroll')) && !bar.hidden ? element('transcript').getBoundingClientRect() : undefined;
   for (const { target, borderBoxSize } of entries) {
@@ -2425,6 +2419,7 @@ function resized(entries: ResizeObserverEntry[]) {
     if (target === element('scroll') && column) layoutBar(column);
   }
   topics.resize(entries);
+  if (lastMeasurement && (element('scroll').clientHeight !== lastMeasurement.viewport || element('scroll').clientWidth !== lastMeasurement.width)) decide({ type: 'resize' });
   decide({ type: 'layout', cause: 'layout' });
 }
 layoutObserver.observe(topics.measure);

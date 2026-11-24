@@ -592,7 +592,25 @@ Browser scroll anchoring is disabled to avoid a second owner. The
 one exception is the edge scroll of a topic drag
 (`koa/page/topics.ts`), which the state machine reads as reader
 input. The rules below are the contract: what the user sees, and
-why. `plans/koa-scroll.md` lists where the code does not meet them.
+why.
+
+Each frame reduces its events before it renders, so the frame mounts
+the rows of the new mode, and places after it measures, with one
+write. The state holds one mode: following, a reader, a Latest
+travel, or a landing. A landing is a view that koa is placing: at
+the end, at the first unread message, or at a saved anchor. It
+starts at the page's start, a reset, a resize, a view, session or
+filter switch, a find navigation and the user's send (a reader's
+reset or resize lands at its own anchor), and it writes its target in every
+frame, with or without focus. Reader input cancels it. It ends in
+the first frame that the page reports as settled: the view's
+history and catch-up are loaded, the target is resolved and
+mounted, no marked row waits for measurement, and no own send waits
+for its result. The cover of a switch goes on the same fact. Settled
+does not wait for the turn or for the reveal, so a landing ends also
+in a hidden page during a streaming turn. A landing at the end ends
+as following; one at an anchor or the unread message ends as a
+reader, or as following when its target does not exist.
 
 **Two modes.** A view is *following* or it has a *reader*. A
 following view shows the end of the transcript. A reader's view
@@ -608,7 +626,9 @@ reader into a follower by itself.
   within 1 px of the bottom, the user's send, and Latest. The send
   follows at the submit, in the same frame, with or without focus,
   because the user must see their own message; it does not wait for
-  the result, and a failed send leaves the view following. A reader that content brings to
+  the result. The send is a landing at the end until its result, so
+  growth before the own message arrives keeps the bottom, and a
+  failed send leaves the view following. A reader that content brings to
   the bottom (a shrink, a clamp) stays a reader.
 - A follower becomes a reader on a scroll or an input up. An input
   up with no scroll range changes nothing: a transcript shorter than
@@ -682,12 +702,12 @@ know: a known row keeps its unread state.
 
 **A reload and a restart keep the intent.** The memory of every
 view's mode and anchor is in the page's history state; `pagehide`
-saves it before its last scroll update. The intent to follow (the
-start of a page, a reset, a switch to a view that the memory does
-not hold as a reader) lasts through the first delivery and layout,
-with or without focus, until the view stands at a bottom that is not
-empty or reader input cancels it. Only growth after that makes an
-unfocused view a reader. Unread state is in memory only.
+saves it before its last scroll update. The start of a page and a
+reset are landings at the view's saved anchor, or at the end, so
+only growth after the landing ends makes an unfocused view a
+reader. A reset during a filter switch lands on the filter that the
+projection shows: the projection's change starts the landing with
+its scope. Unread state is in memory only.
 
 **While following, nothing moves down and no blank space appears at
 the bottom.** A follower's position is the content's bottom in every

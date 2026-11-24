@@ -127,12 +127,13 @@ export function createJobPage(env: JobEnv) {
       drawOlder();
       env.changed();
       return true;
-    }).catch(error => { if (loaded === current) { if (error?.status === 404) missing(); else env.reportError(error); } return false; }).finally(() => { current.pending = undefined; });
+    }).catch(error => { if (loaded === current) { if (error?.status === 404) missing(); else env.reportError(error); } return false; }).finally(() => { current.pending = undefined; env.changed(); });
   };
   older.onclick = () => { void earlier(); };
   act.onclick = () => { if (view) env.act(view.job.state.type === 'running' ? 'stop' : 'clear', view.id); };
 
   return {
+    get pending() { return loaded?.pending !== undefined; },
     rows: () => loaded?.rows ?? [],
     row(byte: number) {
       const rows = loaded?.rows ?? [];
