@@ -2497,7 +2497,14 @@ CSS px.
   second); finished: no dots, the right end shows "exit N" in
   `--ko-color-1` when N is not 0, "cancelled" in the faint colour for
   a cancel, then the duration; exit 0 shows the duration alone. The
-  command turns `--ko-color-1` when the exit is not 0, as today. The
+  command turns `--ko-color-1` when the exit is not 0, as today.
+  Until pi records the result with its execution id and start time
+  (pi 1.5.2 does not; unit 1 therefore swaps the live card for the
+  finished row in one frame, without a duration, and keeps neither
+  the box's inner scroll nor a fold made at the handoff): the
+  finished header shows "exit N" or "cancelled" alone in the time's
+  place, and an exit 0 shows nothing there; the layout is the same,
+  the slot is empty. The duration returns with the pi change. The
   output box under the line, as today in geometry (margin 3px 0 0
   4px, a 1px `--hair` guide at the left, padding-left 13px; the
   `pre` margin 3px 12px 4px 0, the terminal font at .88em, `--muted`
