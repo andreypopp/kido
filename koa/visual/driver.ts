@@ -220,7 +220,7 @@ async function takeKoaSnapshot(name: string, appearance: string, scenario: Scena
   } finally { if (gap) await webviewJS(web,"document.querySelector('#unread-gap-crop').remove()"); }
 }
 const followingChecks = `window.koaFollowCheck=(${followMonitor.toString()})();window.koaFollowSample=()=>{const scroll=document.querySelector('#scroll'),slot=document.querySelector('#tail-slot'),dock=document.querySelector('#dock');if(!scroll||!slot||!dock)return;const bounds=dock.getBoundingClientRect(),rows=[...document.querySelectorAll('#items>[data-seq]')].flatMap(root=>[...root.querySelectorAll('.msg.prose,.run,.cmdrun,.nrow,.user')].map((row,index)=>{const rect=row.getBoundingClientRect();return {key:root.dataset.seq+':'+index,top:rect.top,bottom:rect.bottom}}));const reveals=document.querySelectorAll('.reveal').length,exemption=window.koaFollowExemption??(window.koaPriorReveals>reveals?'completion':undefined);window.koaFollowExemption=undefined;window.koaPriorReveals=reveals;koaFollowCheck({scope:document.body.dataset.sessionId+':'+document.querySelector('#topics .selected')?.textContent+':'+document.querySelector('#bar')?.textContent,viewport:scroll.clientHeight,width:scroll.clientWidth,dock:bounds.top,following:window.koaFollowEnabled===true,covered:!!document.querySelector('#presentation')||slot.hidden,max:scroll.scrollHeight-scroll.clientHeight,rows,bottomSpace:bounds.top-slot.getBoundingClientRect().bottom,exemption})};document.addEventListener('click',event=>{if(event.target.closest('.line,button.more'))window.koaFollowExemption='fold'},true);`;
-const followingTick = "const followRequest=requestAnimationFrame;window.requestAnimationFrame=callback=>followRequest(time=>{callback(time);if(callback.name==='tick')koaFollowSample()});";
+const followingTick = "window.koaTickRequests=0;const followRequest=requestAnimationFrame;window.requestAnimationFrame=callback=>{if(callback.name==='tick')koaTickRequests++;return followRequest(time=>{callback(time);if(callback.name==='tick')koaFollowSample()})};";
 async function scrollPage(module: string, key: string, condition = "", follow = false): Promise<Page> {
   const initial = paneFocus + `window.koaFollowEnabled=${follow};` + "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[1700000012000]))}static now(){return 1700000012000}};" + (['ExplicitRowExtents', 'ViewSwitchAtomic'].includes(key) ? '' : 'window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;') + "const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};";
   const web = await context.start(browser, module, key, replayRoot(), { width: 680, height: 557 }, [initial, followingChecks + followingTick, hideLatest]);
@@ -1083,10 +1083,13 @@ async function testKoaWebviewExplicitRowExtents() {
         const width = await webviewJS<boolean>(web, '[...document.querySelectorAll("#items>[data-seq]")].every(row=>extentReads.includes(Number(row.dataset.seq)))')
         equal(width, true, 'Width change measures mounted rows')
         const jobFrames = await webviewJS<number>(web, '(async()=>{' + followHelpers + `
-          window.jobFrames=0;const request=window.requestAnimationFrame.bind(window);window.requestAnimationFrame=callback=>{if(callback.name==='tick')jobFrames++;return request(callback)};
+          if(koaTickRequests===0)throw Error('Frame counter did not see page layout');
           const id='extent-job',snapshot={name:'idle',command:'true',service:false,startedAt:1700000000000,place:{type:'mac'},log:'/tmp/idle.log',state:{type:'ended',end:{type:'exit',code:0},at:1700000000001}};
           push({...view(root,[root]),view:{id,path:[root,{id,name:'idle',type:'job'}],type:'job',job:snapshot,record:'jobs/'+id}});
-          await extentFrames();const requested=jobFrames;await extentFrames();if(requested===0)throw Error('Frame counter did not see the job transition');return jobFrames-requested;
+          push({type:'job-reset',view:id,epoch:'idle-job',start:0,end:0,data:''});
+          await until(()=>!document.querySelector('#presentation')&&!document.querySelector('#jobv').hidden,3000);
+          if(document.querySelector('#presentation')||document.querySelector('#jobv').hidden)throw Error('Idle job view did not commit');
+          await extentFrames();const requested=koaTickRequests;await extentFrames();return koaTickRequests-requested;
         })()`)
         equal(jobFrames, 0, 'Idle job view stops requesting frames')
     }
@@ -1518,8 +1521,8 @@ echo release
                 await capture(prefix + "empty")
                 await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return true})()")
                 await webviewJS(web, `(()=>{void fetch('/sessions/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,path:${JSON.stringify(home + "/sessions/2026-11-10T09-00-00-000Z_00000000-0000-7000-8000-000000000002.jsonl")}})});return true})()`)
-                await webviewUntil(web, "document.querySelector('#prompt .cm-placeholder')?.textContent==='Loading…'")
-                await capture(prefix + "loading")
+                await webviewUntil(web, "!!document.querySelector('#presentation')")
+                equal(await webviewJS(web, "(()=>{const shown=document.querySelector('#presentation').shadowRoot;return shown.querySelector('body').dataset.sessionId==='00000000-0000-7000-8000-000000000001'&&shown.querySelector('#items').textContent.includes('Verify the sidebar unit')&&!shown.querySelector('#items').textContent.includes('Agent cards render Markdown')&&document.body.dataset.sessionId==='00000000-0000-7000-8000-000000000001'&&!document.querySelector('#items').textContent.includes('Agent cards render Markdown')})()"), true, 'A held session switch keeps the old session visible and uncommitted')
                 await release("session-switch")
                 await webviewUntil(web, `${koaIdle}&&document.querySelector('#items').textContent.includes('session: koa-md · 96 messages')`)
                 await capture(prefix + "after")

@@ -17,11 +17,12 @@ const userAgentCardsRender: WireItem = { seq: 0, revision: 0, at: 1794327239000,
 
 const assistantDoneTheCardsSeq1Rev0: WireItem = { seq: 1, revision: 0, at: 1794327240000, final: true, kind: "assistant", blocks: [{ type: "text", text: "Done: the cards render through the reply's Markdown renderer, collapsed to one plain line." }], stop: "stop", error: "" };
 
-const stateWithNameAndSessionId = (dir: string): PageRecord => ({ ...stateIdleFourth(dir), name: "koa-md", view: { id: "00000000-0000-7000-8000-000000000002", path: [{ id: "00000000-0000-7000-8000-000000000002", name: "ko", type: "agent" }], type: 'root' }, topics: [], sessionId: "00000000-0000-7000-8000-000000000002", sessionFile: `${dir}/home/sessions/2026-11-10T09-00-00-000Z_00000000-0000-7000-8000-000000000002.jsonl` });
+const stateWithNameAndSessionId = (dir: string): Extract<PageRecord, { type: "state" }> => ({ ...stateIdleFourth(dir), name: "koa-md", view: { id: "00000000-0000-7000-8000-000000000002", path: [{ id: "00000000-0000-7000-8000-000000000002", name: "ko", type: "agent" }], type: 'root' }, topics: [], sessionId: "00000000-0000-7000-8000-000000000002", sessionFile: `${dir}/home/sessions/2026-11-10T09-00-00-000Z_00000000-0000-7000-8000-000000000002.jsonl` });
 
 const sessionsSwitchStep = (dir: string): Step => (expect({ on: { method: "POST", path: "/sessions/switch", body: value => same(value, { sessionId: "00000000-0000-7000-8000-000000000001", path: `${dir}/home/sessions/2026-11-10T09-00-00-000Z_00000000-0000-7000-8000-000000000002.jsonl` }) }, before: [
     { ...stateIdleFourth(dir), life: { type: "switching" } },
   ], reply: { status: 200, json: { cancelled: false }, hold: "session-switch" }, after: [
+    { ...stateWithNameAndSessionId(dir), life: { type: "switching" } },
     { type: "reset", epoch: "epoch2", items: [userAgentCardsRender, assistantDoneTheCardsSeq1Rev0], more: false },
     stateWithNameAndSessionId(dir),
     { type: "item", item: { seq: 2, revision: 1, at: 1794330720000, final: true, kind: "notify", level: "info", text: { text: "session: koa-md · 96 messages", cut: 0 } } },
@@ -63,6 +64,8 @@ const promptStepNinth: Step = expect({ on: { method: "POST", path: "/prompt", bo
 
 const stateWithAbortedAndNameSecond = (dir: string): PageRecord => ({ ...stateIdleFourth(dir), aborted: true, name: "koa-md", view: { id: "00000000-0000-7000-8000-000000000002", path: [{ id: "00000000-0000-7000-8000-000000000002", name: "ko", type: "agent" }], type: 'root' }, topics: [], sessionId: "00000000-0000-7000-8000-000000000002", sessionFile: `${dir}/home/sessions/2026-11-10T09-00-00-000Z_00000000-0000-7000-8000-000000000002.jsonl`, context: { tokens: 87940, window: 200000, percent: 43.97 }, life: { type: "switching" } });
 
+const stateNew = (dir: string): Extract<PageRecord, { type: "state" }> => ({ ...stateIdleFourth(dir), name: "koa", sessionId: "01a1c671-f700-74e1-b629-76b5af5a18dd", sessionFile: `${dir}/home/sessions/2026-11-10T17-12-00-000Z_01a1c671-f700-74e1-b629-76b5af5a18dd.jsonl`, context: { tokens: 0, window: 200000, percent: 0 } });
+
 export const scenarios: Scenarios = {
   Sessions: dir => ({
     open: recordsFromResetOf2ItemsSecond(dir),
@@ -83,8 +86,9 @@ export const scenarios: Scenarios = {
       expect({ on: { method: "POST", path: "/sessions/new", body: value => same(value, { sessionId: "00000000-0000-7000-8000-000000000002" }) }, before: [
           stateWithAbortedAndNameSecond(dir),
         ], reply: { status: 200, json: { cancelled: false } }, after: [
+          { ...stateNew(dir), life: { type: "switching" } },
           { type: "reset", epoch: "epoch4", items: [], more: false },
-          { ...stateIdleFourth(dir), name: "koa", sessionId: "01a1c671-f700-74e1-b629-76b5af5a18dd", sessionFile: `${dir}/home/sessions/2026-11-10T17-12-00-000Z_01a1c671-f700-74e1-b629-76b5af5a18dd.jsonl`, context: { tokens: 0, window: 200000, percent: 0 } },
+          stateNew(dir),
           { type: "item", item: { seq: 0, revision: 1, at: 1794330720000, final: true, kind: "notify", level: "info", text: { text: "new session", cut: 0 } } },
         ] }),
     ],
