@@ -1284,6 +1284,27 @@ resumes, that its connection's idle timer has passed (the server's
 also, 30 s on Caddy); the expired timer rejoins at once, with no
 failure reported.
 
+A known stall after a NAT rebinding is in the server, not in the
+client. quic-go before v0.64.0 (Caddy 2.11.9 pins v0.63.0) sends one
+PATH_CHALLENGE to the client's new address and never another. When
+the datagram with the client's PATH_RESPONSE is lost and a later
+packet acknowledges the challenge, the new path stays unvalidated,
+and the server sends the stream data to the old, dead address until
+its idle timeout: the view gets no data for 30 s while datagrams
+still flow. quiche correctly does not send a PATH_RESPONSE again.
+quic-go v0.64.0 retries the challenge
+([quic-go#5930](https://github.com/quic-go/quic-go/pull/5930)). The
+client has no fix for it: no signal separates this from heavy loss,
+and a timeout on ACK progress would reconnect healthy lossy links.
+The ignored container test
+`caddy_view_survives_nat_rebinding_with_a_lost_path_response`
+(`ko_client/src/ffi/tests/quic.rs`) rebinds a relay's upstream and
+drops the first client datagram after the server's first datagram on
+the new path. The packets are encrypted, so the test cannot check
+that this datagram carries the PATH_RESPONSE, and an earlier client
+datagram can take the drop; it pinned the stall on Caddy 2.11.9 and
+must pass when the test's Caddy uses quic-go v0.64.0 or later.
+
 Reconnect: a lost link starts attempts with a backoff of 100 ms to
 2 s under one outage deadline of 60 s. The local terminal client
 uses the same attempts (section 4.11). An attempt sends a new hello,

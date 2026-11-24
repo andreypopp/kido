@@ -1146,6 +1146,252 @@ fn an_idle_expiry_during_a_stall_rejoins_at_once_and_resumes_the_view() {
 }
 
 #[test]
+#[ignore = "quic-go < v0.64.0 stalls path validation (https://github.com/quic-go/quic-go/pull/5930); remove when the test Caddy uses quic-go >= v0.64.0"]
+fn caddy_view_survives_nat_rebinding_with_a_lost_path_response() {
+    use std::net::UdpSocket;
+
+    if std::env::var_os("KO_E2E_CONTAINER").as_deref() != Some(std::ffi::OsStr::new("1")) {
+        return;
+    }
+    let path = std::env::var_os("PATH").unwrap();
+    let cli = std::env::split_paths(&path)
+        .map(|path| path.join("container"))
+        .find(|path| path.is_file())
+        .expect("KO_E2E_CONTAINER needs the container CLI");
+    let certs = Fixtures::new();
+    let (container, peer) = Container::start(cli, path.as_bytes().to_vec(), &certs);
+    let caddy = container.ok(&["exec", &container.name, "caddy", "version"]);
+    let config = container.dir.join("Caddyfile");
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, text.replacen("{\n", "{\n\tdebug\n", 1)).unwrap();
+    container.ok(&[
+        "exec",
+        &container.name,
+        "caddy",
+        "reload",
+        "--config",
+        "/fixtures/Caddyfile",
+        "--adapter",
+        "caddyfile",
+        "--address",
+        "unix//run/caddy/admin.sock",
+    ]);
+    #[derive(Debug)]
+    enum Path {
+        Original,
+        AwaitDownlink,
+        DropUplink,
+        Rebound,
+    }
+    #[derive(Debug, Default)]
+    struct Counts {
+        original_up: usize,
+        original_down: usize,
+        rebound_up: usize,
+        rebound_down: usize,
+        dead_down: usize,
+        dropped_up: usize,
+    }
+    #[derive(Debug)]
+    struct Relay {
+        stop: Arc<AtomicBool>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for Relay {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(worker) = self.worker.take() {
+                let result = worker.join();
+                if !std::thread::panicking() {
+                    assert!(result.is_ok(), "UDP relay worker failed");
+                }
+            }
+        }
+    }
+    let front = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let address = front.local_addr().unwrap();
+    front.set_nonblocking(true).unwrap();
+    let original = UdpSocket::bind("0.0.0.0:0").unwrap();
+    original.connect(peer).unwrap();
+    original.set_nonblocking(true).unwrap();
+    let counts = Arc::new(Mutex::new(Counts::default()));
+    let counted = Arc::clone(&counts);
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopping = Arc::clone(&stop);
+    let (rebind, commands) = channel();
+    let (rebound, ready) = channel();
+    let (dropped, loss) = channel();
+    let relay = Relay {
+        stop,
+        worker: Some(std::thread::spawn(move || {
+            let deadline = Instant::now() + DEADLINE * 6;
+            let mut state = Path::Original;
+            let mut upstream = None;
+            let mut client = None;
+            let mut buffer = [0; 65536];
+            while !stopping.load(Ordering::SeqCst) {
+                assert!(Instant::now() < deadline, "UDP relay deadline");
+                if commands.try_recv().is_ok() {
+                    let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
+                    socket.connect(peer).unwrap();
+                    socket.set_nonblocking(true).unwrap();
+                    upstream = Some(socket);
+                    state = Path::AwaitDownlink;
+                    rebound.send(()).unwrap();
+                }
+                match original.recv(&mut buffer) {
+                    Ok(size) => {
+                        let mut counts = locked(&counted);
+                        if matches!(state, Path::Original) {
+                            counts.original_down += 1;
+                            front.send_to(&buffer[..size], client.unwrap()).unwrap();
+                        } else {
+                            counts.dead_down += 1;
+                        }
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(error) => panic!("original downlink: {error}"),
+                }
+                if let Some(socket) = &upstream {
+                    match socket.recv(&mut buffer) {
+                        Ok(size) => {
+                            locked(&counted).rebound_down += 1;
+                            if matches!(state, Path::AwaitDownlink) {
+                                state = Path::DropUplink;
+                            }
+                            front.send_to(&buffer[..size], client.unwrap()).unwrap();
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                        Err(error) => panic!("rebound downlink: {error}"),
+                    }
+                }
+                match front.recv_from(&mut buffer) {
+                    Ok((size, source)) => {
+                        client = Some(source);
+                        let mut counts = locked(&counted);
+                        match state {
+                            Path::Original => {
+                                counts.original_up += 1;
+                                original.send(&buffer[..size]).unwrap();
+                            }
+                            Path::DropUplink => {
+                                counts.dropped_up += 1;
+                                state = Path::Rebound;
+                                dropped.send(()).unwrap();
+                            }
+                            Path::AwaitDownlink | Path::Rebound => {
+                                counts.rebound_up += 1;
+                                upstream.as_ref().unwrap().send(&buffer[..size]).unwrap();
+                            }
+                        }
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(error) => panic!("client uplink: {error}"),
+                }
+                std::thread::yield_now();
+            }
+        })),
+    };
+    let fixture = Fixture::new();
+    let signatures = Arc::new(AtomicUsize::new(0));
+    let main = connect(
+        &fixture,
+        endpoint(&certs, address, Case::Accepted, Arc::clone(&signatures)),
+    );
+    seen(&fixture, |event| matches!(event, Seen::Welcome(..)));
+    let resolved = access(&main);
+    let pane: protocol::NewWindow = protocol::decode(br#"{"command":{"type":"argv","argv":["/bin/sh","-c","stty -echo; mkfifo /tmp/output; exec 3<>/tmp/output; n=0; while IFS= read -r line <&3; do n=$((n+1)); printf '%06d' \"$n\"; done"]},"cwd":"/tmp","close":"on_exit"}"#).unwrap();
+    let reply = crate::wire::request_within(
+        &resolved,
+        (None, None),
+        &Route::NewPane {},
+        protocol::json(&pane).as_bytes(),
+        (None, DEADLINE),
+    )
+    .unwrap();
+    let placement: protocol::Placement = protocol::decode(&reply).unwrap();
+    let (restored, restoration) = channel();
+    let decoder = Decoder::new(move |snapshot| {
+        pull(snapshot, usize::MAX, 65536).unwrap();
+        restored.send(()).unwrap();
+        Restored::Ok
+    });
+    let pane_name = CString::new(placement.pane.to_string()).unwrap();
+    let view = ViewGuard(open_view_of(&pane_name, main.0, decoder, true));
+    restoration.recv_timeout(DEADLINE).unwrap();
+    let produce = || {
+        container.ok(&[
+            "exec",
+            &container.name,
+            "/bin/sh",
+            "-c",
+            "printf 'next\\n' > /tmp/output",
+        ]);
+    };
+    produce();
+    let offset = bytes(decoder, b"000001") + 6;
+    rebind.send(()).unwrap();
+    ready.recv_timeout(DEADLINE).unwrap();
+    let began = Instant::now();
+    let deadline = began + DEADLINE;
+    let crate::endpoint::Resolved::Quic(handles) = resolved.as_ref() else {
+        panic!("not QUIC");
+    };
+    let request = handles
+        .open(crate::wire::exchange::RequestHead::Http {
+            method: protocol::Method::Get,
+            target: "/version".to_owned().try_into().unwrap(),
+            headers: Vec::new(),
+            length: 0,
+        })
+        .unwrap();
+    loss.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .unwrap_or_else(|error| {
+            panic!("no scripted loss: {error}; {:?}", locked(&counts));
+        });
+    produce();
+    let mut received = Vec::new();
+    while received.len() < 6 {
+        let event = locked(&decoder.feeds)
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "view stalled at offset {offset}: {error}; Caddy={}; {:?}; signatures={}",
+                    caddy.trim(),
+                    locked(&counts),
+                    signatures.load(Ordering::SeqCst)
+                )
+            });
+        match event {
+            Fed::Bytes(at, data) => {
+                assert_eq!(at, offset + received.len() as u64);
+                received.extend(data);
+            }
+            Fed::Resize(..) => {}
+            event => panic!("unexpected feed: {event:?}"),
+        }
+    }
+    assert_eq!(received, b"000002");
+    writeln!(
+        std::io::stderr().lock(),
+        "view resumed in {:?}; {:?}",
+        began.elapsed(),
+        locked(&counts)
+    )
+    .unwrap();
+    assert_eq!(locked(&counts).dropped_up, 1);
+    assert_eq!(signatures.load(Ordering::SeqCst), 1);
+    assert!(!fixture.events.try_iter().any(|event| matches!(
+        event.seen,
+        Seen::Welcome(..) | Seen::Failed(..) | Seen::Closed(..)
+    )));
+    drop(request);
+    drop(view);
+    drop(main);
+    drop(relay);
+}
+
+#[test]
 fn caddy_http3_authentication_refusals_and_exact_view_resume() {
     if std::env::var_os("KO_E2E_CONTAINER").as_deref() != Some(std::ffi::OsStr::new("1")) {
         return;

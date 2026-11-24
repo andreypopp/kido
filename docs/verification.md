@@ -239,7 +239,10 @@ signature for each connection, and two views that resume at their
 exact offsets, with no new snapshot, after a restart of Caddy; an
 upload over HTTP/3, byte for byte, an early refusal (Caddy stops the
 request direction with `H3_NO_ERROR` and still sends the 404), and a
-cancel; and one migration of a view before the restart.
+cancel; and one migration of a view before the restart. One more
+test, ignored until the image's Caddy uses quic-go v0.64.0 or later,
+pins the server's stall after a NAT rebinding (design-ko.md, section
+5); `--ignored` runs it.
 `KO_E2E_CONTAINER=1 make cargo ARGS='test -p ko_client --features
 tls quic'` runs them after `make build-linux`. The podman test (also in `container.rs`) runs
 only with `KO_E2E_PODMAN=1`, on a Linux host with podman and the
