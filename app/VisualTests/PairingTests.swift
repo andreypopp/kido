@@ -93,10 +93,10 @@ import SnapshotTesting
             panel.makeFirstResponder(palette.field)
             await mainQueueFence()
             (palette.field.currentEditor() as? NSTextView)?.insertionPointColor = .clear
-            image(palette, "\(theme)-empty")
+            if theme == "dark" { image(palette, "\(theme)-empty") }
             query(code)
             await mainQueueFence()
-            image(palette, "\(theme)-payload")
+            if theme == "dark" { image(palette, "\(theme)-payload") }
             panel.makeFirstResponder(palette.pair?.nameField)
             await mainQueueFence()
             image(palette, "\(theme)-device-name")

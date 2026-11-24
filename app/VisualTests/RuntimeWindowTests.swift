@@ -219,6 +219,8 @@ import XCTest
     private func toolbarStates(dark: Bool) async throws {
         let tree = splitTree("h", [runtimePane(nil, "left\\r\\n"), runtimePane(nil, "right\\r\\n")])
         try await startThemed(dark, windows: #"[{"name":"w","tree":\#(tree)}]"#)
+        try await fill(PaneID(number: 1), "left\r\n")
+        try await fill(PaneID(number: 2), "right\r\n")
         try await hover(PaneID(number: 1))
         try assertFloatButton(try XCTUnwrap(terminal?.displayedPanes.first { $0.pane == PaneID(number: 1) }), enabled: true, label: "Float pane")
         try await runtimeSnapshot(dark, "tiled-toolbar")
