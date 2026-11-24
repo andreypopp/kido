@@ -45,6 +45,7 @@ release-build:
 	$(MAKE) all CONFIG=Release DERIVED=build/xcode.noindex/derived-release GHOSTTY_OPTIMIZE=ReleaseFast \
 		XCODE_SETTINGS="$(if $(VERSION),MARKETING_VERSION=$(VERSION) CURRENT_PROJECT_VERSION=$(VERSION))"
 	codesign --verify --strict --deep "$(RELEASE_APP)"
+	test -x "$(RELEASE_APP)/Contents/Resources/ko/bin/ko"
 
 install:
 	$(MAKE) release-build

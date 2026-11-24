@@ -47,7 +47,8 @@ with (scratch / 'ko-install.lock').open('w') as lock:
             digest.update(source.read_bytes())
     stamp = scratch / (hashlib.sha256(str(prefix).encode()).hexdigest() + '.sha256')
     fingerprint = digest.hexdigest()
-    if prefix.is_dir() and stamp.is_file() and stamp.read_text() == fingerprint:
+    if ((prefix / 'BUILD-ID').is_file() and (prefix / 'bin/ko').is_file()
+            and stamp.is_file() and stamp.read_text() == fingerprint):
         raise SystemExit(0)
     shutil.rmtree(prefix, ignore_errors=True)
     shutil.copytree(ko / 'build/ko', prefix, symlinks=True, ignore=shutil.ignore_patterns('linux'))
