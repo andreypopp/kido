@@ -562,85 +562,147 @@ paints. A grow animation is measured on each frame only for its own
 rows, until it ends. Scrolling reads row positions to find the
 reader's anchor but never measures an extent.
 
+#### The scroll contract
+
 `koa/page/scroll.ts` is the one scroll owner for transcripts and job
 logs. It is a pure state machine. DOM code supplies events and
-measurements and applies its decisions. Browser scroll anchoring is
-disabled to avoid a second owner. The user never scrolls the document
-itself: every body child is positioned, and the root hides its
-overflow, so a
-body that is taller than the viewport for a moment (a resize) does not
-give the host's web view a scrollbar of its own beside the transcript's.
+measurements and applies its decisions; the one write of the
+scroller's position is in `applyScroll` in `koa/page/page.ts`.
+Browser scroll anchoring is disabled to avoid a second owner. The
+one exception is the edge scroll of a topic drag
+(`koa/page/topics.ts`), which the state machine reads as reader
+input. The rules below are the contract: what the user sees, and
+why. `plans/koa-scroll.md` lists where the code does not meet them.
 
-Following keeps the bottom exact after layout while the pane has
-focus. Reader input establishes an item anchor. Layout changes above
-that anchor preserve its offset and any intervening reader movement.
-A scrollbar jump into unmounted space uses the position table to
-mount the destination. A fold toggle holds its header at the same
-screen position and ends scroll travel.
+**Two modes.** A view is *following* or it has a *reader*. A
+following view shows the end of the transcript. A reader's view
+holds its place. The user decides the mode; koa never changes a
+reader into a follower by itself.
 
-Following has no animation: growth puts the transcript at the new
-bottom in the same frame. While following, the written scroll
-position never decreases. The following state keeps a floor, the
-largest natural transcript height seen, and the page applies it as
-the minimum height of the transcript's clipping wrapper before it
-writes the scroll. So a shrink at the tail (a folded run's parallel
-step lines that go, a revised reveal slice, rows merging into a run,
-the unread divider) leaves a blank reserve under the content instead
-of moving visible content, and later growth consumes the reserve.
-The ending row keeps the turn's end from shrinking, so the floor is
-not the space under a finished turn. A reader keeps only the part of
-it that the current position needs, so leaving following causes no
-clamp, and the part goes as the reader moves up. The floor goes only
-at a full re-landing (a reset, a view or session switch, a filter
-switch, a resize, a reload), never during a turn or at its end. Each frame measures fresh geometry after the
-render and reveal writes, and the divider and rhythm changes are
-applied and measured once more before the frame's one scroll write,
-so no write uses a stale height.
+- New output moves a following view only while the pane has focus
+  and is visible. Without focus, the first growth makes the view a
+  reader at the place it shows, so output never moves a pane that
+  the user does not look at, and the user finds the place on return.
+  Focus alone does not resume following.
+- A reader becomes a follower in three ways: a scroll down that ends
+  within 1 px of the bottom, the user's send, and Latest. The send
+  follows at the submit, in the same frame, with or without focus,
+  because the user must see their own message; it does not wait for
+  the result, and a failed send leaves the view following. A reader that content brings to
+  the bottom (a shrink, a clamp) stays a reader.
+- A follower becomes a reader on a scroll or an input up. An input
+  up with no scroll range changes nothing: a transcript shorter than
+  the pane has no other place to show.
+- An elastic overscroll at an edge is not input: no rule reads a
+  position outside the scroll range.
 
-A hidden or unfocused following page becomes a reader when new
-content or layout moves the bottom. Focus alone never resumes
-following. The user's send and Latest do; a reset opens a following
-view at the end even in the background. An explicit following intent
-(the start of a page, a reset, or a switch to a view that the memory
-does not hold as a reader) lasts through the initial delivery and
-layout, focused or not, until the view is placed at a non-empty
-bottom or reader input cancels it; only growth after that placement
-makes an unfocused page a reader. So a reload or `/restart` of a
-following view opens at the bottom.
+**Following.** Growth puts the transcript at the new bottom in the
+same frame. No follow is animated: an animated follow and a
+streaming layout fight each other. While following, the written
+position never decreases.
 
-Each topic filter and All topics keep a separate scroll position,
-with the same save and restore rule as agent views. A view left at
-the bottom follows the bottom on return. A view left in reader mode
-restores its anchor without animation; new visible items received
-while away get a divider and a new-item count. The saved last
-sequence decides only for rows that the page did not know: a known
-row keeps its unread state, so a row read in another view stays read.
-A filter switch uses the same cover as a view switch: the page
-changes the projection and lands under it when the filter's history
-reload arrives, and shows the result once. A response for a filter
-that a later switch replaced is dropped. Anchor restoration loads the anchor's history when needed.
-A saved topic reader also loads unfiltered history from the reset window back
-to its saved last sequence before restoration completes, so topic badges
-include replies that arrived while the reader was away.
-A view not visited before opens at the divider above the first unread
-row that the filter shows, or follows the bottom when it shows none.
-Unread state belongs to the row, not to the filter: a row that the
-filter hides keeps it, so the row is still unread in a later view
-that shows it. The count and the divider cover only the shown rows.
-This state is in memory only, not in the page's history state. `pagehide` saves the memory
-before its last scroll update. Unread state covers only messages:
-the visible text blocks of an assistant item and a user item with
-text, images or attachments that is not the page's own send
-(`countedMessage` in `koa/topic-run.ts` is the one rule); runs, agent reports and job events never
-become unread. The divider, the new-item count and the topic badges
-all read this one state, so they cannot disagree; the count and the
-badges count messages, not blocks. A topic badge counts an item only
-when that topic's projection shows one of its unread messages, so a
-topic that holds only an item's tool steps gets no badge. The page's
-own send resumes following and its item is never unread: the row
-keeps that status through later filter switches and restorations.
-The topics panel keeps no count of its own; each render reads the
-counts, also while a topic name is edited.
+**Reader.** A reader has an anchor: an item, or a row inside it, and
+the pixel offset of that row from the top of the view. Layout
+changes above the anchor (older history, a remeasured row, a reveal,
+a fold, a resize) keep the anchor's offset. A reader's own scroll
+only captures the anchor again; koa never writes the position in
+answer to a scroll, so a slow trackpad scroll of less than a pixel
+is never undone. koa writes a reader's position only for a layout
+change and for an instant placement (a restore, a navigation, a
+fold toggle). A fold toggle holds its header at the same screen
+position and ends a Latest travel. A scrollbar jump into unmounted
+space uses the position table to mount the destination.
+
+**Latest.** The button is the only animated scroll: about 250 ms to
+the moving bottom, and any scroll or input ends it at the place it
+reached. Reduced motion makes it instant. The button shows when the
+bottom is more than one third of the viewport away and hides when
+it is less than one quarter away; the two thresholds stop a flicker
+at one distance. With unread messages below the view it shows at any
+distance, as "↓ N new". It fades in 120 ms.
+
+**Unread.** Only messages can be unread: a user item with content
+and the visible text blocks of an assistant item (`countedMessage`
+in `koa/topic-run.ts` is the one rule). Runs, agent reports and job
+events never are. The page's own send is never unread, and its row
+keeps that status through later filter switches and restorations. A
+message becomes unread when it arrives while the view is a reader,
+or without focus. One "new messages" divider stands above the first
+unread message that the view shows. Unread state ends when a focused
+follower shows the bottom, when the reader scrolls the message into
+view, on the user's send, and on a view or session switch, a reload,
+a restart and a new session. The state machine's candidates are the
+one store: the divider, the count on Latest and the topic badges all
+read it, so they cannot disagree. The count and the badges count
+messages, not blocks. Unread state belongs to the row, not to the
+filter: a row that the filter hides keeps it and is unread in a
+later view that shows it; the count and the divider cover only the
+shown rows. A topic badge counts an item only when that topic's
+projection shows one of its unread messages. The topics panel keeps
+no count of its own.
+
+**A view or filter switch is atomic** ("Views" gives the cover). The
+old presentation stays until the new one is rendered, measured,
+filled with the history that it needs and placed. Each agent view,
+each topic filter and All topics keep their own position. A view
+left as a reader restores its anchor without animation, loads the
+anchor's history when it is absent, and shows a divider above the
+first message that arrived while the user was away. A view left
+following opens at the end with no divider and no count. A topic
+filter not visited before opens at the divider above its first
+unread message, or at the bottom when it has none. All topics shows
+at once when its items are loaded. A response for a filter that a
+later switch replaced is dropped. A topic load that fails shows the
+filter over the loaded items, with the error line. A saved topic reader also loads
+the unfiltered history back to its saved last sequence, so the
+badges include replies that arrived while the reader was away. The
+saved last sequence decides only for rows that the page did not
+know: a known row keeps its unread state.
+
+**A reload and a restart keep the intent.** The memory of every
+view's mode and anchor is in the page's history state; `pagehide`
+saves it before its last scroll update. The intent to follow (the
+start of a page, a reset, a switch to a view that the memory does
+not hold as a reader) lasts through the first delivery and layout,
+with or without focus, until the view stands at a bottom that is not
+empty or reader input cancels it. Only growth after that makes an
+unfocused view a reader. Unread state is in memory only.
+
+**A follower's view does not move up.** While following, the
+written position never decreases. The transcript ends in the ending
+row ("Runs, Markdown and rendering"), so the start and the end of a
+turn change only that row's content. For the shrinks that remain (a
+revised reveal slice, the ending row of a filtered view, the unread
+divider, a `!` command's live card that its folded row replaces), a
+follower keeps a floor: the largest transcript height that it saw.
+The page applies it as the minimum height of the transcript's
+wrapper, so a shrink leaves blank space under the content and later
+growth fills it. A reader keeps only the part of the floor that its
+position needs. The floor goes at a full re-landing: a reset, a
+view, session or filter switch, a resize, a reload.
+
+The floor has known faults. It also holds the estimated heights of
+unmounted rows and the dock's height, so blank space can stay at the
+bottom after a landing or a dialog, and a filter switch can land on
+a view with no row. Its space goes at a re-landing, so a view is not
+the same after a switch away and back. `plans/koa-scroll.md` has the
+causes and the work that removes the floor.
+
+**History.** Older history loads by itself while the top of the
+transcript is in or near the view, and a reader keeps their anchor
+when it arrives.
+
+**The page does not move.** The user never scrolls the document
+itself: every body child is positioned and the root hides its
+overflow, so the page never rubber-bands, and a body that is taller
+than the viewport for a moment (a resize) gives the host's web view
+no second scrollbar. The transcript's scroller bounces at its own
+edges and passes no scroll to the page.
+
+**Rendering does not decide.** The streaming reveal ("Runs, Markdown
+and rendering") only changes row heights and marks its rows; it
+holds no scroll state. Each frame renders, measures the marked rows,
+and then makes one scroll decision and one write, before paint.
 
 Native find cannot search unmounted DOM. Under Kido the page's find
 hook searches its model, loads older history, opens the required folds,
