@@ -166,8 +166,18 @@ test('attachment queue restores chips and separates sent paths', async () => {
   assert.equal(evaluate("views.get(0).view.querySelector('.paths').textContent"), '/tmp/uploads/notes.md');
 });
 
+const pageSources = new Map<string, string>();
+function pageSource(name: string): string {
+  let source = pageSources.get(name);
+  if (source === undefined) {
+    source = stripTypeScriptTypes(readFileSync(new URL(name, import.meta.url), 'utf8'));
+    pageSources.set(name, source);
+  }
+  return source;
+}
+
 async function page() {
-  const source = stripTypeScriptTypes(await readFile(new URL("page/page.ts", import.meta.url), "utf8"));
+  const source = pageSource('page/page.ts');
   class Node {
     value = ""; private text = ""; style: Record<string, unknown> = { setProperty: (name: string, value: string) => { this.style[name] = value; }, getPropertyValue: (name: string) => this.style[name] ?? '', removeProperty: (name: string) => { delete this.style[name]; } }; innerHTML = ''; clientWidth = 320; scrollTop = 0; scrollWidth = 0; clientHeight = 100; offsetHeight = 20; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {}; rects: { top: number; bottom: number }[] = [];
     get textContent() { return this.text; }
@@ -267,32 +277,32 @@ async function page() {
   };
   const history: { state: unknown; replaceState(state: unknown): void } = { state: null, replaceState(state) { this.state = state; } };
   const context = { history, topicTurn, parseTopicName, ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }, pseudo?: string) => ({ top: pseudo === '::before' ? '-7.5px' : 'auto', [Symbol.iterator]: function* () {}, display: 'block', lineHeight: '20px', fontFamily: 'sans-serif', fontSize: '13px', getPropertyValue: () => '', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, pathToken, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, HTMLInputElement: class {}, HTMLTextAreaElement: class {}, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
-  const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
-  const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  const answersSource = pageSource('page/answers.ts').replace(/^export /gm, '');
+  const annotationsSource = pageSource('page/annotations.ts').replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update,head,quote})', context));
   document.getElementById('scroll').clientHeight = 100000;
   document.getElementById('items').hidden = false;
   Object.assign(document, { createTreeWalker: () => ({ nextNode: () => false }), createRange: () => { let target: Node | undefined; return { selectNodeContents(node: Node) { target = node; }, getClientRects: () => target?.rects ?? [] }; } });
   Object.assign(context, { NodeFilter: { SHOW_TEXT: 4 }, getSelection: () => context.window.getSelection() });
-  const attachSource = stripTypeScriptTypes(await readFile(new URL('page/attach.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
-  const httpSource = stripTypeScriptTypes(await readFile(new URL('page/http.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
-  const previewSource = stripTypeScriptTypes(await readFile(new URL('page/preview.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
+  const attachSource = pageSource('page/attach.ts').replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  const httpSource = pageSource('page/http.ts').replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  const previewSource = pageSource('page/preview.ts').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(previewSource + '\n({preview,previewKey,closeLightbox})', context));
   Object.assign(context, { ...runInNewContext(httpSource + '\n({fetchJSON,scoped})', context), attach: runInNewContext(attachSource + '\nattach', context) });
-  const jobSource = ['page/job-output.ts', 'page/job.ts'].map(name => stripTypeScriptTypes(readFileSync(new URL(name, import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '')).join('\n');
+  const jobSource = ['page/job-output.ts', 'page/job.ts'].map(name => pageSource(name).replace(/^import .*;\n/gm, '').replace(/^export /gm, '')).join('\n');
   Object.assign(context, runInNewContext(jobSource + '\n({createJobPage})', { ...context, atob, TextDecoder, Uint8Array }));
-  const revealSource = stripTypeScriptTypes(readFileSync(new URL('page/reveal.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  const revealSource = pageSource('page/reveal.ts').replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(revealSource + '\n({revealHeight,unitsOf})', context));
-  const runSource = stripTypeScriptTypes(readFileSync(new URL('topic-run.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  const runSource = pageSource('topic-run.ts').replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(runSource + '\n({runParts,runOwner,runOf,invalidateRuns,sourceKey,visibleText,projectTopic,countedMessage})', context));
-  const extentSource = stripTypeScriptTypes(readFileSync(new URL('page/extent.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  const extentSource = pageSource('page/extent.ts').replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(extentSource + '\n({estimateExtent,windowOf,groupAt,rowKey,sameRow})', context));
-  const stepsSource = stripTypeScriptTypes(readFileSync(new URL('page/steps.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  const stepsSource = pageSource('page/steps.ts').replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(stepsSource + '\n({stepInfo,stepParts,toolArgs,agentBody,noticeOf,noticeText,sessionFields})', context));
-  const findSource = stripTypeScriptTypes(readFileSync(new URL('page/find.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  const findSource = pageSource('page/find.ts').replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, { markdownPlain }, runInNewContext(findSource + '\n({findSegments,matchesIn})', context));
   for (const [name, exports] of [['topics', 'createTopics,topicsMemory'], ['transcript-history', 'createTranscriptHistory']]) {
-    const moduleSource = stripTypeScriptTypes(readFileSync(new URL('page/' + name + '.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+    const moduleSource = pageSource('page/' + name + '.ts').replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
     const marker = name === 'topics' ? 'return {\n    update' : 'return { get more()';
     assert.equal(moduleSource.split(marker).length, 2, name + ' factory return marker');
     const injected = name === 'topics'
@@ -311,7 +321,7 @@ async function page() {
     const debugSource = moduleSource.replace(marker, injected);
     Object.assign(context, runInNewContext(debugSource + '\n({' + exports + '})', context));
   }
-  const workingSource = stripTypeScriptTypes(readFileSync(new URL('page/working.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
+  const workingSource = pageSource('page/working.ts').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(workingSource + '\n({dots})', context));
   Object.assign(context, { scrollInitial, scrollMemory, scrollStored, reduce, place, scrollWindow });
   Object.assign(document, { fonts: { ready: { then(resolve: () => void) { resolve(); } } } });
@@ -5021,9 +5031,23 @@ test('a run or job group is mounted whole or not at all, and a folded fence stay
   page.open(items);
   page.settle(8);
   const group = [150, 151, 152, 153, 154, 155];
-  for (let top = 0; top <= page.bottom(); top += 37) {
+  const boundaries = [150, 200].flatMap(seq => {
+    page.reader(Number(page.evaluate(`ensureTable().starts[ensureTable().index.get(${seq})]`)));
+    page.settle(8);
+    return [
+      { seq, edge: 'enter', delta: -1, present: false }, { seq, edge: 'enter', delta: 1, present: true },
+      { seq, edge: 'leave', delta: -1, present: true }, { seq, edge: 'leave', delta: 1, present: false },
+    ];
+  });
+  for (const { seq, edge, delta, present } of boundaries) {
+    const end = seq === 150 ? 155 : 204;
+    const boundary = Number(page.evaluate(edge === 'enter'
+      ? `ensureTable().starts[ensureTable().index.get(${seq})]-2*geometry().viewport`
+      : `ensureTable().starts[ensureTable().index.get(${end})+1]+geometry().viewport`));
+    const top = boundary + delta;
     page.reader(top);
     page.settle(6);
+    assert.equal(page.seqs().includes(seq), present, `${seq} ${edge} ${delta}`);
     const mounted = group.filter(seq => page.seqs().includes(seq)).length;
     assert.ok(mounted === 0 || mounted === group.length, 'the run is split at ' + top);
     const members = [200, 201, 202, 203, 204].filter(seq => page.seqs().includes(seq)).length;

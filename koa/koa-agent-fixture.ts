@@ -284,7 +284,7 @@ export function makeFixture(): Fixture {
   mkdirSync(screens);
   for (const empty of [apiLog, feedFile, acksFile, file("ko.jsonl"), execLog]) writeFileSync(empty, "");
   writeFileSync(runtimesFile, "{}");
-  writeFileSync(panesFile, "[]");
+  writeFileSync(panesFile, JSON.stringify([selfPane()]));
   writeFileSync(sendScript, "[]");
   writeFileSync(file("sent.json"), "[]");
 
@@ -435,12 +435,19 @@ export function makeFixture(): Fixture {
 type Entry = { type: "custom"; customType: string; data: Record<string, unknown> } | { type: 'message'; id: string; message: import('@earendil-works/pi-agent-core').AgentMessage };
 
 // A tree member that has only the fields a test names; the extension reads no others.
-export const stubAgent = (fields: object): Agent => Object.assign(Object.create(null), fields);
+export const stubAgent = (fields: object): Agent => {
+  const agent: Agent = Object.assign(Object.create(null), fields);
+  if (agent.view) {
+    agent.view.life ??= { type: "ready" };
+    agent.view.root.message ??= "";
+  }
+  return agent;
+};
 
 export function createChannel(active = true) {
   const unused = (): never => { throw new Error("this fixture has no agent tree"); };
   const facts = hostFacts(process.env);
-  const self = stubAgent({ id: "self-session", parent: undefined, children: [], name: "", runtime: undefined, extension: undefined, stopping: false, view: { state: { name: "Self", cwd: process.cwd(), dialogs: [] }, root: { value: "idle" } } });
+  const self = stubAgent({ id: "self-session", parent: undefined, children: [], name: "Self", runtime: undefined, extension: undefined, stopping: false, view: { state: { name: "Self", cwd: process.cwd(), dialogs: [] }, root: { value: "idle" } } });
   const records = createPublisher({ active: active && !!facts.pane && facts.insideKo, pane: facts.pane ?? "", derive: budget => deriveRecords(self, viewing.job ? { type: "job", agent: self, job: viewing.job } : { type: "agent", agent: self }, budget) });
   const host: AgentHost = {
     self, get facts() { return hostFacts(process.env); }, browser: false, pathEditor: true, trusted: undefined, records, jobs: createJobs({ changed: () => records.changed(), path: () => "jobs", sink: () => host.extension, place: { type: "machine" }, view: { watched: job => viewing.watched.has(job), output() {}, changed() {} } }), extension: undefined,

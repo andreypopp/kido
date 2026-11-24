@@ -91,19 +91,6 @@ test('a rejected classified submission returns the accepted text to the editor',
   assert.equal(state?.editor?.text, 'recover me');
 });
 
-test('reload leaves an accepted classification pending and delivers it once', { timeout: 10000 }, async t => {
-  const app = await realFixture(t, { ...classification, replies: [{ model: 'classifier', when: 'New message:\nheld reload', text: 'Held', gate: 'classify' }, { when: '[topic: Held]\nheld reload', text: 'Done' }] });
-  const before = app.count(); await app.post('prompt', { text: 'held reload', mode: 'prompt', attachments: [] });
-  await app.until(ofType('state', record => record.queue.classifying.length === 1), before);
-  await pollUntil(() => app.provider.requests.length === 1, 5000, 'held classification');
-  const reload = app.count(); await app.post('prompt', { text: '/reload', mode: 'prompt', attachments: [] });
-  const notice = await app.until(ofType('item', record => record.item.kind === 'notify' && record.item.text.text.startsWith('reload: not while')), reload);
-  assert.ok(notice);
-  app.provider.release('classify');
-  await app.until(ofType('item', record => record.item.kind === 'user' && record.item.text === 'held reload'), reload);
-  assert.equal(app.provider.requests.filter(request => request.body.model === 'classifier').length, 1);
-});
-
 test('renamed queued prompts use their displayed identity for removal', { timeout: 10000 }, async t => {
   const app = await realFixture(t, { replies: [{ when: 'begin', text: '[topic: one]\nWorking', gate: 'work' }] });
   const before = app.count(); await app.post('prompt', { text: 'begin', topic: 'one', mode: 'prompt', attachments: [] });
@@ -297,10 +284,14 @@ test('classifier failures send unlabelled prompts and warn once; timeout aborts'
   assert.deepEqual(app.provider.violations, []);
 });
 
-test('a prompt shows as classifying and the composer answer is out before the classifier answers', { timeout: 10000 }, async t => {
+test('classification gates the composer, blocks reload, and preserves FIFO and queued context', { timeout: 10000 }, async t => {
   const app = await realFixture(t, { ...classification, replies: [
     { model: 'classifier', when: 'New message:\nfix the cache', text: 'Build cache', gate: 'classify' },
-    { when: '[topic: Build cache]\nfix the cache', text: 'Done' },
+    { when: '[topic: Build cache]\nfix the cache', text: '[topic: Build cache]\nFixed' },
+    { model: 'classifier', when: 'New message:\nfirst', text: 'cache', gate: 'classify-fifo' },
+    { when: '[topic: cache]\nfirst', text: 'Working', gate: 'turn' },
+    { model: 'classifier', when: 'New message:\nsecond', text: 'release' },
+    { model: 'classifier', when: 'New message:\nthird', text: 'docs' },
   ] });
   const before = app.count();
   const response = await app.post('prompt', { text: 'fix the cache', mode: 'prompt', attachments: [] });
@@ -309,31 +300,31 @@ test('a prompt shows as classifying and the composer answer is out before the cl
   const held = await app.until(ofType('state', record => record.queue.classifying.length === 1), before);
   assert.deepEqual(held.queue.classifying, [{ text: 'fix the cache', attachments: [], mode: 'prompt' }]);
   await pollUntil(() => app.provider.requests.length === 1, 5000, 'the classifier request');
+  const reload = app.count(); await app.post('prompt', { text: '/reload', mode: 'prompt', attachments: [] });
+  const notice = await app.until(ofType('item', record => record.item.kind === 'notify' && record.item.text.text.startsWith('reload: not while')), reload);
+  assert.ok(notice);
   const released = app.count();
   app.provider.release('classify');
   const user = await app.until(ofType('item', record => record.item.kind === 'user'), released);
   assert.equal(user.item.kind === 'user' ? user.item.topic : undefined, 'Build cache');
   const idle = await app.until(ofType('state', record => !record.working && record.queue.classifying.length === 0), released);
   assert.deepEqual(idle.queue.classifying, []);
-  assert.deepEqual(app.provider.violations, []);
-});
-
-test('classification preserves FIFO and queued steer context while a turn runs', { timeout: 10000 }, async t => {
-  const app = await realFixture(t, { ...classification, replies: [
-    { model: 'classifier', when: 'New message:\nfirst', text: 'cache', gate: 'classify' },
-    { when: '[topic: cache]\nfirst', text: 'Working', gate: 'turn' },
-    { model: 'classifier', when: 'New message:\nsecond', text: 'release' },
-    { model: 'classifier', when: 'New message:\nthird', text: 'docs' },
-  ] });
+  assert.equal(user.item.kind === 'user' ? user.item.text : undefined, 'fix the cache');
+  assert.equal(app.provider.requests.filter(request => request.body.model === 'classifier').length, 1);
+  assert.equal(app.records().filter(ofType('item', record => record.item.kind === 'user' && record.item.text === 'fix the cache')).length, 1);
+  assert.equal(app.provider.requests[0]?.body.model, 'classifier');
+  assert.equal(app.provider.requests[0]?.body.tools, undefined);
+  assert.equal(app.provider.requests.length, 2);
+  const fifoStart = app.count();
   const first = app.post('prompt', { text: 'first', mode: 'prompt', attachments: [] });
-  await pollUntil(() => app.provider.requests.length === 1, 5000, 'first classification');
+  await pollUntil(() => app.provider.requests.length === 3, 5000, 'first classification');
   const second = app.post('prompt', { text: 'second', mode: 'prompt', attachments: [] });
-  await app.until(ofType('state', record => record.queue.classifying.length === 2));
+  await app.until(ofType('state', record => record.queue.classifying.length === 2), fifoStart);
   assert.equal((await second).status, 200);
-  app.provider.release('classify');
+  app.provider.release('classify-fifo');
   assert.equal((await first).status, 200);
   assert.equal((await second).status, 200);
-  const state = await app.until(ofType('state', record => record.queue.steering.length === 1));
+  const state = await app.until(ofType('state', record => record.queue.steering.length === 1), fifoStart);
   assert.deepEqual(state.queue.steering.map(prompt => [prompt.text, prompt.topic]), [['second', 'release']]);
   await app.post('prompt', { text: 'third', mode: 'follow_up', attachments: [] });
   const context = app.provider.requests.find(request => request.body.model === 'classifier' && JSON.stringify(request.body.messages).includes('New message:\\nthird'));
@@ -346,21 +337,6 @@ test('classification preserves FIFO and queued steer context while a turn runs',
   const beforeDone = app.count();
   app.provider.release('turn');
   await app.until(ofType('state', record => !record.working), beforeDone);
-  assert.deepEqual(app.provider.violations, []);
-});
-
-test('classifier labels the root prompt before pi and uses a separate small request', { timeout: 10000 }, async t => {
-  const app = await realFixture(t, { settings: { koa: { topics: { model: 'fake/classifier' } } }, models: [{ provider: 'fake', id: 'fake-model' }, { provider: 'fake', id: 'classifier' }], replies: [
-    { model: 'classifier', when: 'New message:\nfix the cache', text: 'build-cache' },
-    { when: '[topic: build-cache]\nfix the cache', text: '[topic: build-cache]\nFixed' },
-  ] });
-  assert.equal((await app.post('prompt', { text: 'fix the cache', mode: 'prompt', attachments: [] })).status, 200);
-  const user = await app.until(ofType('item', record => record.item.kind === 'user'));
-  assert.equal(user.item.kind === 'user' ? user.item.topic : undefined, 'build-cache');
-  await app.until(ofType('state', record => !record.working), app.count() - 1);
-  assert.equal(app.provider.requests[0]?.body.model, 'classifier');
-  assert.equal(app.provider.requests[0]?.body.tools, undefined);
-  assert.equal(app.provider.requests.length, 2);
   assert.deepEqual(app.provider.violations, []);
 });
 

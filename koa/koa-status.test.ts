@@ -175,19 +175,21 @@ test("report state does not remove a live member and the next turn changes the s
 });
 
 test("publication exhaustion is bounded and the next change recovers", async () => {
-  let fail = true;
-  let attempts = 0;
-  const publisher = createPublisher({ active: true, pane: "pane_1", derive: () => ({ type: "replace_subtrees", roots: ["agents", "jobs"], records: [] }), log: () => {}, retry: async () => {}, transport: async () => {
-    attempts++;
-    return fail ? { error: "offline" } : { status: 200, body: JSON.stringify({ status_record_limit: 64, status: { program_status: { records: [] } } }) };
-  } });
-  publisher.changed();
-  assert.equal(await publisher.drain(), false);
-  assert.equal(attempts, 3);
-  fail = false;
-  publisher.changed();
-  assert.equal(await publisher.drain(), true);
-  publisher.close();
-  publisher.changed();
-  assert.equal(await publisher.drain(), true);
+  for (const failure of [{ error: "offline" }, { status: 404, body: "pane not found" }]) {
+    let fail = true;
+    let attempts = 0;
+    const publisher = createPublisher({ active: true, pane: "pane_1", derive: () => ({ type: "replace_subtrees", roots: ["agents", "jobs"], records: [] }), log: () => {}, retry: async () => {}, transport: async () => {
+      attempts++;
+      return fail ? failure : { status: 200, body: JSON.stringify({ status_record_limit: 64, status: { program_status: { records: [] } } }) };
+    } });
+    publisher.changed();
+    assert.equal(await publisher.drain(), false);
+    assert.equal(attempts, 3);
+    fail = false;
+    publisher.changed();
+    assert.equal(await publisher.drain(), true);
+    publisher.close();
+    publisher.changed();
+    assert.equal(await publisher.drain(), true);
+  }
 });
