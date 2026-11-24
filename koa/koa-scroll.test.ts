@@ -538,3 +538,18 @@ test('job byte anchors use the same reader corrections and never add unread mess
   const prepend = f.step([{ type: 'history' }], { rows: [{ item: anchor.item, top: 420, bottom: 450 }] });
   assert.deepEqual([prepend.decision.scrollTop, prepend.decision.latest.count], [400, 0]);
 });
+
+for (const own of [false, true]) test(`return to a saved topic preserves ${own ? 'own' : 'read'} candidates`, () => {
+  const f = fixture();
+  f.step([{ type: 'filter', active: true, topic: 'A' }, item(5, true, false)]);
+  f.step([{ type: 'navigate', anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: 0 } }], { top: 100 });
+  f.step([{ type: 'filter', active: false }]);
+  f.step([{ type: own ? 'submit' : 'latest' }], { reducedMotion: true });
+  const rows = [{ row: own ? undefined : { kind: 'text' as const, source: { kind: 'block' as const, seq: 6, index: 0 } }, visible: true }];
+  const received = f.step([{ type: 'item', seq: 6, kind: own ? 'user' : 'assistant', visible: true, rows, appended: true }], { rows: [row(1, 100), row(6, 1200)] });
+  assert.equal(received.state.candidates.get(6)?.values().next().value?.status, own ? 'own' : 'read');
+  f.step([{ type: 'filter', active: true, topic: 'A' }]);
+  f.step([{ type: 'item', seq: 6, kind: own ? 'user' : 'assistant', visible: true, rows, appended: false }]);
+  const restored = f.step([{ type: 'catchup', generation: f.state().generation, pending: false }]);
+  assert.deepEqual([restored.state.candidates.get(6)?.values().next().value?.status, restored.decision.divider, restored.decision.latest.count], [own ? 'own' : 'read', undefined, 0]);
+});

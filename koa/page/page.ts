@@ -6,7 +6,7 @@ import { markdown, type Tail } from './markdown.ts';
 import { markdownLine } from '../markdown-line.ts';
 import { revealHeight, unitsOf, type Unit } from './reveal.ts';
 import { estimateExtent, groupAt, windowOf, rowKey, sameRow, type RowId, type SeqRange } from './extent.ts';
-import { visibleText, runParts, runOwner, runOf, invalidateRuns, sourceKey, projectTopic, type RunContext, type TopicContext } from '../topic-run.ts';
+import { countedMessage, visibleText, runParts, runOwner, runOf, invalidateRuns, sourceKey, projectTopic, type RunContext, type TopicContext } from '../topic-run.ts';
 import { composer } from './composer.ts';
 import { stepInfo, stepParts, toolArgs, noticeOf, noticeText, sessionFields, type NoticeData, type StepInput } from './steps.ts';
 import { exportText, findSegments, lowered, matchesIn, type Segment } from './find.ts';
@@ -158,10 +158,10 @@ function topicUnread(): Map<TopicName, number> {
   const counts = new Map<TopicName, number>();
   if (!('topics' in state)) return counts;
   for (const [seq, rows] of scrolling.candidates) {
-    if (!Array.from(rows.values()).some(row => row.unread)) continue;
+    if (!Array.from(rows.values()).some(row => row.status === 'unread')) continue;
     for (const topic of state.topics) {
       const item = projectTopic(topicContext, seq, topic.name);
-      if (Array.from(rows.values()).some(row => row.unread && (item?.kind === 'user' || item?.kind === 'assistant' && row.row?.kind === 'text' && row.row.source.kind === 'block' && visibleText(item.blocks[row.row.source.index])))) counts.set(topic.name, (counts.get(topic.name) ?? 0) + 1);
+      if (Array.from(rows.values()).some(row => row.status === 'unread' && (item?.kind === 'user' && countedMessage(item) || item?.kind === 'assistant' && row.row?.kind === 'text' && row.row.source.kind === 'block' && visibleText(item.blocks[row.row.source.index])))) counts.set(topic.name, (counts.get(topic.name) ?? 0) + 1);
     }
   }
   return counts;
@@ -655,8 +655,7 @@ function unitRows(seq: number, source: 'visible' | 'all' = 'visible'): RowId[] {
 }
 function changedItem(seq: number, appended: boolean) {
   const item = items.get(seq), shown = new Set(unitRows(seq).map(rowKey));
-  const counts = (item: WireItem | undefined) => item?.kind === 'user' ? !!(item.text.trim() || item.images.length || item.attachments.length) : item?.kind === 'assistant' && item.blocks.some(visibleText);
-  if (item) enqueue({ type: 'item', seq, kind: item.kind === 'user' ? 'user' : item.kind === 'assistant' ? 'assistant' : 'other', visible: counts(visible(seq)), rows: item.kind === 'assistant' ? unitRows(seq, 'all').filter(row => row.kind === 'text').map(row => ({ row, visible: shown.has(rowKey(row)) })) : item.kind === 'user' && counts(item) ? [{ visible: counts(visible(seq)) }] : undefined, appended });
+  if (item) enqueue({ type: 'item', seq, kind: item.kind === 'user' ? 'user' : item.kind === 'assistant' ? 'assistant' : 'other', visible: countedMessage(visible(seq)), rows: item.kind === 'assistant' ? unitRows(seq, 'all').filter(row => row.kind === 'text').map(row => ({ row, visible: shown.has(rowKey(row)) })) : item.kind === 'user' && countedMessage(item) ? [{ visible: countedMessage(visible(seq)) }] : undefined, appended });
 }
 let resets = 0, loadingAnchor: string | undefined;
 async function loadAnchor(item: ItemId, generation: number) {

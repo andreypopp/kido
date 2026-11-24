@@ -71,7 +71,7 @@ export function stepTopic(item: WireItem | undefined, source: Source, labels: re
   return source.kind === 'block' && item?.kind === 'assistant' ? item.blocks[source.index].topic ?? labels[0] : item?.kind === 'agent' || item?.kind === 'job' ? item.topic ?? labels[0] : undefined;
 }
 export function messageTopics(item: WireItem | undefined, labels: readonly TopicName[] = []): readonly TopicName[] {
-  return item?.kind === 'user' ? item.topic ? [item.topic] : labels : item?.kind === 'assistant' ? [...new Set(item.blocks.flatMap(block => visibleText(block) ? block.topic ?? labels[0] ?? [] : []))] : [];
+  return item?.kind === 'user' ? countedMessage(item) ? item.topic ? [item.topic] : labels : [] : item?.kind === 'assistant' ? [...new Set(item.blocks.flatMap(block => visibleText(block) ? block.topic ?? labels[0] ?? [] : []))] : [];
 }
 export type TopicStep = { source: Source; topic: TopicName };
 export function firstTopicStep(first: TopicStep | undefined, source: Source, topic: TopicName | undefined): TopicStep | undefined {
@@ -114,4 +114,4 @@ export function projectTopic(context: TopicContext, seq: number, filter?: TopicN
   } else if (item.kind === 'user' && countedMessage(item, names, filter)) return item;
 }
 const textInTopic = (block: Block, labels: readonly TopicName[], filter?: TopicName) => !filter || (block.topic ?? labels[0]) === filter;
-export const countedMessage = (item: WireItem | undefined, labels: readonly TopicName[] = [], filter?: TopicName) => filter ? messageTopics(item, labels).includes(filter) : item?.kind === 'user' || item?.kind === 'assistant' && item.blocks.some(visibleText);
+export const countedMessage = (item: WireItem | undefined, labels: readonly TopicName[] = [], filter?: TopicName) => filter ? messageTopics(item, labels).includes(filter) : item?.kind === 'user' ? !!(item.text.trim() || item.images.length || item.attachments.length) : item?.kind === 'assistant' && item.blocks.some(visibleText);

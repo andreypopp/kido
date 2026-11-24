@@ -283,7 +283,7 @@ async function page() {
   const revealSource = stripTypeScriptTypes(readFileSync(new URL('page/reveal.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(revealSource + '\n({revealHeight,unitsOf})', context));
   const runSource = stripTypeScriptTypes(readFileSync(new URL('topic-run.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
-  Object.assign(context, runInNewContext(runSource + '\n({runParts,runOwner,runOf,invalidateRuns,sourceKey,visibleText,projectTopic})', context));
+  Object.assign(context, runInNewContext(runSource + '\n({runParts,runOwner,runOf,invalidateRuns,sourceKey,visibleText,projectTopic,countedMessage})', context));
   const extentSource = stripTypeScriptTypes(readFileSync(new URL('page/extent.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(extentSource + '\n({estimateExtent,windowOf,groupAt,rowKey,sameRow})', context));
   const stepsSource = stripTypeScriptTypes(readFileSync(new URL('page/steps.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
@@ -1065,7 +1065,7 @@ test('new-message counts and topic badges exclude run steps and count messages o
     changedItem(7,false);changedItem(8,false);decide(undefined,measurement);
     [before,own,hidden,[scrollDecision.latest.count,scrollDecision.divider?.seq,topicUnread().get('two')]];
   `);
-  assert.deepEqual(JSON.parse(JSON.stringify(values)), [[2,2,1],['following',false,0],[1,1,1],[1,7,1]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(values)), [[2,2,1],['following',true,0],[1,1,1],[1,7,1]]);
 });
 
 test('topic badges count an unread reply once per topic and clear across filters', async () => {
@@ -1108,7 +1108,7 @@ test('topic badges count an unread reply once per topic and clear across filters
     await transcriptHistory.reload();
     await caught;
     await rendered();
-    return [topicUnread().get('two')??0,scrolling.candidates.get(4)?.values().next().value?.unread,scrolling.kind];
+    return [topicUnread().get('two')??0,scrolling.candidates.get(4)?.values().next().value?.status === 'unread',scrolling.kind];
   })()`);
   assert.deepEqual(Array.from(restored), [1,false,'reader']);
   const filtered = await app.run(`(async()=>{
@@ -1135,7 +1135,7 @@ test('topic badges count an unread reply once per topic and clear across filters
     await rendered();
     await caught;
     await rendered();
-    return [topicUnread().get('two')??0,scrolling.candidates.get(4)?.values().next().value?.unread,scrolling.kind];
+    return [topicUnread().get('two')??0,scrolling.candidates.get(4)?.values().next().value?.status === 'unread',scrolling.kind];
   })()`);
   assert.deepEqual(Array.from(filtered), [1,false,'reader']);
 });
@@ -4756,8 +4756,8 @@ test('new items below the dock are counted without DOM rows', async () => {
   assert.equal(page.latest(), '↓ 4 new,true');
   const toward = (top: number) => { page.reader(top); page.settle(8); };
   toward(page.bottom() - 60);
-  const fresh: number[] = JSON.parse(String(page.evaluate("JSON.stringify([...scrolling.candidates].flatMap(([seq,rows])=>[...rows.values()].filter(candidate=>candidate.unread).map(()=>seq)))"))), below = fresh.filter(seq => page.seqs().includes(seq) && page.offset(seq) >= 4).length;
-  assert.equal(page.latest().split(',')[0], below ? '↓ ' + below + ' new' : '↓ Latest', String(page.evaluate("JSON.stringify({top:geometry().top,dock:measure().dock,candidates:[...scrolling.candidates].flatMap(([seq,rows])=>[...rows.values()].filter(candidate=>candidate.unread).map(candidate=>({...candidate,seq,lookup:measure().lookup({kind:'message',seq,row:candidate.row}),rect:views.get(seq)?.view.getBoundingClientRect()})))})")));
+  const fresh: number[] = JSON.parse(String(page.evaluate("JSON.stringify([...scrolling.candidates].flatMap(([seq,rows])=>[...rows.values()].filter(candidate=>candidate.status === 'unread').map(()=>seq)))"))), below = fresh.filter(seq => page.seqs().includes(seq) && page.offset(seq) >= 4).length;
+  assert.equal(page.latest().split(',')[0], below ? '↓ ' + below + ' new' : '↓ Latest', String(page.evaluate("JSON.stringify({top:geometry().top,dock:measure().dock,candidates:[...scrolling.candidates].flatMap(([seq,rows])=>[...rows.values()].filter(candidate=>candidate.status === 'unread').map(candidate=>({...candidate,seq,lookup:measure().lookup({kind:'message',seq,row:candidate.row}),rect:views.get(seq)?.view.getBoundingClientRect()})))})")));
   assert.ok(below < 4, 'scrolling toward the new items counted some of them as seen');
 });
 
@@ -5286,4 +5286,22 @@ test('metadata-only history advances the cursor and stops requesting after the l
   void page.evaluate('transcriptHistory.earlier()');
   for (let turn = 0; turn < 4; turn++) { page.settle(4); await page.settled(); }
   assert.deepEqual({ auto, afterClick: requests }, { auto: [20, 17], afterClick: [20, 17] });
+});
+
+test('topic badges refresh during rename without replacing the draft', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    state={...state,sessionId:'s',topics:[{name:'one',last:{summary:'One',at:1}},{name:'two',last:{summary:'Two',at:1}}]};topics.render();
+    topics.debug.renameTopic(element('topics').querySelector('.topic-panel').children.find(entry=>entry.dataset.topic==='one'),'one');
+    const input=element('topics').querySelector('.topic-rename');input.value='draft';input.selectionStart=1;input.selectionEnd=3;
+    scrolling={...scrolling,kind:'reader'};
+    const measurement={...measure(),focused:false,visible:true};
+    put({seq:1,revision:0,at:1,kind:'assistant',final:false,blocks:[{type:'text',text:'One',topic:'one'},{type:'text',text:'Two',topic:'two'}]});
+    scrollEvents.length=0;changedItem(1,true);decide(undefined,measurement);
+    const badges=()=>element('topics').querySelectorAll('.topic-panel>.topic-entry>.topic-age>.topic-unread').length;
+    const capsuleBadges=()=>element('topics').querySelectorAll('.topic-capsule>.topic-open>.topic-name>.topic-unread').length;
+    const before=[badges(),capsuleBadges()];decide({type:'latest'},{...measurement,focused:true,reducedMotion:true});
+    return [before,[badges(),capsuleBadges()],element('topics').querySelector('.topic-rename')===input,input.value,input.selectionStart,input.selectionEnd,element('topics').querySelectorAll('.topic-panel>.topic-entry>.topic-age>time').length];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [[1,2],[0,0],true,'draft',1,3,1]);
 });

@@ -9,7 +9,7 @@ import { sessionEntryToContextMessages, type SessionEntry } from "@earendil-work
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { transcript, appendBashOutput } from "./koa-transcript.ts";
 import type { WireItem } from "./koa-records.ts";
-import { projectTopic, type TopicContext } from './topic-run.ts';
+import { countedMessage, messageTopics, projectTopic, type TopicContext } from './topic-run.ts';
 import { parseTopicName } from './records.ts';
 
 function directory(t: TestContext) {
@@ -895,4 +895,19 @@ test("show keeps a named page's epoch and cursor: pending output reaches it firs
   assert.equal(reset?.epoch, epoch);
   assert.ok(JSON.stringify(reset?.items).includes('"ab"'));
   before.close(); after.close();
+});
+
+test('counted messages require user content or assistant text', () => {
+  const base = { seq: 0, revision: 1, at: 1, final: true };
+  const user = { ...base, kind: 'user' as const, text: ' ', images: [], attachments: [] };
+  const cases: [WireItem, boolean][] = [
+    [user, false], [{ ...user, text: 'hello' }, true],
+    [{ ...user, images: [{ id: 'image', revision: 1, mimeType: 'image/png', bytes: 1 }] }, true],
+    [{ ...user, attachments: [{ kind: 'file', id: 'file', name: 'file', size: 1, path: '/tmp/file' }] }, true],
+    [{ ...base, kind: 'assistant', blocks: [{ type: 'tool', id: 'tool', name: 'bash', args: { text: '{}', cut: 0 }, state: { type: 'done', error: false, result: { text: 'output', cut: 0, images: [] } } }], stop: 'stop', error: '' }, false],
+    [{ ...base, kind: 'assistant', blocks: [{ type: 'text', text: 'hello' }], stop: 'stop', error: '' }, true],
+  ];
+  for (const [item, expected] of cases) assert.equal(countedMessage(item), expected);
+  const topic = parseTopicName('one'); assert.ok(topic);
+  assert.deepEqual(messageTopics(user, [topic]), []);
 });

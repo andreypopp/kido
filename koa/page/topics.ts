@@ -1,4 +1,4 @@
-import type { State, WireItem } from '../koa-records.ts';
+import type { State, WireItem, Topic } from '../koa-records.ts';
 import { parseTopicName, type TopicName } from '../records.ts';
 import { topicTurn } from '../topic-turn.ts';
 import { markdownLine } from '../markdown-line.ts';
@@ -255,12 +255,11 @@ export function createTopics(deps: {
     const minutes = Math.max(0, Math.floor((now - at) / 60000));
     return minutes < 1 ? 'now' : minutes < 60 ? minutes + 'm' : minutes < 1440 ? Math.floor(minutes / 60) + 'h' : Math.floor(minutes / 1440) + 'd';
   }
-  let unread: ReadonlyMap<TopicName, number> = new Map();
-  function unreadBadge(name: TopicName) {
+  function unreadBadge(name: TopicName, unread: ReadonlyMap<TopicName, number>) {
     const count = name === topicFilter() ? 0 : unread.get(name) ?? 0;
     return count ? node('span', count > 99 ? '99+' : String(count), 'topic-unread') : undefined;
   }
-  function fitTopics(width = document.documentElement.clientWidth) {
+  function fitTopics(width = document.documentElement.clientWidth, unread = deps.unread()) {
     const capsule = topicCapsule;
     if (!capsule || capsule.selected || capsule.width === width) return;
     const button = capsule.view.querySelector<HTMLElement>('.topic-open');
@@ -268,7 +267,7 @@ export function createTopics(deps: {
     button.classList.remove('single');
     const children: HTMLElement[] = [], labels = capsule.names.map(name => {
       const label = topicName(name); label.setAttribute('role', 'button'); label.tabIndex = -1;
-      const badge = unreadBadge(name); if (badge) label.append(badge);
+      const badge = unreadBadge(name, unread); if (badge) label.append(badge);
       label.onclick = () => setTopic(name);
       label.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setTopic(name); } };
       if (children.length) children.push(node('span', '·', 'topic-separator'));
@@ -296,11 +295,27 @@ export function createTopics(deps: {
     } else button.classList.toggle('single', labels.length <= 1);
     capsule.width = width;
   }
+  function refreshAge(entry: HTMLElement, topic: Topic, unread: ReadonlyMap<TopicName, number>) {
+    const age = entry.querySelector('.topic-age');
+    if (!age) return;
+    const badge = unreadBadge(topic.name, unread);
+    const archive = age.querySelector('.topic-archive');
+    age.replaceChildren();
+    if (badge) age.append(badge);
+    else if (topic.last) {
+      const time = node('time', topicAge(topic.last.at, Date.now())); time.dateTime = new Date(topic.last.at).toISOString(); age.append(time);
+    }
+    if (archive) age.append(archive);
+  }
   function renderTopics() {
-    if (interaction.rename) return;
-    const nextUnread = deps.unread(), unreadChanged = unread.size !== nextUnread.size || Array.from(nextUnread).some(([name, count]) => unread.get(name) !== count);
-    unread = nextUnread;
-    if (unreadChanged && topicCapsule) topicCapsule.width = undefined;
+    const unread = deps.unread(), records = new Map(('topics' in current.state ? current.state.topics : []).map(topic => [topic.name, topic]));
+    for (const entry of element('topics').querySelectorAll<HTMLElement>('.topic-panel>.topic-entry')) {
+      const name = parseTopicName(entry.dataset.topic), topic = name && records.get(name);
+      if (!topic) continue;
+      if (entry.querySelector('.topic-unread')?.textContent !== unreadBadge(topic.name, unread)?.textContent && topicCapsule) topicCapsule.width = undefined;
+      if (interaction.rename) refreshAge(entry, topic, unread);
+    }
+    if (interaction.rename) { fitTopics(undefined, unread); return; }
     const host = element('topics'), filter = topicFilter();
     host.hidden = current.state.view.type !== 'root' || !('topics' in current.state) || !current.state.topics.length;
     const column = element('transcript').getBoundingClientRect(), width = document.documentElement.clientWidth;
@@ -334,15 +349,12 @@ export function createTopics(deps: {
       const label = topicName(topic.name); label.classList.add('topic-toggle'); entry.append(label);
       const age = node('span', undefined, 'topic-age');
       if (topic.last) {
-        const time = node('time', topicAge(topic.last.at, Date.now())); time.dateTime = new Date(topic.last.at).toISOString();
-        entry.append(node('span', markdownLine(topic.last.summary), 'topic-summary')); age.append(time);
+        entry.append(node('span', markdownLine(topic.last.summary), 'topic-summary'));
       }
-      const badge = unreadBadge(topic.name);
-      if (badge) age.replaceChildren(badge);
       const archive = node('button', topic.archived ? '↺' : '×', 'topic-archive'); archive.type = 'button'; archive.setAttribute('aria-label', topic.archived ? 'Restore topic' : 'Archive topic');
       archive.onpointerdown = event => { if (interaction.naming?.target.kind === 'message') finishTopicNaming(false); event.stopPropagation(); };
       archive.onclick = event => { event.stopPropagation(); void deps.correct({ kind: 'archive', sessionId: current.state.sessionId, name: topic.name, archived: !topic.archived }).catch(() => {}); };
-      age.append(archive); entry.append(age);
+      age.append(archive); entry.append(age); refreshAge(entry, topic, unread);
       entry.onkeydown = event => { if (event.target === entry && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setTopic(topic.name); } };
       entry.onpointerdown = event => dragTopic(event, entry, topic.name);
       entry.onclick = event => clickTopic(event, entry, topic.name); panel.append(entry);
@@ -350,9 +362,9 @@ export function createTopics(deps: {
     if (filter) { const all = node('button', 'All topics', 'topic-entry topic-all'); all.type = 'button'; all.onclick = () => setTopic(undefined); panel.append(all); }
     host.replaceChildren(...(capsule ? [capsule, panel] : [panel]));
     if (open || previousMode === 'block' && mode === 'block') panel.scrollTop = scrollTop;
-    if (capsule && !filter) fitTopics();
+    if (capsule && !filter) fitTopics(undefined, unread);
     for (const mark of [...element('items').querySelectorAll<HTMLElement>('.topic-chip,.topic-name'), ...host.querySelectorAll<HTMLElement>('.topic-name')]) {
-      const topic = current.state.topics.find(topic => topic.name === mark.dataset.topic);
+      const name = parseTopicName(mark.dataset.topic), topic = name && records.get(name);
       if (topic) mark.style.setProperty('--topic-color', topicColour(topic.name));
     }
   }

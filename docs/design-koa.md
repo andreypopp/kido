@@ -612,7 +612,9 @@ Each topic filter and All topics keep a separate scroll position,
 with the same save and restore rule as agent views. A view left at
 the bottom follows the bottom on return. A view left in reader mode
 restores its anchor without animation; new visible items received
-while away get a divider and a new-item count.
+while away get a divider and a new-item count. The saved last
+sequence decides only for rows that the page did not know: a known
+row keeps its unread state, so a row read in another view stays read.
 A filter switch uses the same cover as a view switch: the page
 changes the projection and lands under it when the filter's history
 reload arrives, and shows the result once. A response for a filter
@@ -627,14 +629,18 @@ filter hides keeps it, so the row is still unread in a later view
 that shows it. The count and the divider cover only the shown rows.
 This state is in memory only, not in the page's history state. `pagehide` saves the memory
 before its last scroll update. Unread state covers only messages:
-the visible text blocks of an assistant item and a user item that is
-not the page's own send; runs, agent reports and job events never
+the visible text blocks of an assistant item and a user item with
+text, images or attachments that is not the page's own send
+(`countedMessage` in `koa/topic-run.ts` is the one rule); runs, agent reports and job events never
 become unread. The divider, the new-item count and the topic badges
 all read this one state, so they cannot disagree; the count and the
 badges count messages, not blocks. A topic badge counts an item only
 when that topic's projection shows one of its unread messages, so a
 topic that holds only an item's tool steps gets no badge. The page's
-own send resumes following and its item is never unread.
+own send resumes following and its item is never unread: the row
+keeps that status through later filter switches and restorations.
+The topics panel keeps no count of its own; each render reads the
+counts, also while a topic name is edited.
 
 Native find cannot search unmounted DOM. Under Kido the page's find
 hook searches its model, loads older history, opens the required folds,

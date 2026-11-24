@@ -8,7 +8,7 @@ const scopeKey = (scope: Scope): string => JSON.stringify([scope.view, scope.top
 export type Saved = { scope: Scope; anchor: Anchor; last: number } | { scope: Scope; last: number };
 type Travel = { from: number; start: number };
 type Geometry = { top: number; max: number; viewport: number; width: number; origin: number };
-type Candidate = { row?: RowId; index: number; visible: boolean; unread: boolean };
+type Candidate = { row?: RowId; index: number; visible: boolean; status: 'read' | 'unread' | 'own' };
 type Common = {
   scope: Scope;
   floor?: number;
@@ -131,8 +131,8 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     return rows;
   };
   const clear = () => {
-    for (const [seq, rows] of state.candidates) if (Array.from(rows.values()).some(candidate => candidate.unread && candidate.visible)) {
-      for (const [key, candidate] of rows) if (candidate.unread) candidates(seq).set(key, { ...candidate, unread: false });
+    for (const [seq, rows] of state.candidates) if (Array.from(rows.values()).some(candidate => candidate.status === 'unread' && candidate.visible)) {
+      for (const [key, candidate] of rows) if (candidate.status === 'unread') candidates(seq).set(key, { ...candidate, status: 'read' });
     }
     state.threshold = false;
   };
@@ -186,24 +186,25 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         break;
       case 'item': {
         state.lastSeq = Math.max(state.lastSeq, event.seq);
-        if (event.appended && event.kind === 'user' && state.pendingSend) {
+        const own = event.appended && event.kind === 'user' && state.pendingSend;
+        if (own) {
           state.forceItem = { seq: event.seq };
           state.pendingSend = undefined;
           follow();
-          break;
         }
         if (event.kind === 'other') break;
         const rows = event.rows?.length ? event.rows : [{ row: undefined, visible: event.visible }];
         const known = state.candidates.get(event.seq);
         const baseline = !event.appended && !known && state.kind !== 'restoring';
         const keys = new Set(rows.map(({ row }) => row ? rowKey(row) : ''));
-        for (const [key, candidate] of known ?? []) if (!keys.has(key) && (candidate.visible || candidate.unread)) candidates(event.seq).set(key, { ...candidate, visible: false, unread: state.filtered && candidate.unread });
+        for (const [key, candidate] of known ?? []) if (!keys.has(key) && (candidate.visible || candidate.status === 'unread')) candidates(event.seq).set(key, { ...candidate, visible: false, status: !state.filtered && candidate.status === 'unread' ? 'read' : candidate.status });
         rows.forEach(({ row, visible }, index) => {
           const key = row ? rowKey(row) : '', before = known?.get(key);
           const arrived = event.rows?.length ? event.kind === 'user' ? !known?.size : !Array.from(known?.values() ?? []).some(candidate => candidate.row) : !before?.visible;
-          const unread = (before ? before.unread : Array.from(known?.values() ?? []).some(candidate => candidate.unread)) && (state.filtered || visible) || (!!event.rows?.length || event.visible) && arrived && !baseline && !filtering && !(state.kind === 'following' && focused && visible) && (state.kind !== 'restoring' || event.seq > state.target.last);
-          if (before?.visible !== visible || before?.unread !== unread || before?.index !== index) candidates(event.seq).set(key, { row, index, visible, unread });
-          if (unread && visible && state.kind === 'following' && !state.positioning) reader();
+          const unread = (before ? before.status === 'unread' : Array.from(known?.values() ?? []).some(candidate => candidate.status === 'unread')) && (state.filtered || visible) || (!!event.rows?.length || event.visible) && arrived && !baseline && !filtering && !(state.kind === 'following' && focused && visible) && (state.kind !== 'restoring' || event.seq > state.target.last);
+          const status = own || before?.status === 'own' ? 'own' : unread ? 'unread' : 'read';
+          if (before?.visible !== visible || before?.status !== status || before?.index !== index) candidates(event.seq).set(key, { row, index, visible, status });
+          if (status === 'unread' && visible && state.kind === 'following' && !state.positioning) reader();
         });
         break;
       }
@@ -294,7 +295,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
   }
   if (filtering && state.kind === 'reader' && !state.anchor) {
     let first: { seq: number; candidate: Candidate } | undefined;
-    for (const [seq, rows] of state.candidates) for (const candidate of rows.values()) if (candidate.visible && candidate.unread && (!first || seq < first.seq || seq === first.seq && candidate.index < first.candidate.index)) first = { seq, candidate };
+    for (const [seq, rows] of state.candidates) for (const candidate of rows.values()) if (candidate.visible && candidate.status === 'unread' && (!first || seq < first.seq || seq === first.seq && candidate.index < first.candidate.index)) first = { seq, candidate };
     if (first) reader({ item: { kind: 'message', seq: first.seq, row: first.candidate.row }, offset: 0, edge: 'divider' });
     else follow();
   }
@@ -304,9 +305,6 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     if (found.kind === 'mounted') {
       reader(target.anchor);
       instant = true;
-      for (const [seq, rows] of state.candidates) for (const [key, candidate] of rows) {
-        if (seq > target.last && candidate.visible && !candidate.unread) candidates(seq).set(key, { ...candidate, unread: true });
-      }
     } else if (found.kind === 'unmounted') request = { type: 'mount', item: target.anchor.item };
     else if (found.kind === 'unloaded') request = { type: 'load', item: target.anchor.item, generation: state.generation };
     else if (events.some(event => event.type === 'frame' || event.type === 'layout')) follow();
@@ -357,15 +355,15 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
   else if (distance < m.viewport / 4) state.threshold = false;
   if (sawScroll && focused && !filtering) {
     for (const [seq, rows] of state.candidates) for (const candidate of rows.values()) {
-      if (!candidate.visible || !candidate.unread) continue;
+      if (!candidate.visible || candidate.status !== 'unread') continue;
       const found = m.lookup({ kind: 'message', seq, row: candidate.row });
-      if (found.kind === 'mounted' && found.row.top >= top && found.row.bottom <= top + m.dock) for (const [key, item] of rows) if (item.unread) candidates(seq).set(key, { ...item, unread: false });
+      if (found.kind === 'mounted' && found.row.top >= top && found.row.bottom <= top + m.dock) for (const [key, item] of rows) if (item.status === 'unread') candidates(seq).set(key, { ...item, status: 'read' });
     }
   }
   const counted = new Set<number>();
   let divider: Decision['divider'], dividerIndex = Infinity;
   for (const [seq, rows] of state.candidates) for (const candidate of rows.values()) {
-    if (!candidate.unread || !candidate.visible) continue;
+    if (candidate.status !== 'unread' || !candidate.visible) continue;
     const { row, index } = candidate;
     if (!divider || seq < divider.seq || seq === divider.seq && index < dividerIndex) { divider = { seq, row }; dividerIndex = index; }
     const found = m.lookup({ kind: 'message', seq, row });
