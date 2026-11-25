@@ -10,7 +10,6 @@ import { EventEmitter, once } from "node:events";
 import type { TestContext } from "node:test";
 import { hostFacts, type Agent, type AgentHost } from "./koa-agents.ts";
 import type { CompletionContext } from "./completion-context.ts";
-import type { RestartState } from "./records.ts";
 import { createPublisher, deriveRecords } from "./koa-status.ts";
 import type { PageRecord } from "./koa-records.ts";
 
@@ -458,9 +457,9 @@ export function createChannel(active = true) {
   liveHosts.push(host);
   return {
     host,
-    ask: async (query: { type: "completion_context" | "restart_state" }): Promise<{ type: "completion_context"; context: CompletionContext } | { type: "restart_state"; state: RestartState }> => {
+    ask: async (query: { type: "completion_context" }): Promise<{ type: "completion_context"; context: CompletionContext }> => {
       if (!host.extension) throw new Error("the extension is not registered");
-      return query.type === "completion_context" ? { type: "completion_context", context: await host.extension.completionContext(new AbortController().signal) } : { type: "restart_state", state: host.extension.restartState() };
+      return { type: query.type, context: await host.extension.completionContext(new AbortController().signal) };
     },
     receivers: () => host.extension ? 1 : 0,
   };

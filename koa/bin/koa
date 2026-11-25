@@ -9,7 +9,7 @@ if ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 24 ? 0
 fi
 ko_custom_pi=
 for ko_arg do
-  if [ "$ko_arg" = --pi ]; then ko_custom_pi=1; fi
+  case "$ko_arg" in --pi|--pi=*) ko_custom_pi=1;; esac
 done
 if [ -z "$ko_custom_pi" ] && ! command -v pi >/dev/null 2>&1; then
   echo 'koa: pi is required on this host; none found on PATH' >&2

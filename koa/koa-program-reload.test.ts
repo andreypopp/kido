@@ -74,39 +74,45 @@ test("an unreadable page keeps the old document", { timeout: 30000 }, async t =>
   await app.until(ofType("item", record => record.item.kind === "notify" && record.item.level === "warning" && record.item.text.text.includes("page could not be read")));
 });
 
-test("/reload restarts koa in place on the same session when only the install changed", { timeout: 30000 }, async t => {
+test("/reload keeps the process and page when the program changed", { timeout: 30000 }, async t => {
   const dir = await install(t);
   const app = await realFixture(t, { replies: [], program: join(dir, "koa/koa.ts"), setup: saved });
+  const before = await (await fetch(app.base)).text();
   await updateProgram(dir);
-  await reload(app);
-  await pollUntil(() => urls(app) === 2, 10000, "the new koa incarnation");
-});
-
-test("a newer koa needs a saved session, and the agent still reloads", { timeout: 30000 }, async t => {
-  const dir = await install(t);
-  const app = await realFixture(t, { replies: [], program: join(dir, "koa/koa.ts"), args: ["--no-session"] });
-  await updateProgram(dir);
-  await reload(app);
-  await app.until(note("reloaded · a newer koa needs a saved session"));
+  await updatePage(dir);
+  assert.deepEqual((await (await reload(app)).json()).action, { type: "none" });
+  await app.until(note("reloaded · /restart needed to load the new koa"));
   assert.equal(urls(app), 1);
+  assert.equal(await (await fetch(app.base)).text(), before);
 });
 
-test("a newer koa waits while a job runs, and /restart restarts anyway", { timeout: 40000 }, async t => {
+test("/restart runs koa on PATH even while a job runs", { timeout: 40000 }, async t => {
   const dir = await install(t);
+  const argsFile = join(dir, "args");
+  const bin = await mkdtemp("/tmp/koa-path-");
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  await writeFile(join(bin, "koa"), `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsFile}'\nexec '${process.execPath}' '${resolve("../build/koa/share/koa/koa/koa.ts")}' "$@"\n`, { mode: 0o700 });
   const app = await realFixture(t, {
     replies: [{ tools: [{ name: "async_bash", args: { command: "sleep 30", name: "bg" } }] }, { text: "started" }],
-    program: join(dir, "koa/koa.ts"), setup: saved,
+    program: join(dir, "koa/koa.ts"), setup: saved, env: { PATH: `${bin}:${process.env.PATH}` },
   });
   await app.post("prompt", { text: "run a job", mode: "prompt", attachments: [] });
   await pollUntil(() => app.provider.requests.length === 2, 10000, "the tool result request");
   await app.until(ofType("item", record => record.item.kind === "assistant" && JSON.stringify(record.item.blocks).includes("started")));
   await pollUntil(() => app.records().filter(ofType("state")).at(-1)?.working === false, 5000, "the turn to end");
-  await updateProgram(dir);
-  await updatePage(dir);
-  await reload(app);
-  await app.until(note("reloaded · a newer koa waits for 1 job"));
-  assert.doesNotMatch(await (await fetch(app.base)).text(), /RELOADED-MARKER/);
-  assert.equal(urls(app), 1);
   await app.post("prompt", { text: "/restart", mode: "prompt", attachments: [] });
   await pollUntil(() => urls(app) === 2, 10000, "the restart with a running job");
+  assert.match(await readFile(argsFile, "utf8"), /--session=.+/);
+});
+
+test("/restart without koa on PATH keeps serving", { timeout: 30000 }, async t => {
+  const bin = await mkdtemp("/tmp/koa-missing-");
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  await symlink(process.execPath, join(bin, "node"));
+  const app = await realFixture(t, { replies: [], setup: saved, env: { PATH: bin } });
+  const response = await app.post("prompt", { text: "/restart", mode: "prompt", attachments: [] });
+  assert.deepEqual((await response.json()).action, { type: "none" });
+  await app.until(ofType("item", record => record.item.kind === "notify" && record.item.level === "error" && record.item.text.text === "/restart: koa was not found on PATH"));
+  assert.equal(urls(app), 1);
+  assert.equal((await fetch(app.base)).status, 200);
 });

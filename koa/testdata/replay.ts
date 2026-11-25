@@ -8,7 +8,7 @@ import { assemblePage, readPage } from "../koa-assemble.ts";
 import { attachments, stepFile } from "../koa-attach.ts";
 import { readBody, respond, serveFile, wrongPostType } from "../koa-http.ts";
 import { pathArg, type Attachment, type PageRecord, type WireItem } from "../koa-records.ts";
-import { findKo } from "../runtime-exec.ts";
+import { findOnPath } from "../runtime-exec.ts";
 import { errorText, isRecord } from "../text.ts";
 import type { Batch, Input, Scenarios } from "./scenario.ts";
 
@@ -162,7 +162,7 @@ const handle = async (request: IncomingMessage, response: ServerResponse) => {
 };
 
 const server = createServer((request, response) => { handle(request, response).catch(error => { process.stderr.write(`replay: ${errorText(error)}\n`); if (!response.headersSent) respond(response, 500, JSON.stringify({ error: errorText(error) })); }); });
-const view = await webview(server, { target: presentation === "pane" ? "pane" : "browser", ...(presentation === "pane" ? { ko: findKo() ?? undefined } : {}) });
+const view = await webview(server, { target: presentation === "pane" ? "pane" : "browser", ...(presentation === "pane" ? { ko: findOnPath("ko") ?? undefined } : {}) });
 if (!view) throw Error("replay requires a Kido pane or --browser");
 const quit = () => {
   attached.close();

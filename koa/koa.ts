@@ -22,11 +22,11 @@ import { loadSdk } from "./koa-sdk.ts";
 import { parseKoaArgs, restartArgs, startupResult } from "./koa-args.ts";
 import { shellComplete } from "./koa-shell.ts";
 import { attachments, stepFile, UPLOAD_IDLE_MS } from "./koa-attach.ts";
-import { commandCatalog, parseCommand, dispatchCommand, deferralText, type Deferral } from './koa-commands.ts';
+import { commandCatalog, parseCommand, dispatchCommand } from './koa-commands.ts';
 import { installedIdentity } from './koa-identity.ts';
 import { bashCommand, topicPrompt } from "./prompt.ts";
 import { koaEditor, openPathEditor } from "./koa-editor.ts";
-import { findKo, apiArgs } from "./runtime-exec.ts";
+import { findOnPath, apiArgs } from "./runtime-exec.ts";
 import { fileSource, jobView, liveSource } from "./koa-job-view.ts";
 import { parseTopicName, type TopicName, type JobSnapshot } from "./records.ts";
 import type { Agent, Selection, Tree } from "./koa-agents.ts";
@@ -92,7 +92,7 @@ async function withRequestSignal(response: ServerResponse, lifetime: AbortSignal
 async function main(): Promise<void> {
   process.stderr.on("error", () => {});
   process.stdout.on("error", () => {});
-  const pane = process.env.KO_PANE, ko = findKo();
+  const pane = process.env.KO_PANE, ko = findOnPath("ko");
   let crashed = false;
   process.on("uncaughtException", error => {
     if (crashed) return;
@@ -373,21 +373,23 @@ Everything after -- is message text.
       agent.view.hooks.notify(`/${command}: only in @${rootName()}'s view`, "warning");
       return true;
     };
-    const restartKoa = (response: ServerResponse) => {
+    const restartKoa = (agent: Agent, response: ServerResponse) => {
+      const found = findOnPath("koa");
+      if (!found) {
+        agent.view.feed.notify("/restart: koa was not found on PATH", "error");
+        respond(response, 200, JSON.stringify({ disposition: "handled", action: { type: "none" } }));
+        return;
+      }
       const restart = () => {
         if (reloading) return;
         reloading = true;
         const ended = tree.all().filter(agent => agent.parent).length;
-        void shutdown().then(() => Promise.all([process.stdout, process.stderr].map(stream => new Promise<void>(resolve => { const timer = later(resolve, QUIT_REPLY_MS); stream.write("", () => { clearTimeout(timer); resolve(); }); })))).then(() => { if (!process.execve) throw Error("this node has no process.execve"); process.execve(process.execPath, [process.execPath, ...process.execArgv, process.argv[1] ?? "", ...restartArgs(parsed, root().view.state.sessionFile, true)], { ...process.env, KOA_RELOAD: String(ended) }); }).catch(error => { process.stderr.write(`koa: reload: ${errorText(error)}\n`); process.exitCode = 1; });
+        void shutdown().then(() => Promise.all([process.stdout, process.stderr].map(stream => new Promise<void>(resolve => { const timer = later(resolve, QUIT_REPLY_MS); stream.write("", () => { clearTimeout(timer); resolve(); }); })))).then(() => { if (!process.execve) throw Error("this node has no process.execve"); process.execve(found, [found, ...restartArgs(parsed, root().view.state.sessionFile, true)], { ...process.env, KOA_RELOAD: String(ended) }); }).catch(error => { process.stderr.write(`koa: reload: ${errorText(error)}\n`); process.exitCode = 1; });
       };
       afterReply(response, QUIT_REPLY_MS, restart);
       respond(response, 200, JSON.stringify({ disposition: "handled", action: { type: "reload" } }));
     };
     const reloadBusy = () => tree.all().some(agent => agent.view.reloadBusy()) || edits.busy();
-    const deferred = (): Deferral | undefined => {
-      const restart = tree.restartState();
-      return restart.type === "blocked" ? restart.jobs ? { type: "jobs", count: restart.jobs } : { type: "children", count: restart.children } : !root().view.state.sessionFile ? { type: "no_session" } : undefined;
-    };
     const startRoot = async () => {
       const v = root().view;
       v.life = { type: "starting" }; v.resetSession(); v.newSessionScope(); v.publish(true);
@@ -428,10 +430,7 @@ Everything after -- is message text.
       const now = await installedIdentity(location).catch(() => undefined);
       const blocked = "a turn, a command, a queue, a dialog or an editor is open";
       if (identity !== undefined && now !== undefined && now !== identity) {
-        const deferral = deferred();
-        if (deferral) feed.notify(deferralText(deferral), "info");
-        else if (busy || reloadBusy()) feed.notify(`reload: not while ${blocked}`, "warning");
-        else { restartKoa(response); return; }
+        feed.notify(busy ? `agents not reloaded: ${blocked} · /restart needed to load the new koa` : "reloaded · /restart needed to load the new koa", busy ? "warning" : "info");
       } else if (!page) feed.notify("page could not be read · keeping the current page", "warning");
       else if (identity !== undefined && now === identity && page.hash !== served.hash) {
         feed.notify(busy ? `new page · agents not reloaded: ${blocked}` : "reloaded · new page", busy ? "warning" : "info");
@@ -584,7 +583,7 @@ Everything after -- is message text.
           });
           if (action.type === 'quit') { await routes['/quit']?.handle({}, response, req); return; }
           if (action.type === 'reload') { await reload(agent, response); return; }
-          if (action.type === 'restart') { restartKoa(response); return; }
+          if (action.type === 'restart') { restartKoa(agent, response); return; }
           respond(response, 200, JSON.stringify({ disposition: 'handled', action })); return;
         }
         const owner = agent.session;

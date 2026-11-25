@@ -162,12 +162,11 @@ without the page files. The order matters: an install that runs
 during the read cannot pair a new page with the old program, because
 the program is read last.
 
-- If the program changed, koa restarts only with a saved root
-  session, no running jobs, no child that owes a report, and no busy
-  state. Services also block this restart. Otherwise a notice
-  explains the deferral, and a later reload can try again. The old
-  document stays while the old program runs. A failed program read
-  does not trigger a restart.
+- If the program changed, `/reload` does not restart koa: a restart
+  ends running work, and only the user decides that. The old
+  document stays while the old program runs, and the notice says
+  that `/restart` is needed to load the new koa. A failed program
+  read counts as no change.
 - If the program is equal and the page changed, koa swaps the served
   document ("One document, one instance"). The notice says when the
   agents were not reloaded because one was busy.
@@ -184,9 +183,20 @@ Node's ESM cache has no eviction, and the state that must survive
 is held by closures that new code cannot adopt. A hand-over of that
 state as data would be a migration path from an older program.
 
-`/restart` bypasses the identity, idle and deferral checks. It ends
-running work and replaces koa on the root session file when one
-exists, or on the original startup arguments otherwise. Both commands
+`/restart` is the only process replacement. It does not check
+identity or idleness. It ends running work and replaces koa on the
+root session file when one exists, or on the original startup
+arguments otherwise.
+
+The new process is the `koa` that koa's own `PATH` names at the
+restart, not the running script, so a `brew upgrade` or a `make
+install` takes effect. koa does not ask a login shell: the new
+process inherits koa's environment, so a lookup on that same `PATH`
+finds the program that a later `koa` in it would run. A host pane
+got that `PATH` from the login shell at its start (design.md,
+"Starting a koa agent"), and a koa in a runtime has the runtime's
+`PATH`, where the host's login files do not apply. When no `koa` is
+on `PATH`, `/restart` reports an error and koa keeps running. Both commands
 are root-view commands. They are not an alternative HTTP access path
 for a session that is unavailable.
 
@@ -1403,8 +1413,8 @@ can be reused after a job ends; name lookup prefers a running job,
 then the newest ended one.
 
 A service is intended to keep running. It does not hold a child's
-report and its status is idle, not working. It still has logs, stop,
-ending notices and restart-deferral behavior. A moved bash call is
+report and its status is idle, not working. It still has logs, stop
+and ending notices. A moved bash call is
 not a service.
 
 Streaming sends cleaned lines in bounded batches. During work, a due

@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { NotifyLevel } from "./koa-records.ts";
 import { createFloat, placeFloat, type FloatEnd } from "./koa-float.ts";
-import { findKo, KO_TIMEOUT_MS, runtimeExec } from "./runtime-exec.ts";
+import { findOnPath, KO_TIMEOUT_MS, runtimeExec } from "./runtime-exec.ts";
 import type { Routes } from "./page/http.ts";
 import type { CompletionContext } from "./completion-context.ts";
 import { pathToken } from "./path-token.ts";
@@ -40,7 +40,7 @@ const keepFailedPath = 's=$?; if [ "$s" -ne 0 ] && [ "$s" -le 128 ]; then printf
 
 export async function openPathEditor(text: string, context: CompletionContext, agentDir: string, self: string, valid: () => boolean): Promise<Routes['/editor/path']['response']> {
   const warn = (reason: string) => ({ type: 'warning' as const, text: `${text}: ${reason}` });
-  const token = pathToken(text), ko = findKo();
+  const token = pathToken(text), ko = findOnPath("ko");
   if (!token || !ko) return warn('cannot open the editor');
   let argv: string[], cwd: string, runtime: string | undefined;
   switch (context.type) {
@@ -141,7 +141,7 @@ export function koaEditor(options: { agentDir: string; cwd: () => string; sessio
       const self = process.env.KO_PANE;
       if (!self) return Promise.resolve({ error: "C-g needs a ko pane" });
       if (process.env.KO_RUNTIME) return Promise.resolve({ error: "C-g cannot open an editor from inside a runtime" });
-      const ko = findKo();
+      const ko = findOnPath("ko");
       if (!ko) return Promise.resolve({ error: "ko is not on PATH" });
       const work = start(text, self, ko, editorCommand(options.agentDir, options.cwd(), process.env));
       opening = work;

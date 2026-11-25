@@ -14,17 +14,6 @@ export async function commandCatalog(root: string) {
   return { catalog, completion: catalog.filter(value => value.action !== 'refuse') };
 }
 
-export type Deferral = { type: 'jobs'; count: number } | { type: 'children'; count: number } | { type: 'no_session' };
-const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
-export function deferralText(deferral: Deferral): string {
-  const subject = 'reloaded · a newer koa';
-  switch (deferral.type) {
-    case 'jobs': return `${subject} waits for ${plural(deferral.count, 'job')}`;
-    case 'children': return `${subject} waits for ${plural(deferral.count, 'subagent')} to report`;
-    case 'no_session': return `${subject} needs a saved session`;
-  }
-}
-
 export function parseCommand(text: string, catalog: readonly Builtin[]): { command: Builtin; args: string } | undefined {
   const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text.trim());
   const command = match && catalog.find(value => value.name === match[1]);

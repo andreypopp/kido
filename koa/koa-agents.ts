@@ -11,11 +11,11 @@ import { sessionDir } from "./koa-session-dir.ts";
 import type { AgentView } from "./koa-view.ts";
 import { openInbox, type Inbox } from "./koa-inbox.ts";
 import type { SessionRow, SessionScope } from "./koa-records.ts";
-import type { AgentEnd, JobPlace, JobRef, RestartState, InProcessMessage } from "./records.ts";
+import type { AgentEnd, JobPlace, JobRef, InProcessMessage } from "./records.ts";
 import type { AgentRow } from "./agents.ts";
 import { errorText } from "./text.ts";
 import { agentPath, createPublisher, deriveRecords, jobsPath } from "./koa-status.ts";
-import { findKo } from "./runtime-exec.ts";
+import { findOnPath } from "./runtime-exec.ts";
 import type { CompletionContext } from "./completion-context.ts";
 
 export type Dialogs = Pick<ExtensionUIContext, "select" | "input" | "confirm" | "editor" | "notify" | "setStatus" | "setEditorText">;
@@ -43,7 +43,7 @@ function uiContext(sdk: Sdk, dialogs: Dialogs): ExtensionUIContext {
 type HostFacts = { pane: string | null; ko: string | null; insideKo: boolean; runtime: string | undefined; place: JobPlace };
 
 export function hostFacts(env: NodeJS.ProcessEnv): HostFacts {
-  const ko = findKo(env.PATH);
+  const ko = findOnPath("ko", env.PATH);
   const name = env.SSH_CONNECTION ? hostname() : "";
   return { pane: env.KO_PANE || null, ko, insideKo: !!env.KO_SOCKET && ko !== null, runtime: env.KO_RUNTIME || undefined, place: name ? { type: "remote", host: name } : process.platform === "darwin" ? { type: "mac" } : { type: "machine" } };
 }
@@ -62,7 +62,6 @@ export type SpawnPlan = {
 
 export type Extension = JobSink & {
   completionContext(signal: AbortSignal): Promise<CompletionContext>;
-  restartState(): RestartState;
   receive(message: InProcessMessage): Promise<void>;
   scope(maxAgeMs: number, ended?: boolean): Promise<AgentRow[]>;
   markWork(child: string): void;
@@ -131,7 +130,6 @@ export type Tree = {
   changed(): void;
   retry(agent: Agent): Promise<void>;
   stop(agent: Agent, cause: AgentEnd): Promise<void>;
-  restartState(): RestartState;
   dispose(): Promise<void>;
   openInbox(): void;
   freeze(): () => void;
@@ -581,14 +579,6 @@ export function createTree(options: TreeOptions): Tree {
       const previous = frozen;
       frozen = previous ? previous.then(() => mine) : mine;
       return () => { release(); if (frozen === mine) frozen = undefined; };
-    },
-    restartState: () => {
-      let jobs = 0, children = 0;
-      for (const agent of all()) {
-        const state = agent.extension?.restartState();
-        if (state?.type === "blocked") { jobs += state.jobs; children += state.children; }
-      }
-      return jobs || children ? { type: "blocked", jobs, children } : { type: "ready" };
     },
     async start(args) {
       parsed = args;

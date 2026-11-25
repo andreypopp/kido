@@ -46,7 +46,7 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { components } from "../webview/ko-api.d.ts";
 import { topicList, type TopicList } from './topic-list.ts';
-import { TOPIC_NAME_PATTERN, parseTopicName, type TopicName, isAgentFailure, jobEndText, type RestartState, type InProcessMessage, type AgentEnd, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd, type JobPlace, type JobSnapshot } from "./records.ts";
+import { TOPIC_NAME_PATTERN, parseTopicName, type TopicName, isAgentFailure, jobEndText, type InProcessMessage, type AgentEnd, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd, type JobPlace, type JobSnapshot } from "./records.ts";
 import { reconnectBackoff, parsePanes, placesOf, koaAgent, peerPanes, runningRows, MIN_ID_PREFIX, VAR_SESSION, VAR_NAME, VAR_ACTIVITY, VAR_TASK, VAR_RUNTIME, type PaneInfo, type AgentRow, type Where } from "./agents.ts";
 
 type Api = components["schemas"];
@@ -1905,13 +1905,6 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     return liveChildren().some((child) => !childReported(child, marks));
   };
 
-  const restartState = (): RestartState => {
-    const jobs = backgroundJobs().filter((job) => job.state.type !== "ended").length;
-    const marks = childMarks();
-    const waiting = liveChildren().filter((child) => !childReported(child, marks)).length;
-    return jobs || waiting ? { type: "blocked", jobs, children: waiting } : { type: "ready" };
-  };
-
   let completionStop = new AbortController();
   let completionResolve: ((signal: AbortSignal) => Promise<CompletionContext>) | undefined;
   const setCompletionContext = (resolve?: (signal: AbortSignal) => Promise<CompletionContext>) => {
@@ -2855,7 +2848,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   host.extension = {
     jobEnded: () => { if (settled) void reportIfPending().catch((error: unknown) => session?.ui?.notify(errorText(error), "error")); },
-    completionContext, restartState, receive, childState, scope: async (maxAgeMs, ended = false) => (await discovery(maxAgeMs, !ended)).rows, jobNotice: deliverNotice, jobStream,
+    completionContext, receive, childState, scope: async (maxAgeMs, ended = false) => (await discovery(maxAgeMs, !ended)).rows, jobNotice: deliverNotice, jobStream,
     markWork: (child) => { const known = children().find((c) => c.session === child); if (known) markChildWork(known); },
     receiveReport: (child, text, interim) => {
       append(ENTRY_REPORT, { child: child.session, name: child.name, text, interim });
