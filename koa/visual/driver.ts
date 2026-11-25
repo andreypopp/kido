@@ -1064,7 +1064,7 @@ async function testKoaWebviewViewSwitchAtomic() {
         await webviewJS(web, `new Promise((resolve,reject)=>{const end=performance.now()+5000;function sample(){if(!document.querySelector('#presentation')&&!document.querySelector('#bar').hidden)resolve();else if(performance.now()>end)reject(Error('Presentation commit deadline'));else requestAnimationFrame(sample)}sample()})`)
         await webviewJS(web, "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>{atomicSampling=false;resolve()})))")
         const result = await webviewJS(web, `(()=>{const changed=atomicFrames.filter(frame=>frame.scope!==atomicBefore.scope);let changes=0,previous=atomicBefore.scope;for(const frame of atomicFrames){if(frame.scope!==previous)changes++;previous=frame.scope}return changes===1&&changed.length>0&&changed.every(frame=>frame.row===atomicAnchor.row&&Math.abs(frame.top-atomicAnchor.top)<=1)})()`)
-        equal(result, true, 'Exactly one nonempty presentation change keeps the saved reader offset')
+        equal(result, true, 'Exactly one nonempty presentation change keeps the saved reader offset '+JSON.stringify(await webviewJS(web, '({anchor:atomicAnchor,before:atomicBefore,frames:atomicFrames.filter(frame=>frame.scope!==atomicBefore.scope)})')))
     }
 async function testKoaWebviewReloadKeepsView() {
         const web = await scrollPage("scroll-follow", "ReloadKeepsView")
@@ -1142,6 +1142,33 @@ async function testKoaWebviewExplicitRowExtents() {
         await webviewUntil(web, 'extentReads.length>0')
         const width = await webviewJS<boolean>(web, '[...document.querySelectorAll("#items>[data-seq]")].every(row=>extentReads.includes(Number(row.dataset.seq)))')
         equal(width, true, 'Width change measures mounted rows')
+        await webviewJS(web, '(async()=>{' + followHelpers + `
+          window.topicExtentRows=extentRows.map(item=>({...item,final:true,blocks:[{type:'text',topic:'geometry',text:'Row '+item.seq+' '+ 'A stable reader paragraph. '.repeat(12)}]}));
+          topicExtentRows.push({kind:'assistant',seq:80,revision:0,at:1700000000000,final:true,stop:'stop',error:'',blocks:[{type:'tool',topic:'other',id:'geometry-run',name:'read',args:{text:'{}'},state:{type:'done',error:false,result:{text:'done',cut:0,images:[]}}}]});
+          const fetchItems=window.fetch;window.topicExtentRequests=0;window.fetch=(url,options)=>{const request=new URL(url,location.href);if(request.pathname!=='/items')return fetchItems(url,options);const topic=request.searchParams.get('topic');if(topic!==null&&topic!=='geometry'||request.searchParams.get('sessionId')!=='s1'||request.searchParams.get('before')!==String(Number.MAX_SAFE_INTEGER))throw Error('Unexpected topic extent request '+url);topicExtentRequests++;return Promise.resolve({ok:true,json:async()=>({epoch:'topic-extents',more:false,items:topic?topicExtentRows.filter(item=>item.seq!==80):topicExtentRows})})};
+          push({...view(root,[root]),view:{id:'s1',path:[root],type:'root'},topics:[{name:'geometry',last:{summary:'Geometry',at:1700000000000}},{name:'other',last:{summary:'Other topic',at:1699999999000}}]});
+          push({type:'reset',epoch:'topic-extents',more:false,items:topicExtentRows});await extentFrames();document.querySelector('#latest').click();await extentFrames();
+          window.topicExtentGeometry=()=>{const slot=document.querySelector('#tail-slot'),ending=slot.hidden?[...document.querySelectorAll('#items .run>.line')].at(-1):slot;return {scroll:s.scrollTop,ending:ending.getBoundingClientRect().toJSON(),rows:[...document.querySelectorAll('#items>[data-seq]')].filter(row=>row.getBoundingClientRect().bottom>0&&row.getBoundingClientRect().top<dock.getBoundingClientRect().top&&row.querySelector('.prose')).map(row=>({seq:row.dataset.seq,top:row.getBoundingClientRect().top,height:row.getBoundingClientRect().height,headers:[...row.querySelectorAll('.message-header')].map(header=>header.getBoundingClientRect().height)})),divider:document.querySelector('.unread-first')?.getBoundingClientRect().toJSON()}};window.topicExtentBefore=topicExtentGeometry();return true;
+        })()`)
+        await web.locator('.topic-open>.topic-name[data-topic=geometry]').click()
+        await webviewUntil(web, "!document.querySelector('#presentation')&&document.querySelector('.topic-capsule .topic-clear')&&" + koaIdle)
+        const filteredGeometry = await webviewJS<{ending:{top:number;height:number};rows:{seq:string;top:number;height:number;headers:number[]}[]}>(web, 'topicExtentGeometry()')
+        const initialGeometry = await webviewJS<typeof filteredGeometry>(web, 'topicExtentBefore')
+        await web.locator('.topic-capsule .topic-clear').click()
+        await webviewUntil(web, "!document.querySelector('#presentation')&&!document.querySelector('.topic-capsule .topic-clear')&&" + koaIdle)
+        const restoredGeometry = await webviewJS<typeof filteredGeometry>(web, 'topicExtentGeometry()')
+        equal(await webviewJS(web, 'topicExtentRequests'), 2, 'Both topic switches load their requested history')
+        for (const [name, geometry] of [['Filtered', filteredGeometry], ['Restored', restoredGeometry]] as const) {
+          require(geometry.rows.length > 1, name+' topic view has several visible shared rows')
+          near(geometry.ending.top, initialGeometry.ending.top, .01, name+' ending row keeps its top')
+          near(geometry.ending.height, initialGeometry.ending.height, .01, 'Folded run and bare ending slot have the same height')
+          for (const row of geometry.rows) {
+            const before = requireValue(initialGeometry.rows.find(before=>before.seq===row.seq))
+            near(row.top, before.top, .01, name+' topic view keeps shared row '+row.seq)
+            equal(row.height, before.height, name+' row extent stays fractional and unchanged')
+            equal(row.headers, before.headers, name+' header height is unchanged without its topic chip')
+          }
+        }
         const jobFrames = await webviewJS<number>(web, '(async()=>{' + followHelpers + `
           if(koaTickRequests===0)throw Error('Frame counter did not see page layout');
           const id='extent-job',snapshot={name:'idle',command:'true',service:false,startedAt:1700000000000,place:{type:'mac'},log:'/tmp/idle.log',state:{type:'ended',end:{type:'exit',code:0},at:1700000000001}};

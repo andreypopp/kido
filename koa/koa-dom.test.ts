@@ -2405,13 +2405,13 @@ async function revealPage(clientHeight = 100) {
   let top = 0, height = 20, client = clientHeight, moved = false;
   const evaluate = app.repl();
   const box = app.context.document.getElementById('scroll');
-  const layout: { height?: () => number; elastic?: boolean; dock?: number; flush: () => void } = { flush: () => {} };
+  const layout: { height?: () => number; elastic?: boolean; dock?: number; truncate?: boolean; flush: () => void } = { flush: () => {} };
   const natural = () => layout.height?.() ?? height;
   Object.defineProperty(app.context.document.getElementById('transcript'), 'offsetHeight', { get: natural });
   const total = natural;
   layout.flush = () => { if (layout.elastic) return; const next = Math.min(Math.max(0, total() - client), top); if (next !== top) { top = next; moved = true; } };
   Object.defineProperties(box, {
-    scrollTop: { get: () => (hooks.read?.('scrollTop', box), layout.flush(), top), set: (value: number) => { layout.flush(); const before = top; top = Math.max(0, Number(value)); layout.flush(); hooks.wrote?.(); if (top !== before) moved = true; } },
+    scrollTop: { get: () => (hooks.read?.('scrollTop', box), layout.flush(), top), set: (value: number) => { layout.flush(); const before = top; top = Math.max(0, layout.truncate ? Math.trunc(Number(value)) : Number(value)); layout.flush(); hooks.wrote?.(); if (top !== before) moved = true; } },
     scrollHeight: { get: () => (hooks.read?.('scrollHeight', box), layout.flush(), total()), set: (value: number) => { layout.flush(); height = value; layout.flush(); } },
     clientHeight: { get: () => (hooks.read?.('clientHeight', box), client), set: (value: number) => { client = value; layout.flush(); } },
   });
@@ -5162,6 +5162,25 @@ test('a scrollbar jump mounts the reader and preserves its offset', async () => 
   page.settle(4);
   assert.equal(page.offset(anchor), before);
   assert.equal(page.padding() > 0, true);
+});
+
+test('a fractional virtual origin restores a reader with integer scroll positions', async () => {
+  for (const [saved, restored] of [[.03, .97], [.97, .03]]) {
+    const page = await windowPage();
+    page.layout.truncate = true;
+    page.go('r'); page.open(page.rows(0, 100)); page.settle(8);
+    page.reader(2000); page.settle(8);
+    const origin = (fraction: number) => page.evaluate(`extents.set(0,{kind:'estimated',px:100+${fraction}});table=undefined;windowDirty=true;frame()`);
+    origin(saved); page.settle(8);
+    page.reader(page.top()); page.settle(8);
+    const seq = Number(page.evaluate('scrolling.mode.anchor.item.seq')), offset = page.offset(seq);
+    assert.ok(Math.abs(Number(page.evaluate('extentOrigin(ensureTable())')) - (1-saved)) < 1e-9);
+    page.go('a'); page.open([page.text(1000)]); page.settle(8);
+    page.go('r'); page.open(page.rows(0, 100)); origin(restored); page.settle(8);
+    assert.ok(Math.abs(Number(page.evaluate('extentOrigin(ensureTable())')) - (1-restored)) < 1e-9);
+    const error = Math.abs(page.offset(seq)-offset);
+    assert.ok(error < 1, JSON.stringify({saved,restored,seq,offset,after:page.offset(seq),error}));
+  }
 });
 
 test('a finished ending run keeps its slot hidden while unmounted', async () => {

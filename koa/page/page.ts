@@ -518,7 +518,7 @@ const rowOf = (item: ItemId): HTMLElement | undefined => {
 function measure(): Measure {
   const scroll = element('scroll');
   const top = scroll.scrollTop;
-  const origin = element('transcript').offsetTop + element('items').offsetTop;
+  const origin = element('transcript').offsetTop + element('items').offsetTop + (state.view.type === 'job' ? 0 : extentOrigin(ensureTable()));
   const viewport = scroll.clientHeight;
   const rect = scroll.getBoundingClientRect();
   const mounted = new Map<number, { row: Row; element: Element }>(), projected = new Map<string, { row: Row; element: Element }>(), units = new Map<number, RowId[]>();
@@ -1298,6 +1298,11 @@ function appendRow(t: Table, seq: number) {
   groupsAfter(t, seq); t.index.set(seq, t.index.size);
   t.starts.push(t.starts[t.starts.length - 1] + extentOf(seq));
 }
+function extentOrigin(t: Table) {
+  const slot = element('tail-slot');
+  const height = t.starts[order.length] + (slot.hidden ? 0 : slot.getBoundingClientRect().height + (parseFloat(getComputedStyle(slot).marginBottom) || 0));
+  return Math.ceil(height) - height;
+}
 const rowTop = (seq: number) => { const t = ensureTable(); return (t.starts[t.index.get(seq) ?? 0] ?? 0); };
 function dirtyExtent(target: Element) {
   const list = element('items');
@@ -1405,7 +1410,7 @@ function layoutWindow(t: Table) {
   const ranges: { lo: number; hi: number }[] = [];
   for (const index of indexes) { const last = ranges.at(-1); if (last && last.hi === index - 1) last.hi = index; else ranges.push({ lo: index, hi: index }); }
   const first = ranges[0], last = ranges.at(-1);
-  list.style.paddingTop = (first ? t.starts[first.lo] : 0) + 'px';
+  list.style.paddingTop = ((first ? t.starts[first.lo] : 0) + extentOrigin(t)) + 'px';
   list.style.paddingBottom = (last ? t.starts[order.length] - t.starts[last.hi + 1] : 0) + 'px';
   gaps.splice(Math.max(0, ranges.length - 1)).forEach(extra => { if (extra.previousElementSibling) dirtyExtent(extra.previousElementSibling); extra.remove(); });
   ranges.slice(1).forEach((range, index) => {

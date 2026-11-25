@@ -594,6 +594,16 @@ extents after rows unmount and estimates unseen extents. A width or
 line-height change invalidates measurements. Padding and gap boxes
 stand for absent rows. Mount work is time-bounded per frame.
 
+WebKit keeps scroll positions in whole pixels, while measured and
+estimated extents are fractional. If the content's height had a
+fraction that depends on the estimates of absent rows, a topic filter
+would change that fraction and move every bottom-aligned row by part
+of a pixel. So the padding before the mounted rows also takes the
+correction that makes the content, with a visible ending row, a whole
+number of pixels. One function computes it, and layout and every
+reader of table positions use the same corrected origin; rows keep
+their fractional extents.
+
 A row is sized once. Its height is known when it is inserted, and
 koa measures it then, because only layout knows the height of
 wrapped text. Nothing inside a row changes its height by itself, so
