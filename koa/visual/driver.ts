@@ -1916,6 +1916,11 @@ echo release
               const gap = await webviewJS(web, "(()=>{const lines=document.querySelectorAll('#prompt .cm-line');return [lines[1].classList.contains('cm-empty'),lines[1].getBoundingClientRect().height,lines[2].getBoundingClientRect().top-lines[1].getBoundingClientRect().top].join(',')})()")
               equal(gap, 'true,4,4', 'A middle empty, whitespace or quote line is 4px')
             }
+            for (const text of ['```\na\n\nb\n```\n', '    a\n\n    b\n']) {
+              await webviewJS(web, `(()=>{window.composer.setText(${JSON.stringify(text)});return true})()`)
+              await settleKoa(web, measured)
+              equal(await webviewJS(web, "(()=>{const lines=document.querySelectorAll('#prompt .cm-line'),empty=Array.from(lines).find(line=>!line.textContent.trim()),code=Array.from(lines).find(line=>line.textContent.trim()==='a');return [empty.classList.contains('cm-empty'),empty.getBoundingClientRect().height===code.getBoundingClientRect().height,empty.getBoundingClientRect().height>4]})()"), [false, true, true], 'Empty code lines keep the full code line height')
+            }
             for (const text of ['first line', '> first line']) {
               await webviewJS(web, `(()=>{window.composer.setText(${JSON.stringify(text)});window.composer.focus();document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',shiftKey:true,bubbles:true,cancelable:true}));return true})()`)
               await settleKoa(web, measured)
@@ -2087,6 +2092,10 @@ echo release
         await capture("idle")
         await webviewJS(web, "(()=>{window.composer.setText('Three things, in order:\\n1. make the sweep keep a start failure for the linger grace\\n2. add the e2e test `sweep_keeps_a_start_failure` beside the linger test\\n3. then update docs/design.md, \"Window lifecycle\"\\n\\nDo not touch the cascade.');return true})()")
         await capture("composer-multi")
+        equal(await webviewJS(web, "(()=>{const lines=document.querySelectorAll('#prompt .cm-line'),empty=lines[4];return [empty.classList.contains('cm-empty'),getComputedStyle(empty).height,empty.getBoundingClientRect().height,lines[5].getBoundingClientRect().top-empty.getBoundingClientRect().top]})()"), [true, '4px', 4, 4], 'setText compacts the empty line after a list at capture time')
+        await webviewJS(web, "(()=>{window.composer.setText('tbh plain text\\n\\naaaa');return true})()")
+        await ready(web)
+        equal(await webviewJS(web, "(()=>{const lines=document.querySelectorAll('#prompt .cm-line');return [lines[1].classList.contains('cm-empty'),lines[1].getBoundingClientRect().height,lines[2].getBoundingClientRect().top-lines[1].getBoundingClientRect().top]})()"), [true, 4, 4], 'setText compacts a plain-text empty line')
         await webviewJS(web, "(()=>{window.composer.setText('');return true})()")
         await advance()
         await webviewUntil(web, `${koaWorking}`)

@@ -74,8 +74,11 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
           const state = view.state;
           if (state.field(mode)) { this.decorations = Decoration.none; return; }
           const quotes = new Map<number, { depth: number; markers: { from: number; to: number }[] }>();
+          const code = new Set<number>();
           syntaxTree(state).iterate({ enter(node) {
-            if (node.name === 'Blockquote') {
+            if (node.name === 'FencedCode' || node.name === 'CodeBlock') {
+              for (let number = state.doc.lineAt(node.from).number; number <= state.doc.lineAt(node.to).number; number++) code.add(number);
+            } else if (node.name === 'Blockquote') {
               let depth = 1;
               for (let parent = node.node.parent; parent; parent = parent.parent) if (parent.name === 'Blockquote') depth++;
               for (let number = state.doc.lineAt(node.from).number; number <= state.doc.lineAt(node.to).number; number++) {
@@ -92,7 +95,7 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
           const ranges = [];
           for (let number = 1; number <= state.doc.lines; number++) {
             const line = state.doc.line(number), quote = quotes.get(line.from);
-            const empty = number < state.doc.lines && (quote ? /^[\s>]*$/.test(line.text) : !line.text.trim());
+            const empty = number < state.doc.lines && !code.has(number) && (quote ? /^[\s>]*$/.test(line.text) : !line.text.trim());
             if (empty || quote) ranges.push(Decoration.line({ attributes: {
               class: [empty ? 'cm-empty' : '', quote ? 'cm-quote-line' : ''].filter(Boolean).join(' '),
               ...(quote ? { style: `--q:${quote.depth}` } : {}),
