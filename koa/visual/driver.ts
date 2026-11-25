@@ -1894,7 +1894,7 @@ echo release
               await webviewJS(web, `(()=>{window.composer.setText(${JSON.stringify(`line\n${blank}\nanother line`)});return true})()`)
               await settleKoa(web, measured)
               const gap = await webviewJS(web, "(()=>{const lines=document.querySelectorAll('#prompt .cm-line');return [lines[1].classList.contains('cm-empty'),lines[1].getBoundingClientRect().height,lines[2].getBoundingClientRect().top-lines[1].getBoundingClientRect().top].join(',')})()")
-              equal(gap, 'true,10,10', 'A middle empty, whitespace or quote line is 10px')
+              equal(gap, 'true,4,4', 'A middle empty, whitespace or quote line is 4px')
             }
             for (const text of ['first line', '> first line']) {
               await webviewJS(web, `(()=>{window.composer.setText(${JSON.stringify(text)});window.composer.focus();document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',shiftKey:true,bubbles:true,cancelable:true}));return true})()`)
@@ -1945,7 +1945,7 @@ echo release
             await webviewJS(web, "(()=>{window.composer.setText('A paragraph\\n\\n> A quoted question\\n> > A nested detail\\n> \\nAn answer');window.composer.focus();return true})()")
             await capture("composer-markdown-paragraph")
             const gapHeight = await webviewJS(web, "document.querySelector('#prompt .cm-empty').getBoundingClientRect().height")
-            equal(gapHeight, 10, 'An empty composer line is 10px')
+            equal(gapHeight, 4, 'An empty composer line is 4px')
             const literal = 'Literal\n\n> > quoted';
             await webviewJS(web, `(()=>{window.sentComposerText=null;const native=window.fetch;window.fetch=async(path,options)=>{if(path!=='/prompt')return native(path,options);window.fetch=native;window.sentComposerText=JSON.parse(options.body).text;return new Response(JSON.stringify({disposition:'handled',action:{type:'none'}}),{headers:{'Content-Type':'application/json'}})};window.composer.setText(${JSON.stringify(literal)});window.composer.focus();document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));return true})()`)
             await webviewUntil(web, 'window.sentComposerText!==null&&window.composer.empty()')

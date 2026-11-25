@@ -2478,18 +2478,20 @@ show one. Two rendering rules in the composer (CodeMirror, `koa/page/composer.ts
 
 - **An empty line is compact.** A line with no characters (also one
   of only spaces, and a `>` alone inside a quote) gets a line
-  decoration `cm-empty`: `line-height: 10px; height: 10px` (about
-  half a line), the font unchanged. It reads as the transcript's
+  decoration `cm-empty`: `line-height: 4px; height: 4px` (user,
+  2026-11-25, after trying 6px; was 10px), the font unchanged. The
+  last line of the draft is never compact: it is the line typed on
+  next. It reads as the transcript's
   paragraph gap without being pixel-equal: the user block's
   paragraphs are .65em = 8.45px apart at line-height 1.5, the
   composer's lines are at 1.6, so an exact match does not exist;
-  10px is the nearest round value that keeps the caret legible (8px
-  would be a dot). The point is that one gap in the composer is one
+  the user chose 4px, accepting a dot-sized caret when the caret is
+  moved into a gap. The point is that one gap in the composer is one
   gap in the transcript, not the same number of pixels. The caret on an
-  empty line is the line's height, 10px, 1px wide in `--ko-cursor`,
+  empty line is the line's height, 4px, 1px wide in `--ko-cursor`,
   as CodeMirror sizes it from the line: short, which says "a gap
   line"; it does not overflow into the next line. Two empty lines
-  in a row are 10px each (the document shows what was typed; the
+  in a row are 4px each (the document shows what was typed; the
   Markdown collapses them on send). The first and the last line of
   the draft are never compact when they are the only line (an empty
   draft keeps its `min-height` of one line, so the placeholder and
@@ -2517,7 +2519,7 @@ show one. Two rendering rules in the composer (CodeMirror, `koa/page/composer.ts
   state, no marker reveal); the caret stands after the bar's gap.
   No margin above or below a quote: lines are lines, and the
   compact empty line is the gap. An empty quote line (`>` alone)
-  is compact (10px) with its bar. The quote-answer draft (the
+  is compact (4px) with its bar. The quote-answer draft (the
   reply annotations) therefore shows the quoted question as the
   transcript shows it, under a bar, and the answer below it.
 
