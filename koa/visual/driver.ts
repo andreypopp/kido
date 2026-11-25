@@ -1890,6 +1890,18 @@ echo release
             return
         }
         if (scenario == "markdown") {
+            for (const blank of ['', '   ', '>']) {
+              await webviewJS(web, `(()=>{window.composer.setText(${JSON.stringify(`line\n${blank}\nanother line`)});return true})()`)
+              await settleKoa(web, measured)
+              const gap = await webviewJS(web, "(()=>{const lines=document.querySelectorAll('#prompt .cm-line');return [lines[1].classList.contains('cm-empty'),lines[1].getBoundingClientRect().height,lines[2].getBoundingClientRect().top-lines[1].getBoundingClientRect().top].join(',')})()")
+              equal(gap, 'true,10,10', 'A middle empty, whitespace or quote line is 10px')
+            }
+            const codeBreaks = await webviewJS(web, `(()=>{
+              const input=document.querySelector('#prompt .cm-content');
+              const check=(text,left)=>{window.composer.setText(text);window.composer.focus();for(let i=0;i<left;i++)input.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true,cancelable:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',shiftKey:true,bubbles:true,cancelable:true}));return window.composer.text()};
+              return JSON.stringify([check('~~~\\na\\n~~~',4),check('    code',0),check('a '+String.fromCharCode(96)+'code'+String.fromCharCode(96),1),check('!echo first',0)]);
+            })()`)
+            equal(codeBreaks, JSON.stringify(['~~~\na\n\n~~~','    code\n','a `code\n`','!echo first\n']), 'Code uses single newlines')
             const behavior = await webviewJS(web, `(()=>{
               const input=document.querySelector('#prompt .cm-content');
               const key=(key,shiftKey=false,metaKey=false)=>input.dispatchEvent(new KeyboardEvent('keydown',{key,shiftKey,metaKey,bubbles:true,cancelable:true}));

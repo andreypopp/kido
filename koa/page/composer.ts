@@ -1,6 +1,6 @@
 import { Compartment, EditorState, EditorSelection, Prec, Transaction, StateField } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, drawSelection, keymap, placeholder, type Command } from '@codemirror/view';
-import { history, historyKeymap, standardKeymap, insertNewline, isolateHistory } from '@codemirror/commands';
+import { history, historyKeymap, standardKeymap, insertNewline, insertNewlineAndIndent, isolateHistory } from '@codemirror/commands';
 import { markdownLanguage, insertNewlineContinueMarkup, deleteMarkupBackward } from '@codemirror/lang-markdown';
 import { Language, languageDataProp, syntaxTree, syntaxHighlighting, HighlightStyle } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
@@ -133,6 +133,8 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
           if (view.state.field(mode)) return false;
           const selection = view.state.selection.main;
           for (let node: SyntaxNode | null = syntaxTree(view.state).resolveInner(selection.head, -1); node; node = node.parent) {
+            if (node.name === 'FencedCode' || node.name === 'CodeBlock') return insertNewlineAndIndent(view);
+            if (node.name === 'InlineCode') return insertNewline(view);
             if (node.name === 'ListItem' || node.name === 'Blockquote') return insertNewlineContinueMarkup(view);
           }
           view.dispatch(view.state.replaceSelection('\n\n'), { scrollIntoView: true, userEvent: 'input', annotations: isolateHistory.of('full') });
