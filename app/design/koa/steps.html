@@ -509,6 +509,9 @@ html[data-rows=unified] .step>.line{gap:8px}
 .msg.assistant .pill .h{opacity:.55;font-weight:400}
 .msg.assistant .pill time{font:1em var(--mono);font-variant-numeric:tabular-nums;font-weight:400}
 .msg.assistant::after{content:"";display:block;clear:both}
+/* the folded run line, 2026-11-25 */
+.run .worked{color:var(--muted)}.run .worked.err{color:var(--err,var(--ko-color-1,#a4002e))}.run .worked .dur{font-variant-numeric:tabular-nums}.run .worked .ab{color:var(--faint)}
+.ending{height:calc(1.5em + 2px);margin:0 0 14px;font-size:.95em}
 </style>
 
 <body>
@@ -532,6 +535,11 @@ html[data-rows=unified] .step>.line{gap:8px}
 <div><div class="pane aligned frame" data-state="f6"></div><p class="cap"><b>f</b> · a report arrives while the run works: a step joins, the mark stays on the running step; no row appears or goes</p></div>
 </div>
 </section>
+
+<section id="worked"><h2>1b · The folded run line: "··· 12s" and "Worked for 12s" (user, 2026-11-25)</h2>
+<p>Folded, a run no longer lists its tools: running, the working dots then the duration the run has worked (the union of its timed steps' intervals, whole seconds rounded up, ticking once a second, tabular numerals); finished, "Worked for 7m 40s". Nothing at the right of the line any more. A run with a failed step: the text in the error colour. Aborted: "· aborted" in the faint colour after it. A run of only moment steps (reports, messages, notices, job events) keeps the names summary: it worked for nothing. The tools stay in the line's title (hover) and in its accessible label. Open, the run line shows the same text and the steps keep their times.</p>
+<div class="grid"><div><div class="pane aligned frame" data-state="w-running"></div><p class="cap">running: dots, 6px, the duration</p></div><div><div class="pane aligned frame" data-state="w-done"></div><p class="cap">finished</p></div><div><div class="pane aligned frame" data-state="w-failed"></div><p class="cap">a step failed</p></div></div>
+<div class="grid" style="margin-top:22px"><div><div class="pane aligned frame" data-state="w-aborted"></div><p class="cap">aborted</p></div><div><div class="pane aligned frame" data-state="w-moment"></div><p class="cap">only moment steps: the names stay</p></div><div><div class="pane aligned frame" data-state="w-open"></div><p class="cap">open while running: the same line, the steps with their times</p></div></div></section>
 
 <section><h2>2 · Agent messages and jobs as steps of the run</h2>
 <p>Left: a turn in which the agent spawned an implementer, waited for its report, started a verification job and read its end: one run, folded, then the reply; a second turn with a refused message. Right: the same first run open: thinking, the spawn as a step ("task to @impl", the message's first line as a tool shows its command), bash, the report as a step opened to its whole text (prose, no cap), the job's start and end as steps ("job make-verify", the event where the detail goes, red for a failure, the output as a bash well with the "open" link to the job view), and the refused message in red. The folded summary names them in order of first occurrence, "to @impl x2" for a repeat, the failed one red; no counts, no icons. Below: an item outside a turn (a report while idle) starts a new folded run row at the end, one new item for the divider; the next item joins it.</p>
@@ -587,7 +595,16 @@ const steps1=(open)=>tool({name:'thinking',cmd:'',time:'4s'})
 const steps2=astep({kind:'message',dir:'to',name:'impl',rel:'subagent',text:'Apply the two review findings: inline the helper, drop the unused grace variable.',time:'09:24'})
   +jstep({name:'lint',ev:'exit 1',err:true,out:lintOut,open:true,time:'09:25'})
   +astep({kind:'refused',dir:'to',name:'impl',rel:'subagent',text:'Run make lint again and report.',err:true,time:'09:25'});
+/* the folded run line (user, 2026-11-25): dots + duration while running, "Worked for N" finished; no time at the right */
+const wrun=(o)=>`<div class="run${o.open?' open':''}" title="${esc(o.names||'')}"><div class="line"><span class="chev">›</span><span class="sum"><span class="worked${o.err?' err':''}">${o.working?dots+' <span class="dur">'+o.dur+'</span>':o.moment?esc(o.names):'Worked for <span class="dur">'+o.dur+'</span>'+(o.aborted?' <span class="ab">· aborted</span>':'')}</span></span></div>${o.steps?`<div class="steps">${o.steps}</div>`:''}</div>`;
+const U='Make the sweep keep a start failure for the linger grace, then test it';
 const states={
+  'w-running':()=>transcript(userMsg(U,'09:12')+wrun({working:true,dur:'12s',names:'thinking, read x2, bash'})+'<div class="ending"></div>')+composer({working:true,ph:'Steer koa…'}),
+  'w-done':()=>transcript(userMsg(U,'09:12')+wrun({dur:'7m 40s',names:'thinking, to @impl, bash, from @impl, job make-verify, read'})+assistant('Done: <code>due</code> keeps a <code>Cause::Failed</code> pane for the grace; the verification job passed.','09:21')+'<div class="ending"></div>')+composer(),
+  'w-failed':()=>transcript(userMsg(U,'09:12')+wrun({dur:'41s',err:true,names:'read, edit, bash x2'})+assistant('The sweep test fails on the linger wait; I am reading the test\'s deadline.','09:14')+'<div class="ending"></div>')+composer(),
+  'w-aborted':()=>transcript(userMsg(U,'09:12')+wrun({dur:'1h 12m',aborted:true,names:'thinking, bash x3'})+'<div class="ending"></div>')+composer(),
+  'w-moment':()=>transcript(assistant('Verification passed; I merge the unit next.','14:45')+wrun({moment:true,names:'from @palette, job verify-sidebar'})+'<div class="ending"></div>')+composer(),
+  'w-open':()=>transcript(userMsg(U,'09:12')+wrun({working:true,open:true,dur:'12s',names:'thinking, read x2, bash',steps:tool({name:'thinking',time:'3s'})+tool({name:'read',cmd:'ko_server/src/sweep.rs',time:'0.2s'})+tool({name:'read',cmd:'ko_server/src/sweep.rs',delta:'+40',time:'0.1s'})+tool({name:'bash',cmd:'make cargo ARGS=\'test -p ko_server sweep\'',working:true})})+'<div class="ending"></div>')+composer({working:true,ph:'Steer koa…'}),
   f1:()=>transcript(userMsg('Make the sweep keep a start failure for the linger grace, then test it','09:12')+bare())+composer({working:true,ph:'Steer koa…'}),
   f2:()=>transcript(userMsg('Make the sweep keep a start failure for the linger grace, then test it','09:12')+run({sum:'thinking',working:true,time:'2s'}))+composer({working:true,ph:'Steer koa…'}),
   f3:()=>transcript(userMsg('Make the sweep keep a start failure for the linger grace, then test it','09:12')+run({sum:'thinking, read x2',time:'7s'})+assistant('The sweep reads the pane rows and removes an exited pane at once; a start failure gets no grace today. I will change <code>due</code> and')+bare())+composer({working:true,ph:'Steer koa…'}),
