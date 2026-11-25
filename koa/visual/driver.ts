@@ -65,6 +65,7 @@ function captureTarget(name: string, scenario: Scenario): { selector: string; pa
     case "attachments/media-drop":
     case "attachments/media-folder":
     case "attachments/media-queue":
+    case "markdown/composer-markdown-paragraph":
     case "markdown/composer-markdown":
     case "markdown/composer-markdown-code":
     case "sessions/sessions-loading":
@@ -1874,6 +1875,45 @@ echo release
             return
         }
         if (scenario == "markdown") {
+            const behavior = await webviewJS(web, `(()=>{
+              const input=document.querySelector('#prompt .cm-content');
+              const key=(key,shiftKey=false,metaKey=false)=>input.dispatchEvent(new KeyboardEvent('keydown',{key,shiftKey,metaKey,bubbles:true,cancelable:true}));
+              const check=(text,keys)=>{window.composer.setText(text);window.composer.focus();for(const [name,shift] of keys)key(name,shift);return window.composer.text()};
+              const results={
+                paragraph:check('first',[['Enter',true]]),
+                backspace:check('first\\n\\n',[['Backspace']]),
+                list:check('- first',[['Enter',true]]),
+                quote:check('> first',[['Enter',true]]),
+                command:check('!echo first',[['Enter',true]]),
+                quiet:check('!!echo first',[['Enter',true]])
+              };
+              window.composer.setText('first');key('Enter',true);key('z',false,true);results.undoBreak=window.composer.text();
+              key('Enter',true);key('Backspace');key('z',false,true);results.undoDelete=window.composer.text();
+              window.composer.setText('> > nested\\n> \\n\\nanswer');
+              results.hidden=!input.textContent.includes('>');
+              results.depth=input.querySelector('.cm-quote-line')?.style.getPropertyValue('--q');
+              results.empty=input.querySelectorAll('.cm-empty').length;
+              window.composer.setText('> word');key('Home');key('Backspace');results.unquote=window.composer.text();
+              window.composer.setText('> word');key('Home');key('ArrowLeft');key('Delete');results.atomic=window.composer.text();
+              results.midBreak=check('firstsecond',[...Array.from({length:6},()=>['ArrowLeft']),['Enter',true],['Backspace']]);
+              results.deliberate=check('a\\n\\n\\nb',[['Home'],['Backspace']]);
+              results.fence=check(String.fromCharCode(96).repeat(3)+'\\na\\n\\n\\n'+String.fromCharCode(96).repeat(3),[['ArrowUp'],['Home'],['Backspace']]);
+              window.composer.setText('> - > x');results.listVisible=input.textContent;
+              key('ArrowLeft');key('Backspace');results.innerQuote=window.composer.text();
+              window.composer.setText('> - > x');key('Home');key('Backspace');results.outerQuote=window.composer.text();
+              const native=window.fetch;let requests=0;window.fetch=async(path,options)=>{if(!String(path).startsWith('/history'))return native(path,options);requests++;return new Response(JSON.stringify({entries:['prior']}))};
+              window.composer.setText('> > draft');key('ArrowUp');results.historyFirstRequests=requests;key('ArrowUp');results.historyRequests=requests;window.fetch=native;
+              return JSON.stringify(results);
+            })()`)
+            equal(behavior, JSON.stringify({paragraph:'first\n\n',backspace:'first',list:'- first\n- ',quote:'> first\n> ',command:'!echo first\n',quiet:'!!echo first\n',undoBreak:'first',undoDelete:'first\n\n',hidden:true,depth:'2',empty:2,unquote:'word',atomic:'word',midBreak:'firstsecond',deliberate:'a\n\nb',fence:'```\na\n\n```',listVisible:'- x',innerQuote:'> - x',outerQuote:'- > x',historyFirstRequests:0,historyRequests:1}), 'Composer paragraph, marker and command behavior')
+            await webviewJS(web, "(()=>{window.composer.setText('A paragraph\\n\\n> A quoted question\\n> > A nested detail\\n> \\nAn answer');window.composer.focus();return true})()")
+            await capture("composer-markdown-paragraph")
+            const gapHeight = await webviewJS(web, "document.querySelector('#prompt .cm-empty').getBoundingClientRect().height")
+            equal(gapHeight, 10, 'An empty composer line is 10px')
+            const literal = 'Literal\n\n> > quoted';
+            await webviewJS(web, `(()=>{window.sentComposerText=null;const native=window.fetch;window.fetch=async(path,options)=>{if(path!=='/prompt')return native(path,options);window.fetch=native;window.sentComposerText=JSON.parse(options.body).text;return new Response(JSON.stringify({disposition:'handled',action:{type:'none'}}),{headers:{'Content-Type':'application/json'}})};window.composer.setText(${JSON.stringify(literal)});window.composer.focus();document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));return true})()`)
+            await webviewUntil(web, 'window.sentComposerText!==null&&window.composer.empty()')
+            equal(await webviewJS(web, 'window.sentComposerText'), literal, 'Send keeps the exact composer document')
             await webviewJS(web, "(()=>{window.composer.setText('# Plan\\n- **Strong** and *emphasis* with ~~old~~\\n- Read `inline` and [link](https://kido.tools)');return true})()")
             await webviewUntil(web, "document.querySelector('#prompt .cm-monospace')&&document.querySelector('#prompt .cm-strikethrough')")
             const mutedURL = await webviewJS(web, "(()=>{const url=Array.from(document.querySelectorAll('#prompt .cm-markup')).find(node=>node.textContent==='https://kido.tools');return !!url&&getComputedStyle(url).color!==getComputedStyle(document.querySelector('#prompt .cm-content')).color})()")

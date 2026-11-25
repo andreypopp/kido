@@ -1,9 +1,10 @@
-import { Compartment, EditorState, Prec, Transaction, StateField } from '@codemirror/state';
-import { Decoration, EditorView, drawSelection, keymap, placeholder, type Command } from '@codemirror/view';
-import { history, historyKeymap, standardKeymap, insertNewline } from '@codemirror/commands';
+import { Compartment, EditorState, EditorSelection, Prec, Transaction, StateField } from '@codemirror/state';
+import { Decoration, EditorView, ViewPlugin, drawSelection, keymap, placeholder, type Command } from '@codemirror/view';
+import { history, historyKeymap, standardKeymap, insertNewline, isolateHistory } from '@codemirror/commands';
 import { markdownLanguage, insertNewlineContinueMarkup, deleteMarkupBackward } from '@codemirror/lang-markdown';
-import { Language, languageDataProp, syntaxHighlighting, HighlightStyle } from '@codemirror/language';
+import { Language, languageDataProp, syntaxTree, syntaxHighlighting, HighlightStyle } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
+import type { SyntaxNode } from '@lezer/common';
 import { parser, GFM, Subscript, Superscript, Emoji } from '@lezer/markdown';
 
 import { bashCommand } from '../prompt.ts';
@@ -44,11 +45,12 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
     const selection = view.state.selection.main;
     if (!selection.empty) return false;
     const visual = view.moveToLineBoundary(selection, direction === 1, true);
-    const boundary = direction === -1 ? visual.head === 0 : visual.head === view.state.doc.length;
+    const edge = view.moveToLineBoundary(EditorSelection.cursor(direction === -1 ? 0 : view.state.doc.length), direction === 1, true);
+    const boundary = visual.head === edge.head;
     if (!boundary) return false;
     const line = view.state.doc.lineAt(selection.head);
-    if (direction === -1 ? !prompts.active && !empty() && selection.head !== line.from : !prompts.active) {
-      view.dispatch({ selection: { anchor: direction === -1 ? line.from : line.to } });
+    if (direction === -1 ? !prompts.active && !empty() && selection.head !== visual.head : !prompts.active) {
+      view.dispatch({ selection: { anchor: direction === -1 ? visual.head : line.to } });
       return true;
     }
     void prompts.move(direction, { text: view.state.doc.toString(), anchor: selection.anchor, head: selection.head }).then(value => {
@@ -65,6 +67,41 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
       history(),
       EditorView.domEventHandlers({ drop: event => handlers.drop(event), paste: event => handlers.paste(event) }),
       language.of(composerLanguage),
+      ViewPlugin.fromClass(class {
+        decorations = Decoration.none;
+        constructor(view: EditorView) { this.update({ view }); }
+        update({ view }: { view: EditorView }) {
+          const state = view.state;
+          if (state.field(mode)) { this.decorations = Decoration.none; return; }
+          const quotes = new Map<number, { depth: number; markers: { from: number; to: number }[] }>();
+          syntaxTree(state).iterate({ enter(node) {
+            if (node.name === 'Blockquote') {
+              let depth = 1;
+              for (let parent = node.node.parent; parent; parent = parent.parent) if (parent.name === 'Blockquote') depth++;
+              for (let number = state.doc.lineAt(node.from).number; number <= state.doc.lineAt(node.to).number; number++) {
+                const line = state.doc.line(number), previous = quotes.get(line.from);
+                quotes.set(line.from, { markers: previous?.markers ?? [], depth: Math.max(depth, previous?.depth ?? 0) });
+              }
+            } else if (node.name === 'QuoteMark') {
+              const line = state.doc.lineAt(node.from), previous = quotes.get(line.from);
+              let to = node.to;
+              if (state.doc.sliceString(to, to + 1) === ' ') to++;
+              quotes.set(line.from, { depth: previous?.depth ?? 1, markers: [...previous?.markers ?? [], { from: node.from, to }] });
+            }
+          } });
+          const ranges = [];
+          for (let number = 1; number <= state.doc.lines; number++) {
+            const line = state.doc.line(number), quote = quotes.get(line.from);
+            const empty = state.doc.lines > 1 && (quote ? /^[\s>]*$/.test(line.text) : !line.text.trim());
+            if (empty || quote) ranges.push(Decoration.line({ attributes: {
+              class: [empty ? 'cm-empty' : '', quote ? 'cm-quote-line' : ''].filter(Boolean).join(' '),
+              ...(quote ? { style: `--q:${quote.depth}` } : {}),
+            } }).range(line.from));
+            for (const marker of quote?.markers ?? []) ranges.push(Decoration.replace({}).range(marker.from, marker.to));
+          }
+          this.decorations = Decoration.set(ranges, true);
+        }
+      }, { decorations: plugin => plugin.decorations, provide: plugin => EditorView.atomicRanges.of(view => view.plugin(plugin)?.decorations ?? Decoration.none) }),
       EditorState.transactionExtender.of(transaction => {
         if (!transaction.docChanged) return null;
         const before = !!transaction.startState.field(mode), after = !!transaction.state.field(mode);
@@ -92,9 +129,48 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
         { key: 'ArrowDown', run: outsideComposition(() => navigate(1)) },
         { key: 'Alt-ArrowUp', run: outsideComposition(() => { handlers.takeBack(); return true; }) },
         { key: 'Enter', run: outsideComposition(() => { handlers.send('prompt'); return true; }) },
-        { key: 'Shift-Enter', run: outsideComposition(view => !view.state.field(mode) && insertNewlineContinueMarkup(view)) },
+        { key: 'Shift-Enter', run: outsideComposition(view => {
+          if (view.state.field(mode)) return false;
+          const selection = view.state.selection.main;
+          for (let node: SyntaxNode | null = syntaxTree(view.state).resolveInner(selection.head, -1); node; node = node.parent) {
+            if (node.name === 'ListItem' || node.name === 'Blockquote') return insertNewlineContinueMarkup(view);
+          }
+          view.dispatch(view.state.replaceSelection('\n\n'), { scrollIntoView: true, userEvent: 'input', annotations: isolateHistory.of('full') });
+          return true;
+        }) },
         { key: 'Shift-Enter', run: outsideComposition(insertNewline) },
-        { key: 'Backspace', run: outsideComposition(view => view.state.selection.main.empty && view.state.selection.main.head === 0 && handlers.dropTopic() || !view.state.field(mode) && deleteMarkupBackward(view)) },
+        { key: 'Backspace', run: outsideComposition(view => {
+          const { state } = view, selection = state.selection.main;
+          if (selection.empty && selection.head === 0 && handlers.dropTopic()) return true;
+          if (state.field(mode)) return false;
+          if (selection.empty) {
+            const line = state.doc.lineAt(selection.head);
+            if (selection.head === line.from && line.number > 2 && !state.doc.line(line.number - 1).text.trim() && state.doc.line(line.number - 2).text.trim()) {
+              let code = false;
+              for (let node: SyntaxNode | null = syntaxTree(state).resolveInner(selection.head, 1); node; node = node.parent) {
+                if (node.name === 'FencedCode' || node.name === 'CodeBlock') code = true;
+              }
+              if (!code) {
+                const from = state.doc.line(line.number - 2).to;
+                view.dispatch({ changes: { from, to: line.from }, selection: { anchor: from }, scrollIntoView: true, userEvent: 'delete', annotations: isolateHistory.of('full') });
+                return true;
+              }
+            }
+            let marker: { from: number; to: number } | undefined;
+            syntaxTree(state).iterate({ from: line.from, to: line.to, enter(node) {
+              if (node.name === 'QuoteMark') {
+                const to = node.to + (state.doc.sliceString(node.to, node.to + 1) === ' ' ? 1 : 0);
+                if (selection.head === node.from || selection.head === to) marker = { from: node.from, to };
+              }
+            } });
+            if (marker) {
+              if (selection.head === marker.to && deleteMarkupBackward(view)) return true;
+              view.dispatch({ changes: { from: marker.from, to: marker.to }, selection: { anchor: marker.from }, scrollIntoView: true, userEvent: 'delete' });
+              return true;
+            }
+          }
+          return deleteMarkupBackward(view);
+        }) },
         { key: 'Alt-Enter', run: outsideComposition(() => { handlers.send('follow_up'); return true; }) },
         { key: 'Ctrl-d', run: () => { if (!empty()) return false; handlers.quit(); return true; } },
       ])),

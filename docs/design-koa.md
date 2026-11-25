@@ -768,10 +768,28 @@ bridge contract stays in [design-app.md](design-app.md#webview-panes).
 
 `koa/page/composer.ts` owns the CodeMirror editor. Its keymap owns
 Enter variants, including during IME composition: committing a
-candidate must not send a prompt. Prompt Return sends; Shift-Return
-inserts a Markdown-aware newline; follow-up input queues while work
-runs. The source defines the complete keymap. Kido's Command keys
-belong to the app.
+candidate must not send a prompt. Prompt Return sends; follow-up
+input queues while work runs. The source defines the complete keymap.
+Kido's Command keys belong to the app.
+
+The composer is full Markdown, the same Markdown that the transcript
+renders, and it sends its document unchanged: the model receives
+exactly the composer's text. Because a single newline does not make
+a paragraph, Shift-Return outside a list item or a quote inserts a
+paragraph break, an empty line; inside a list item or a quote it
+continues the marker. In `!` mode it inserts a plain newline. The
+composer must never show a gap that the sent message lacks, so one
+Backspace after a paragraph break removes the whole break.
+
+The composer draws what the transcript draws. An empty line, also a
+quote's `>` alone, is compact, so one composer gap reads as one
+transcript paragraph gap; the only line of a draft keeps its full
+height, so the placeholder and the caret stand at full size. A
+quoted line shows the transcript's bars instead of its `>` markers.
+The markers stay in the document and are atomic: the caret steps
+over them, and Backspace at the quoted text's start deletes them.
+The syntax tree of the composer's own Markdown language decides
+both, so `!` mode, which drops the language, has neither.
 
 Prompt history comes from the session transcript, including user
 shell commands, when browsing begins. It is not a second saved
