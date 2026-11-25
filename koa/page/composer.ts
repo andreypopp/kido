@@ -92,7 +92,7 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
           const ranges = [];
           for (let number = 1; number <= state.doc.lines; number++) {
             const line = state.doc.line(number), quote = quotes.get(line.from);
-            const empty = state.doc.lines > 1 && (quote ? /^[\s>]*$/.test(line.text) : !line.text.trim());
+            const empty = number < state.doc.lines && (quote ? /^[\s>]*$/.test(line.text) : !line.text.trim());
             if (empty || quote) ranges.push(Decoration.line({ attributes: {
               class: [empty ? 'cm-empty' : '', quote ? 'cm-quote-line' : ''].filter(Boolean).join(' '),
               ...(quote ? { style: `--q:${quote.depth}` } : {}),

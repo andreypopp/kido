@@ -783,8 +783,10 @@ Backspace after a paragraph break removes the whole break.
 
 The composer draws what the transcript draws. An empty line, also a
 quote's `>` alone, is compact, so one composer gap reads as one
-transcript paragraph gap; the only line of a draft keeps its full
-height, so the placeholder and the caret stand at full size. A
+transcript paragraph gap. The last line of a draft keeps its full
+height even when it is empty: it is the line the user types on next,
+so typing after Shift-Return moves nothing, and an empty draft's
+placeholder and caret stand at full size. A
 quoted line shows the transcript's bars instead of its `>` markers.
 The markers stay in the document and are atomic: the caret steps
 over them, and Backspace at the quoted text's start deletes them.
@@ -1145,8 +1147,9 @@ message without a topic it moves the message's turn through the same
 reply with a topic in any section, has no "+ topic": a drag from the
 widget changes its topic, and a double click on a user message's chip
 opens the same name field, prefilled, so the turn can also move to a
-new topic. The double click leaves the composer topic as it was before
-its clicks. Under a topic filter user messages show no chip. A name that no topic has yet creates that topic, so the
+new topic. A single click sets the composer topic only after the
+double-click window (250 ms) passes without a second click, so a
+double click only opens the field and never touches the composer. Under a topic filter user messages show no chip. A name that no topic has yet creates that topic, so the
 move route accepts any valid name. There is no slash command for
 topics.
 

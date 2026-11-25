@@ -132,6 +132,7 @@ export function createTopics(deps: {
     }
     return mark;
   }
+  let messageTopicClick: number | undefined;
   function messageHeader(name: TopicName | undefined, at?: number, target?: Extract<TopicNamingTarget, { kind: 'message' }>) {
     if (target && interaction.naming?.scope === filterKey() && interaction.naming.target.kind === 'message' && interaction.naming.target.key === target.key && interaction.naming.chip.parentElement?.classList.contains('message-header')) return interaction.naming.chip.parentElement;
     const row = node('div', undefined, 'message-header');
@@ -139,16 +140,18 @@ export function createTopics(deps: {
       const mark = topicChip(name);
       if (target) {
         const scope = filterKey();
-        let previous = scopes.get(scope)?.composer;
         mark.onclick = event => {
-          if (event?.detail === 2) return;
-          previous = scopes.get(scope)?.composer;
-          setComposerTopic(name);
+          clearTimeout(messageTopicClick); messageTopicClick = undefined;
+          if (!event?.detail) setComposerTopic(name);
+          else if (event.detail === 1) messageTopicClick = setTimeout(() => {
+            messageTopicClick = undefined;
+            if (scope === filterKey()) setComposerTopic(name);
+          }, 250);
         };
         mark.ondblclick = event => {
           event.preventDefault(); event.stopPropagation();
+          clearTimeout(messageTopicClick); messageTopicClick = undefined;
           if (scope !== filterKey()) return;
-          scopeData(scope).composer = previous; refreshComposer();
           startTopicNaming(mark, target);
         };
       }

@@ -1896,6 +1896,15 @@ echo release
               const gap = await webviewJS(web, "(()=>{const lines=document.querySelectorAll('#prompt .cm-line');return [lines[1].classList.contains('cm-empty'),lines[1].getBoundingClientRect().height,lines[2].getBoundingClientRect().top-lines[1].getBoundingClientRect().top].join(',')})()")
               equal(gap, 'true,10,10', 'A middle empty, whitespace or quote line is 10px')
             }
+            for (const text of ['first line', '> first line']) {
+              await webviewJS(web, `(()=>{window.composer.setText(${JSON.stringify(text)});window.composer.focus();document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',shiftKey:true,bubbles:true,cancelable:true}));return true})()`)
+              await settleKoa(web, measured)
+              const geometry = "(()=>{const content=document.querySelector('#prompt .cm-content');return JSON.stringify([content.getBoundingClientRect().height,content.lastElementChild.getBoundingClientRect().top,content.lastElementChild.classList.contains('cm-empty')])})()"
+              const beforeTyping = await webviewJS(web, geometry)
+              await webviewJS(web, "document.execCommand('insertText',false,'a')")
+              await settleKoa(web, measured)
+              equal(await webviewJS(web, geometry), beforeTyping, 'Typing on the final empty line keeps composer height and caret line position')
+            }
             const codeBreaks = await webviewJS(web, `(()=>{
               const input=document.querySelector('#prompt .cm-content');
               const check=(text,left)=>{window.composer.setText(text);window.composer.focus();for(let i=0;i<left;i++)input.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true,cancelable:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',shiftKey:true,bubbles:true,cancelable:true}));return window.composer.text()};

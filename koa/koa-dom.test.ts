@@ -1414,10 +1414,13 @@ test('message naming keeps focus and text through updates and ignores composing 
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [[[true,'New topic',true,0],[true,'New topic',true,1]],[{sessionId:'s',seq:0,topic:'New topic'},{sessionId:'s',seq:1,topic:'New topic'}],null,'Composer']);
 });
 
-test('assigned user topic chips edit on double click without changing the reply topic', async () => {
+test('assigned user topic chips edit on double click without changing the reply topic', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const app = await page(), evaluate = app.repl();
-  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'reply'}]};put({seq:0,at:1,revision:0,kind:'user',final:true,text:'Question',topic:'one',images:[],attachments:[]});window.requests=[];fetchJSON=async(path,body)=>{window.requests.push([path,body]);return {}};window.key=value=>({key:value,preventDefault(){},stopPropagation(){}});window.openAssigned=()=>{const chip=views.get(0).view.querySelector('.topic-chip');chip.onclick({detail:1});chip.onclick({detail:2});chip.ondblclick({preventDefault(){},stopPropagation(){}});return views.get(0).view.querySelector('.topic-input')};topics.debug.setComposerTopic('reply');`);
-  assert.deepEqual(JSON.parse(JSON.stringify(evaluate(`(()=>{const input=window.openAssigned();return [input.value,input.selectionStart,input.selectionEnd,topics.composer()]})()`))), ['one',0,3,'reply']);
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'reply'}]};put({seq:0,at:1,revision:0,kind:'user',final:true,text:'Question',topic:'one',images:[],attachments:[]});window.requests=[];fetchJSON=async(path,body)=>{window.requests.push([path,body]);return {}};window.key=value=>({key:value,preventDefault(){},stopPropagation(){}});window.openAssigned=()=>{let chip=views.get(0).view.querySelector('.topic-chip');chip.onclick({detail:1});window.afterFirst=topics.composer();put({...items.get(0),revision:items.get(0).revision+1});renderDirty();chip=views.get(0).view.querySelector('.topic-chip');chip.onclick({detail:2});chip.ondblclick({preventDefault(){},stopPropagation(){}});return views.get(0).view.querySelector('.topic-input')};topics.debug.setComposerTopic('reply');`);
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate(`(()=>{const input=window.openAssigned();return [input.value,input.selectionStart,input.selectionEnd,topics.composer(),window.afterFirst]})()`))), ['one',0,3,'reply','reply']);
+  t.mock.timers.tick(250);
+  assert.equal(evaluate('topics.composer()'), 'reply');
   evaluate(`views.get(0).view.querySelector('.topic-input').onkeydown(window.key('Escape'))`);
   assert.equal(evaluate(`views.get(0).view.querySelector('.topic-chip').dataset.topic`), 'one');
   evaluate(`window.openAssigned().onkeydown(window.key('Enter'))`);
@@ -1427,6 +1430,11 @@ test('assigned user topic chips edit on double click without changing the reply 
   evaluate(`put({...items.get(0),revision:1,topic:'new'});renderDirty()`);
   assert.equal(evaluate(`views.get(0).view.querySelector('.topic-chip').dataset.topic`), 'new');
   evaluate(`views.get(0).view.querySelector('.topic-chip').onclick({detail:1})`);
+  assert.equal(evaluate('topics.composer()'), 'reply');
+  evaluate(`put({...items.get(0),revision:items.get(0).revision+1});renderDirty()`);
+  t.mock.timers.tick(249);
+  assert.equal(evaluate('topics.composer()'), 'reply');
+  t.mock.timers.tick(1);
   assert.equal(evaluate('topics.composer()'), 'new');
   evaluate(`window.openAssigned();views.get(0).view.querySelector('.topic-clear').onclick()`);
   assert.equal(evaluate(`views.get(0).view.querySelector('.topic-chip').dataset.topic`), 'new');
