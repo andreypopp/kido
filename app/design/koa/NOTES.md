@@ -2329,8 +2329,8 @@ light and dark in the gallery.
     shows at once in the queue dock as a queued row (the user
     block's style, one ellipsized line, the attachment count): its
     kind label is the mode word as for a queued row ("sending",
-    "steer", "follow-up") followed by the page's working dots, and
-    it has no remove control; it becomes a transcript item when the
+    "steer", "follow-up"), without working dots (user, 2026-11-25),
+    and it has no remove control; it becomes a transcript item when the
     label arrives. A prompt whose topic is decided without the
     classifier (a filter, a typed marker) shows no pending row.
 - **Narrow pane**: the page's existing narrow breakpoint (the

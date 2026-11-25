@@ -928,10 +928,10 @@ test('a reconciled destination filter reloads history once per scope transition'
   assert.equal(calls.filter(path => path.startsWith('/items?')).length, 1);
 });
 
-test('pending prompts show mode and working dots without a remove control', async () => {
+test('pending prompts show their mode without dots or a remove control', async () => {
   const app = await page();
   const result = app.run(`(()=>{state={...state,queue:{steering:[],followUp:[],classifying:[{text:'Pending',attachments:[],mode:'followUp'}]}};queue();return [element('queue').querySelector('.kind').textContent,element('queue').querySelectorAll('button').length,!!element('queue').querySelector('.dots')]})()`);
-  assert.deepEqual([...result], ['follow-up', 0, true]);
+  assert.deepEqual([...result], ['follow-up', 0, false]);
 });
 
 test('topic filters project blocks without changing their addresses and apply newest late labels', async () => {

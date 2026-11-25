@@ -1627,7 +1627,7 @@ function queue() {
     const label = node('span', kind, 'kind'); label.append(close); row.append(label);
     host.append(row);
   }
-  for (const { kind, entry } of classifying) { const row = pendingRow(kind, entry), label = node('span', kind, 'kind'); label.append(dots()); row.append(label); host.append(row); }
+  for (const { kind, entry } of classifying) { const row = pendingRow(kind, entry); row.append(node('span', kind, 'kind')); host.append(row); }
 }
 function restoreQueued(entries: QueuedPrompt[]) {
   editor.setText([editor.text(), ...entries.map(entry => entry.text)].filter(Boolean).join('\n\n'));
