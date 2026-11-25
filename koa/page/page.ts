@@ -1807,7 +1807,7 @@ function apply(record: PageRecord, origin: RenderOrigin = 'live') {
     pathWarnings.clear(); pathWarningEpoch++;
     editor.resetCompletion();
     find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); allRuns.owners.clear(); runKeys.clear(); topicContext.topics = undefined; order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); topicItems.clear(); projections.clear(); folds.clear(); transcriptHistory.cancel('request');
-    decide({ type: 'reset' });
+    decide({ type: 'reset', epoch: record.epoch });
     lastMeasurement = undefined;
     resetting = true;
     refreshTopicItems();
@@ -1825,7 +1825,7 @@ function apply(record: PageRecord, origin: RenderOrigin = 'live') {
     }
   } else if (record.type === 'patch') applyPatch(record, true);
   else if (record.type === 'reload') location.reload();
-  else if (record.type === 'job-reset') { refreshTopicItems(); decide({ type: 'reset' }); epoch = record.epoch; job.reset(record); after = job.cursor(); }
+  else if (record.type === 'job-reset') { refreshTopicItems(); decide({ type: 'reset', epoch: record.epoch }); epoch = record.epoch; job.reset(record); after = job.cursor(); }
   else if (record.type === 'job-gone') job.gone(record);
   else if (record.type === 'job-append') { job.append(record); after = job.cursor(); }
   else if (record.type === 'state') {

@@ -747,6 +747,19 @@ badges include replies that arrived while the reader was away. The
 saved last sequence decides only for rows that the page did not
 know: a known row keeps its unread state.
 
+**A reset keeps what the page knows of its transcript.** The scroll
+state keeps the epoch that its candidates belong to. A reset with
+that epoch (a reconnect, a revision gap, a history refetch) or the
+first reset after a view or session switch keeps the read, unread
+and own status of every candidate, also of rows that are not
+loaded, and the reloaded rows show them again. A reset that
+cleared them would let a topic's saved last sequence mark messages
+that the user read in All topics as unread. A reset with another epoch is a rebuild,
+whose sequences can name other messages: it clears the candidates
+and the saved positions of the view's session. The current reader
+anchor stays, and a restoration in progress keeps its anchor without
+its saved last sequence.
+
 **A reload and a restart keep the intent.** The memory of every
 view's mode and anchor is in the page's history state; `pagehide`
 saves it before its last scroll update. The start of a page and a

@@ -20,6 +20,7 @@ export type State = {
   scope: Scope;
   saved: Map<string, Saved>;
   generation: number;
+  transcript?: string;
   unread: { candidates: Map<number, Map<string, Candidate>>; lastSeq: number; filtered: boolean; pendingSend?: true };
 };
 export type Observation = { top: number; max: number; anchor?: Anchor; now: number; focused: boolean; visible: boolean; reducedMotion: boolean };
@@ -33,7 +34,8 @@ export type ScrollEvent =
   | { type: 'item'; seq: number; kind: 'user' | 'assistant' | 'other'; visible: boolean; appended: boolean; focused: boolean; rows?: { row?: RowId; visible: boolean }[] }
   | ({ type: 'focus' | 'visibility' | 'latest' } & Observation)
   | ({ type: 'resize' } & Observation)
-  | { type: 'history' | 'reset' }
+  | { type: 'history' }
+  | { type: 'reset'; epoch: string }
   | { type: 'scope'; scope: Scope; filtered: boolean; anchor?: Anchor }
   | { type: 'load-failed'; generation: number }
   | { type: 'navigate'; anchor: Anchor };
@@ -94,8 +96,13 @@ function unread(state: State, event: ScrollEvent | { type: 'clear' }, filtering 
   } else if (event.type === 'submit') result = { ...before, pendingSend: true };
   else if (event.type === 'send-result') {
     if (event.result === 'handled' || event.result === 'failed') result = { ...before, pendingSend: undefined };
-  } else if (event.type === 'reset') result = { ...before, candidates: new Map(), pendingSend: undefined };
-  else if (event.type === 'scope') {
+  } else if (event.type === 'reset') {
+    if (state.transcript !== undefined && state.transcript !== event.epoch) result = { ...before, candidates: new Map(), lastSeq: -1, pendingSend: undefined };
+    else {
+      for (const [seq, rows] of before.candidates) for (const [key, candidate] of rows) if (candidate.visible) candidates(seq).set(key, { ...candidate, visible: false });
+      result = { ...result, pendingSend: undefined };
+    }
+  } else if (event.type === 'scope') {
     if (state.scope.view === event.scope.view && state.scope.sessionId === event.scope.sessionId && state.scope.topic === event.scope.topic) return before;
     if (state.scope.view !== event.scope.view || state.scope.sessionId !== event.scope.sessionId) result = { candidates: new Map(), lastSeq: -1, filtered: event.filtered };
     else {
@@ -143,15 +150,20 @@ export function reduce(previous: State, events: readonly ScrollEvent[]): { state
         state.saved = new Map(scrollMemory(state).map(saved => [scopeKey(saved.scope), saved]));
         const target = state.saved.get(scopeKey(event.scope));
         const topicChanged = state.scope.view === event.scope.view && state.scope.sessionId === event.scope.sessionId;
+        if (!topicChanged) state.transcript = undefined;
         state.scope = event.scope; state.seen = undefined; state.generation++; state.latestShown = false; state.unread = nextUnread;
         state.mode = { kind: 'landing', target: target && 'anchor' in target && target.scope.sessionId === event.scope.sessionId ? { at: 'anchor', saved: target } : topicChanged && !target ? { at: 'unread' } : { at: 'end' } };
         break;
       }
       case 'reset': case 'resize': {
         if (event.type === 'resize' && (event.top < -1 || event.top > event.max + 1)) break;
+        if (event.type === 'reset' && state.transcript !== undefined && state.transcript !== event.epoch) {
+          state.saved = new Map([...state.saved].filter(([, saved]) => saved.scope.view !== state.scope.view || saved.scope.sessionId !== state.scope.sessionId));
+          if (state.mode.kind === 'landing' && state.mode.target.at === 'anchor') state.mode = { kind: 'landing', target: { at: 'reader', anchor: state.mode.target.saved.anchor } };
+        }
         const mode = state.mode;
         state.mode = mode.kind === 'reader' && mode.anchor ? { kind: 'landing', target: { at: 'reader', anchor: mode.anchor } } : mode.kind === 'landing' ? mode : { kind: 'landing', target: { at: 'end' } };
-        if (event.type === 'reset') { state.seen = undefined; state.generation++; }
+        if (event.type === 'reset') { state.transcript = event.epoch; state.seen = undefined; state.generation++; }
         break;
       }
       case 'submit': follow(); break;

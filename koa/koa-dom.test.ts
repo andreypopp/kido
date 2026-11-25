@@ -5827,3 +5827,26 @@ test('topic badges refresh during rename without replacing the draft', async () 
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [[1,2],[0,0],true,'draft',1,3,1]);
 });
+
+test('same transcript reset keeps replies already read in All',async()=>{
+ const p=await windowPage();p.go('r');
+ p.evaluate("state={...state,view:{...state.view,type:'root'},topics:[{name:'one'},{name:'two'}]};element('scroll').clientHeight=500");
+ const rows=p.rows(0,40).map(row=>'blocks' in row?{...row,blocks:row.blocks.map(b=>({...b,topic:'one'}))}:{...row,topic:'one'});
+ p.open(rows);p.settle(12);
+ const select=(topic: string | undefined)=>p.evaluate(`topics.debug.scopeData(topics.scope()).filter=${JSON.stringify(topic)??'undefined'};projectTopicFilter()`);
+ select('one');p.settle(8);p.reader(0);p.settle(8);
+ assert.equal(p.evaluate('scrolling.scope.topic'),'one');assert.equal(p.evaluate('scrolling.mode.kind'),'reader');
+ select(undefined);p.settle(8);p.reader(p.bottom());p.settle(8);
+ const more=p.rows(40,60).map(row=>'blocks' in row?{...row,blocks:row.blocks.map(b=>({...b,topic:'one'}))}:{...row,topic:'one'});
+ for(const item of more)p.evaluate(`apply({type:'item',item:${JSON.stringify(item)}})`);
+ p.settle(12);
+ assert.equal(p.evaluate("[...scrolling.unread.candidates.get(59).values()][0].status"),'read','new reply seen while following All');
+ p.evaluate("beginTransition()");select('one');
+ {
+ Object.assign(p.app.context,{fetch:async()=>({ok:true,json:async()=>({type:'reset',epoch:'a',more:false,items:[...rows,...more]})})});
+ p.evaluate(`apply({type:'reset',epoch:'a',more:false,items:${JSON.stringify([...rows,...more])}})`);
+ for(let i=0;i<12;i++){await p.settled();p.step(16);}
+ }
+ p.settle(12);
+ assert.equal(p.evaluate("[...scrolling.unread.candidates.get(59).values()][0].status"),'read','reply 59 already seen in All must stay read');
+});

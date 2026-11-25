@@ -72,7 +72,7 @@ test('a topic landing write echo keeps its unread divider', () => {
 test('a same-scope reader reset treats snapshot rows as the unread baseline', () => {
   const f = fixture();
   f.step([intent], { top: 100, anchor: { item: { kind: 'message', seq: 1 }, offset: 0, edge: 'row' } });
-  const reset = f.step([{ type: 'reset' }, item(2, true, false)], { rows: [row(1, 100), row(2, 600)] });
+  const reset = f.step([{ type: 'reset', epoch: 'a' }, item(2, true, false)], { rows: [row(1, 100), row(2, 600)] });
   assert.equal(reset.decision.scrollTop, 100);
   assert.equal(reset.decision.divider, undefined);
 });
@@ -139,7 +139,7 @@ test('view memory restores readers, records following and rejects another sessio
   const restored = scrollUpdate(scrollInitial({ view: '', sessionId: undefined }, memory), [{ type: 'scope', filtered: false, scope }], m);
   assert.equal(restored.state.mode.kind, 'landing');
   if (restored.state.mode.kind === 'landing' && restored.state.mode.target.at === 'anchor') assert.deepEqual(restored.state.mode.target.saved, memory[0]);
-  const missing = scrollUpdate(restored.state, [{ type: 'reset' }, { type: 'frame' }], { ...m, lookup: () => ({ kind: 'removed' }) });
+  const missing = scrollUpdate(restored.state, [{ type: 'reset', epoch: 'a' }, { type: 'frame' }], { ...m, lookup: () => ({ kind: 'removed' }) });
   assert.equal(missing.state.mode.kind, 'following');
   assert.equal(missing.decision.scrollTop, 900);
   assert.equal(scrollUpdate(scrollInitial({ view: '', sessionId: undefined }, memory), [{ type: 'scope', filtered: false, scope: { ...scope, sessionId: 'other' } }], m).state.mode.kind, 'following');
@@ -155,7 +155,7 @@ test('view memory restores readers, records following and rejects another sessio
 test('following memory waits for non-empty positioning before background growth becomes reader', () => {
   const memory = scrollMemory(fixture().state());
   const m: Measure = { now: 1000, top: 0, max: 0, viewport: 300, width: 700, dock: 250, origin: 0, focused: false, visible: true, reducedMotion: true, lookup: () => ({ kind: 'removed' }) };
-  let result = scrollUpdate(scrollInitial({ view: '', sessionId: undefined }, memory), [{ type: 'scope', filtered: false, scope }, { type: 'reset' }], { ...m, settled: false });
+  let result = scrollUpdate(scrollInitial({ view: '', sessionId: undefined }, memory), [{ type: 'scope', filtered: false, scope }, { type: 'reset', epoch: 'a' }], { ...m, settled: false });
   result = scrollUpdate(result.state, [layout], { ...m, max: 900, settled: true });
   assert.equal(result.state.mode.kind, 'following');
   assert.equal(result.decision.scrollTop, 900);
@@ -167,7 +167,7 @@ test('following memory waits for non-empty positioning before background growth 
 
 test('background reset waits for new layout rather than completing against old content', () => {
   const f = fixture();
-  f.step([{ type: 'reset' }], { focused: false, top: 500, max: 500, settled: false });
+  f.step([{ type: 'reset', epoch: 'a' }], { focused: false, top: 500, max: 500, settled: false });
   const placed = f.step([layout], { max: 900, settled: true });
   assert.equal(placed.state.mode.kind, 'following');
   assert.equal(placed.decision.scrollTop, 900);
@@ -429,7 +429,7 @@ test('Latest hysteresis uses one third and one quarter, unread overrides it, and
   assert.equal(f.step([item(2)]).decision.latest.show, true);
   assert.equal(f.step([{ type: 'submit' }]).decision.latest.show, false);
   f.step([intent, item(2)]);
-  assert.equal(f.step([{ type: 'reset' }]).decision.divider?.seq, undefined);
+  assert.equal(f.step([{ type: 'reset', epoch: 'a' }]).decision.divider?.seq, undefined);
 });
 
 test('Latest travel retargets the moving bottom, is interrupted by intent, and completes', () => {
@@ -496,26 +496,26 @@ test('view return restores reader instantly with away arrivals, but a followed v
   const f = fixture();
   f.step([intent, scroll], { top: 100, anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: 0 } });
   f.step([{ type: 'scope', filtered: false, scope: { view: 'child', sessionId: 'c' } }]);
-  f.step([{ type: 'reset' }], { top: 0, max: 500, loaded: [], rows: [] });
+  f.step([{ type: 'reset', epoch: 'a' }], { top: 0, max: 500, loaded: [], rows: [] });
   f.step([{ type: 'scope', filtered: false, scope }], { settled: false });
-  const restored = f.step([{ type: 'reset' }, item(2, true, false)], { settled: true, loaded: [{ kind: 'message', seq: 1 }, { kind: 'message', seq: 2 }], rows: [row(1, 100), row(2, 700)], max: 900 });
+  const restored = f.step([{ type: 'reset', epoch: 'a' }, item(2, true, false)], { settled: true, loaded: [{ kind: 'message', seq: 1 }, { kind: 'message', seq: 2 }], rows: [row(1, 100), row(2, 700)], max: 900 });
   assert.deepEqual([restored.state.mode.kind, restored.decision.scrollTop, restored.decision.divider?.seq], ['reader', 100, 2]);
   f.step([{ type: 'scope', filtered: false, scope: { view: 'child', sessionId: 'c' } }]);
-  assert.equal(f.step([{ type: 'reset' }], { max: 1500 }).decision.scrollTop, 1500);
+  assert.equal(f.step([{ type: 'reset', epoch: 'a' }], { max: 1500 }).decision.scrollTop, 1500);
 });
 
 test('restore requests unloaded anchors, mounts loaded anchors, rejects stale completions and falls back on failure', () => {
   const f = fixture();
   f.step([intent, scroll], { top: 100, anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: 0 } });
   f.step([{ type: 'scope', filtered: false, scope: { view: 'child', sessionId: 'c' } }, { type: 'scope', filtered: false, scope }]);
-  const waiting = f.step([{ type: 'reset' }], { loaded: [], rows: [], more: true });
+  const waiting = f.step([{ type: 'reset', epoch: 'a' }], { loaded: [], rows: [], more: true });
   assert.deepEqual(waiting.decision.request, { type: 'load', item: { kind: 'message', seq: 1 }, generation: 3 });
   assert.equal(f.step([{ type: 'load-failed', generation: 1 }]).state.mode.kind, 'landing');
   assert.equal(f.step([{ type: 'history' }], { loaded: [{ kind: 'message', seq: 1 }] }).decision.request?.type, 'mount');
   const missing = fixture();
   missing.step([intent, scroll], { top: 100, anchor: { item: { kind: 'message', seq: 1 }, edge: 'row', offset: 0 } });
   missing.step([{ type: 'scope', filtered: false, scope: { view: 'child', sessionId: 'c' } }, { type: 'scope', filtered: false, scope }]);
-  missing.step([{ type: 'reset' }], { loaded: [], rows: [], more: true });
+  missing.step([{ type: 'reset', epoch: 'a' }], { loaded: [], rows: [], more: true });
   assert.equal(missing.step([{ type: 'load-failed', generation: 3 }]).state.mode.kind, 'following');
 });
 
@@ -549,4 +549,20 @@ for (const own of [false, true]) test(`return to a saved topic preserves ${own ?
   f.step([{ type: 'item', seq: 6, kind: own ? 'user' : 'assistant', visible: true, rows, appended: false }]);
   const restored = f.step([{ type: 'history' }]);
   assert.deepEqual([restored.state.unread.candidates.get(6)?.values().next().value?.status, restored.decision.divider, restored.decision.latest.count], [own ? 'own' : 'read', undefined, 0]);
+});
+
+
+test('replacing a transcript discards candidates and saved sequence boundaries', () => {
+  const anchor = { item: { kind: 'message' as const, seq: 39 }, edge: 'row' as const, offset: 0 };
+  let state = scrollInitial(scope, [{ scope, anchor, last: 59 }, { scope: { ...scope, topic: 'one' }, anchor, last: 39 }]);
+  state = reduce(state, [{ type: 'item', seq: 59, kind: 'assistant', visible: true, appended: false, focused: true }]).state;
+  state.mode = { kind: 'landing', target: { at: 'anchor', saved: { scope, anchor, last: 59 } } };
+  state.transcript = 'a';
+  const replaced = reduce(state, [{ type: 'reset', epoch: 'b' }]).state;
+  assert.equal(replaced.unread.candidates.size, 0);
+  assert.equal(replaced.unread.lastSeq, -1);
+  assert.equal(replaced.saved.size, 0);
+  assert.deepEqual(replaced.mode, { kind: 'landing', target: { at: 'reader', anchor } });
+  const accepted = reduce(replaced, [{ type: 'item', seq: 60, kind: 'assistant', visible: true, appended: false, focused: false }]).state;
+  assert.equal(accepted.unread.candidates.get(60)?.get('')?.status, 'read');
 });
