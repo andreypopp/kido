@@ -885,7 +885,8 @@ editor setting order. The draft stays visible but locked while the
 editor opens or runs. A repeated action focuses the same float.
 A successful changed result replaces text only in the session that
 opened it; it never sends. Failure, removal or loss of the observation
-link keeps the draft. The float uses on-exit retention because koa
+link keeps the draft. A nonzero exit is a deliberate cancel, such as
+Vim's `:cq`, so it keeps the draft without a notice. The float uses on-exit retention because koa
 must observe its death before removing it. An inside-runtime koa
 cannot open this host draft editor.
 

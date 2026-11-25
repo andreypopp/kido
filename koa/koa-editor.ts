@@ -99,7 +99,8 @@ export function koaEditor(options: { agentDir: string; cwd: () => string; sessio
             return edited !== clean(open.text) ? { text: edited } : {};
           } catch (error) { return { notice: warning(`Editor result unreadable: ${errorText(error)}; draft kept`) }; }
         }
-        return { notice: warning(cause.type === "exited" ? `Editor exited ${cause.code}; draft kept` : cause.type === "signaled" ? `Editor ended by signal ${cause.signal}; draft kept` : `Editor failed to start: ${cause.message}; draft kept`) };
+        if (cause.type === "exited") return {};
+        return { notice: warning(cause.type === "signaled" ? `Editor ended by signal ${cause.signal}; draft kept` : `Editor failed to start: ${cause.message}; draft kept`) };
       }
     }
   };

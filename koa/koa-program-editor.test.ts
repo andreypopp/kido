@@ -131,7 +131,6 @@ test("a failed or unchanged edit keeps the draft", { timeout: 15000 }, async t =
   let pane = await f.float(), file = pane.file;
   await writeFile(file, "ignored");
   await f.dead(pane.id, { type: "exited", code: 3 });
-  await f.notified("Editor exited 3; draft kept");
   await f.closed(pane.id); await f.gone(dirname(file));
   const first = pane.id;
   assert.equal((await f.reopen("same")).status, 200);
@@ -140,7 +139,7 @@ test("a failed or unchanged edit keeps the draft", { timeout: 15000 }, async t =
   await writeFile(file, "same\n");
   await f.dead(pane.id, { type: "exited", code: 0 });
   await f.closed(pane.id); await f.gone(dirname(file));
-  assert.equal(f.app.records().filter(record => record.type === "item" && record.item.kind === "notify" && record.item.text.text === "Editor exited 3; draft kept").length, 1);
+  assert.equal(f.app.records().filter(record => record.type === "item" && record.item.kind === "notify" && record.item.text.text.startsWith("Editor exited")).length, 0);
   assert.equal(f.app.records().some(record => record.type === "state" && record.editor), false);
 });
 
@@ -190,7 +189,6 @@ test("a dead event that precedes the open ends the edit at once", { timeout: 150
   const f = await editing(t);
   await f.dead("pane_10", { type: "exited", code: 4 });
   await f.open("early");
-  await f.app.until(ofType("item", record => record.item.kind === "notify" && record.item.text.text === "Editor exited 4; draft kept"));
   await f.closed("pane_10");
 });
 
