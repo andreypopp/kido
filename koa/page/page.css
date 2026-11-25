@@ -151,7 +151,8 @@ body .cm-tooltip.cm-tooltip-autocomplete.koa-complete::after{flex-shrink:0;conte
 #items>[data-seq]:not(.user),.reply-section{display:flow-root;margin:0}
 [data-rhythm]{margin-top:0;margin-bottom:14px}
 [data-rhythm=compact]:not(.open){margin-bottom:2px}
-.run:not(.open)>.line{height:calc(1.5em + 2px)}
+.run>.line{height:calc(1.5em + 2px)}
+.run .worked{color:var(--muted)}.run .worked.err{color:var(--ko-color-1)}.worked .dur{font-variant-numeric:tabular-nums}.worked .ab{color:var(--faint)}.run>.line>.sum>.dots{margin-left:0;margin-right:6px}
 .prose>:first-child,.prose>:first-child>:first-child{margin-top:0}
 .prose>:last-child,.prose>:last-child :last-child{margin-bottom:0}
 .nrow{font:.95em/1.5 var(--prose);color:var(--muted)}

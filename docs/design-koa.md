@@ -491,7 +491,28 @@ while idle can join the last run. Topic filtering does not regroup
 runs: prose hidden by a filter still separates them. Fold state is
 page-local. `koa/page/steps.ts` supplies labels and detail text to
 both rendering and find; the page never parses model-facing message
-headers to recover agent or job facts.
+headers to recover agent or job facts. Find matches step labels and
+opens the folded run; copy takes the steps from the model, never the
+run line.
+
+A run's line, folded or open, says how long the run worked, not
+which tools ran: the union of its timed steps' intervals (tools,
+thinking and outgoing agent calls, each from its start to its end,
+or to now while it is live), so parallel steps count once and the
+gaps between steps count not at all. A moment step (a message, a
+report, a notice, a job event) adds nothing, so a late report does
+not change a finished run's time. A step counts only from its own
+start, and an aborted step ends at the abort, as its own time does;
+a tool that never started adds nothing, and a run without timed
+steps keeps the names summary instead. While the turn's dots stand on the run
+(a live step, or the tail run of a working turn between steps), the
+line is the dots and the duration, which holds between steps; after
+the turn it reads "Worked for", in the error colour when a step
+failed and with "· aborted" after an abort. The duration is whole
+seconds rounded up, so it is never zero. The names summary stays in
+the line's title and accessible label. The page's one clock ticks the
+live runs on each second; tabular numerals and the dots before the
+text keep a tick from moving anything but the text's end.
 
 `koa/page/markdown.ts` memoizes top-level Markdown blocks. An append
 re-lexes the affected tail with enough preceding context for a token
@@ -557,9 +578,9 @@ margin, so a run that replaces the slot changes no height; an open run
 only adds its steps. Prose or a message after the run goes below it,
 and the slot comes back below them: growth only. The dots stand on the
 slot while the turn works and the transcript ends in a message, on the
-run's summary when it ends in a run, and go at the turn's end or an
-abort. A folded run keeps one line with parallel tools: its dots stand
-only on the summary; an open run puts them on each live step. So a
+run's line when it ends in a run, and go at the turn's end or an
+abort. The turn's one dots node stays first on the run's line, folded
+or open; an open run adds dots on each live step. So a
 turn's start, its tools and its end never change the transcript's
 height, in every view; a job view has no ending row. Reduced motion makes the dots static and disables grow and
 scroll travel; it does not disable chunking or fence folds.

@@ -17,4 +17,5 @@ export const scenarios: Scenarios = {
   UnreadGap: initial,
   BangTail: initial,
   EndingRow: initial,
+  WorkedRun: initial,
 };

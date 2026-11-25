@@ -944,6 +944,26 @@ async function testKoaWebviewBangTail() {
     await context.pageSnapshot('bang-folded-count'+appearance,'testKoaWebviewBangTail()','.cmdrun',{top:4,left:4,bottom:4,right:4});
   }
 }
+async function testKoaWebviewWorkedRun() {
+  const web = await scrollPage('dots', 'WorkedRun', '', true);
+  await web.emulateMedia({ reducedMotion: 'reduce' });
+  await webviewJS(web, '(()=>{Date.now=()=>1700000012000;return true})()');
+  for (const appearance of ['light', 'dark'] as const) {
+    await setTheme(appearance);
+    for (const mode of ['running', 'open', 'finished', 'failed', 'aborted', 'moment', 'long']) {
+      const active = mode === 'running' || mode === 'open', start = 1700000000000;
+      const block = {type:'tool',id:'work',name:'bash',args:{text:'{"command":"make verify"}'},started:start,...(active ? {} : {ended:start+(mode === 'long' || mode === 'aborted' ? 4320000 : 12000)}),state:active ? {type:'running'} : {type:'done',error:mode === 'failed',result:{text:'Verification result',cut:0,images:[]}}};
+      const item = mode === 'moment' ? {seq:1,revision:0,at:start,kind:'agent',final:true,direction:'in',from:{name:'palette'},text:{text:'No findings',cut:0},inbound:{form:'report'}} : {seq:1,revision:0,at:start,kind:'assistant',final:!active,stop:mode === 'aborted' ? 'aborted' : active ? '' : 'stop',error:'',blocks:[block]};
+      await webviewJS(web, '(()=>{' + followHelpers + `push(view(root,[root],{working:${active},since:${start}}));push({type:'reset',epoch:'worked-${mode}',more:false,items:[{seq:0,revision:0,at:${start},kind:'user',final:true,text:'Check the result',images:[],attachments:[]},${JSON.stringify(item)}]});return true})()`);
+      await webviewUntil(web, "!!document.querySelector('#items .run>.line')&&!document.querySelector('#presentation')");
+      if (mode === 'open') await web.locator('#items .run>.line').click();
+      const expected = active ? '12s' : mode === 'moment' ? 'from @palette' : mode === 'aborted' ? 'Worked for 1h 12m · aborted' : mode === 'long' ? 'Worked for 1h 12m' : 'Worked for 12s';
+      await webviewUntil(web, `document.querySelector('#items .run>.line').textContent===${JSON.stringify(expected)}&&document.querySelectorAll('#items .dots').length===${mode === 'open' ? 2 : active ? 1 : 0}`);
+      await pinComposerCaret(web, false);
+      await context.pageSnapshot(mode + appearance, 'testKoaWebviewWorkedRun()');
+    }
+  }
+}
 async function testKoaWebviewEndingRow() {
   const web = await scrollPage('dots', 'EndingRow', '', true);
   await web.emulateMedia({ reducedMotion: 'reduce' });
@@ -2109,13 +2129,13 @@ echo release
         await capture("details")
         await capture("narrow-details")
         await advance()
-        await webviewUntil(web, "document.querySelector('#items .run .names .err')?.textContent==='bash'&&document.querySelector('#items').textContent.includes('aborted,')")
+        await webviewUntil(web, "document.querySelector('#items .run .worked.err')?.textContent.startsWith('Worked for ')&&document.querySelector('#items').textContent.includes('· aborted')")
         const openRuns = await webviewJS(web, "document.querySelectorAll('.run.open').length")
         equal(openRuns, 0)
         const collapsed = await webviewJS(web, "document.querySelectorAll('.run.open').length===0")
         equal(collapsed, true)
         await webviewJS(web, "(()=>{const runs=[...document.querySelectorAll('.run')];runs.forEach(run=>run.querySelector('.line').click());runs[0].querySelectorAll('.step>.line')[1].click();return true})()")
-        await webviewUntil(web, "document.querySelector('.run .names .err')?.textContent==='bash'&&document.querySelector('.run .step.open').textContent.includes('FAIL unit 40.2s')&&document.querySelectorAll('.run')[1].textContent.includes('aborted, you pressed Escape')")
+        await webviewUntil(web, "document.querySelector('.run .worked.err')?.textContent.startsWith('Worked for ')&&document.querySelector('.run .step.open').textContent.includes('FAIL unit 40.2s')&&document.querySelectorAll('.run')[1].textContent.includes('· aborted')")
         await capture("error")
         equal(context.documents, 1)
         async function dialogScenario() {
@@ -2179,7 +2199,7 @@ echo release
                 await advance()
                 if (ready) { await webviewUntil(web, ready) }
             }
-            await webviewUntil(web, "document.querySelectorAll('.run').length===1&&document.querySelector('.run .step')?.textContent.includes('where the rule belongs')&&document.querySelector('.run .names .err')?.textContent==='bash'&&document.querySelector('#items').textContent.includes('This operation was aborted')")
+            await webviewUntil(web, "document.querySelectorAll('.run').length===1&&document.querySelector('.run .step')?.textContent.includes('where the rule belongs')&&document.querySelector('.run .worked.err')?.textContent.startsWith('Worked for ')&&document.querySelector('#items').textContent.includes('This operation was aborted')")
             const expanded = await webviewJS(web, "(()=>{const line=document.querySelector('.run>.line');if(line.getAttribute('aria-expanded')!=='true')line.click();return line.getAttribute('aria-expanded')==='true'})()")
             equal(expanded, true)
             await capture("times")
@@ -2199,6 +2219,7 @@ const entries: Record<string, () => Promise<void>> = {
   "ViewSwitchAtomic": testKoaWebviewViewSwitchAtomic,
   "ReloadKeepsView": testKoaWebviewReloadKeepsView,
   "Dots": testKoaWebviewDots,
+  "WorkedRun": testKoaWebviewWorkedRun,
   "EndingRow": testKoaWebviewEndingRow,
   "BangTail": testKoaWebviewBangTail,
   "UnreadGap": testKoaWebviewUnreadGap,

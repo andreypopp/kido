@@ -276,7 +276,7 @@ async function page() {
     };
   };
   const history: { state: unknown; replaceState(state: unknown): void } = { state: null, replaceState(state) { this.state = state; } };
-  const context = { history, topicTurn, parseTopicName, ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }, pseudo?: string) => ({ top: pseudo === '::before' ? '-7.5px' : 'auto', [Symbol.iterator]: function* () {}, display: 'block', lineHeight: '20px', fontFamily: 'sans-serif', fontSize: '13px', getPropertyValue: () => '', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, pathToken, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, HTMLInputElement: class {}, HTMLTextAreaElement: class {}, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { history, topicTurn, parseTopicName, ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }, pseudo?: string) => ({ top: pseudo === '::before' ? '-7.5px' : 'auto', [Symbol.iterator]: function* () {}, display: 'block', lineHeight: '20px', fontFamily: 'sans-serif', fontSize: '13px', getPropertyValue: () => '', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, pathToken, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, HTMLInputElement: class {}, HTMLTextAreaElement: class {}, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout(callback: () => void, delay: number) { if (callback.name !== 'clock') return setTimeout(callback, delay); }, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = pageSource('page/answers.ts').replace(/^export /gm, '');
   const annotationsSource = pageSource('page/annotations.ts').replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update,head,quote})', context));
@@ -2401,7 +2401,7 @@ async function revealPage(clientHeight = 100) {
     } });
     return node;
   };
-  Object.assign(app.context, { performance: { now: () => clock }, requestAnimationFrame: (callback: () => void) => { queued.set(++id, callback); return id; }, cancelAnimationFrame: (frame: number) => queued.delete(frame), setTimeout: (callback: () => void, delay: number) => { timers.set(++id, { at: clock + delay, callback }); return id; }, clearTimeout: (timer: number) => timers.delete(timer) });
+  Object.assign(app.context, { performance: { now: () => clock }, requestAnimationFrame: (callback: () => void) => { queued.set(++id, callback); return id; }, cancelAnimationFrame: (frame: number) => queued.delete(frame), setTimeout: (callback: () => void, delay: number) => { if (callback.name !== 'clock') timers.set(++id, { at: clock + delay, callback }); return id; }, clearTimeout: (timer: number) => timers.delete(timer) });
   let top = 0, height = 20, client = clientHeight, moved = false;
   const evaluate = app.repl();
   const box = app.context.document.getElementById('scroll');
@@ -2597,6 +2597,77 @@ test("a duplicate patch is skipped and a gap or non-assistant target reconnects 
   assert.deepEqual(Array.from(result), ["ab10", "|1", "|2"]);
 });
 
+test('live worked time ticks without moving its dots and tool names stay searchable and copied', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    state={...state,working:true,since:1700000000000};
+    put({seq:0,revision:0,at:1700000000000,final:false,kind:'assistant',stop:'',error:'',blocks:[{type:'tool',id:'bash',name:'bash',args:{text:'{"command":"echo hello"}'},state:{type:'running'},started:1700000000000}]});
+    reconcileWorking();const marks=[...liveMarks.values()][0],primary=working.primary,first=marks.names.querySelector('.dur').textContent;
+    Date=class extends Date{static now(){return 1700000013000}};tick();
+    const segment=segmentsOf(0).find(segment=>segment.text.includes('bash'));
+    const copied=transcriptText();openers.get(segment.folds[0]).open();
+    return [first,marks.names.querySelector('.dur').textContent,primary===working.primary,marks.summary.children[0]===primary,marks.summary.children[1]===marks.names,!marks.summary.parentElement.querySelector('.time'),segment.folds[0],openers.get(segment.folds[0]).view.classList.contains('open'),copied];
+  })()`);
+  const values=JSON.parse(JSON.stringify(result));
+  assert.deepEqual(values.slice(0,8), ['12s','13s',true,true,true,true,'run:0:0',true]);
+  assert.match(values[8], /bash/);
+  assert.doesNotMatch(values[8], /Worked for/);
+});
+
+test('the real second clock schedules a quiet live run', async () => {
+  const app = await page(), frames: (() => void)[] = [];
+  let second: (() => void) | undefined;
+  Object.assign(app.context, { requestAnimationFrame: (callback: () => void) => { frames.push(callback); return frames.length; }, setTimeout: (callback: () => void) => { if (callback.name === 'clock') second = callback; return 1; } });
+  const evaluate = app.repl();
+  evaluate("state={...state,working:true,since:1700000000000};put({seq:0,revision:0,at:1700000000000,final:false,kind:'assistant',stop:'',error:'',blocks:[{type:'thinking',text:'Checking',started:1700000000000}]});reconcileWorking();schedule()");
+  for (let turn = 0; frames.length && turn < 20; turn++) frames.shift()?.();
+  assert.equal(evaluate('wanted()'), false, 'all non-clock work has settled');
+  evaluate('Date=class extends Date{static now(){return 1700000013000}}');
+  assert.equal(evaluate('wanted()'), true, 'a due live clock is scheduler work');
+  second?.();
+  assert.equal(frames.length, 1, 'the real timer schedules a frame without another event');
+  frames.shift()?.();
+  assert.equal(evaluate("[...liveMarks.values()][0].names.querySelector('.dur').textContent"), '13s');
+});
+
+test('an aborted message times only the blocks that worked', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const item={seq:0,at:0,ended:100000,final:true,stop:'aborted',blocks:[{type:'thinking',text:'Checked',started:1000,ended:3000},{type:'tool',name:'edit',args:{text:'{}'},state:{type:'not_run'}}]};
+    const line=run(item.blocks.map((block,index)=>({kind:'block',block,index,key:'abort'+index,item}))).firstElementChild;
+    return line.querySelector('.dur').textContent;
+  })()`);
+  assert.equal(result, '2s');
+});
+
+test('a working turn between steps keeps dots and a held duration until the turn ends', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    state={...state,working:true,since:1700000000000};
+    put({seq:0,revision:0,at:1700000000000,final:true,kind:'assistant',stop:'stop',error:'',blocks:[{type:'thinking',text:'Checked',started:1700000000000,ended:1700000002000}]});
+    reconcileWorking();const marks=runMarks.get(openers.get('run:0:0').view),primary=working.primary;
+    const contents=value=>typeof value==='string'?value:value.textContent+value.children.map(contents).join('');
+    const before=contents(marks.names);Date=class extends Date{static now(){return 1700000013000}};tick();const after=contents(marks.names),stable=primary===marks.summary.children[0];
+    state={...state,working:false};reconcileWorking();return [before,after,stable,contents(marks.names)];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), ['2s','2s',true,'Worked for 2s']);
+});
+
+test('worked run lines union intervals and format rounded durations', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const contents=value=>typeof value==='string'?value:value.textContent+value.children.map(contents).join('');
+    const make=intervals=>{const item={seq:100,at:0,final:true,stop:'stop',blocks:intervals.map(([started,ended])=>({type:'tool',name:'read',started,ended,args:{text:'{}'},state:{type:'done',error:false}}))};return run(item.blocks.map((block,index)=>({kind:'block',block,index,key:'x'+index,item}))).firstElementChild};
+    return [[[0,200]],[[0,65000]],[[0,4320000]],[[0,10000],[5000,15000],[20000,25000]]].map(intervals=>{const line=make(intervals);return [contents(line),!line.querySelector('.time'),line.getAttribute('title'),line.getAttribute('aria-label')]});
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [
+    ['Worked for 1s',true,'read','Worked for 1s, read'],
+    ['Worked for 1m 5s',true,'read','Worked for 1m 5s, read'],
+    ['Worked for 1h 12m',true,'read','Worked for 1h 12m, read'],
+    ['Worked for 20s',true,'read x3','Worked for 20s, read x3'],
+  ]);
+});
+
 test("failed and aborted runs keep their outcomes", async () => {
   const app = await page();
   const result = app.run(`(()=>{
@@ -2609,12 +2680,14 @@ test("failed and aborted runs keep their outcomes", async () => {
     const edit={type:'tool',name:'edit',args:{text:JSON.stringify({path:'ko_server/src/sweep.rs',oldText:'',newText:''})},state:{type:'not_run'}};
     const abortedItem={at:0,final:true,stop:'aborted',blocks:[thinking,edit]};
     const aborted=run(abortedItem.blocks.map((block,index)=>({kind:'block',block,index,key:'a'+index,item:abortedItem})));
-    return {failed:contents(failed.children[0]),output:contents(failed.children[1].children[1].children[1]),aborted:contents(aborted.children[0]),outcome:contents(aborted.children[1].children[1].children[0].children[2])};
+    return {failedClass:failed.children[0].querySelector('.worked').className,abortedClass:aborted.children[0].querySelector('.ab').className,failed:contents(failed.children[0]),output:contents(failed.children[1].children[1].children[1]),aborted:contents(aborted.children[0]),outcome:contents(aborted.children[1].children[1].children[0].children[2])};
   })()`);
-  assert.match(result.failed, /read, bash41s/);
+  assert.equal(result.failedClass, 'names worked err');
+  assert.equal(result.abortedClass, 'ab');
+  assert.match(result.failed, /Worked for 41s/);
   assert.match(result.output, /FAIL unit 40.2s/);
   assert.doesNotMatch(result.output, /Command exited/);
-  assert.match(result.aborted, /aborted, you pressed Escape/);
+  assert.match(result.aborted, /Worked for 1s · aborted/);
   assert.equal(result.outcome, "aborted ");
 });
 
@@ -2670,16 +2743,16 @@ test('every notice is one nrow that opens only when it has more than its line', 
   });
 });
 
-test('event-only run summaries show the last moment as later agent and job steps join', async () => {
+test('event-only run summaries keep names without a right-side time', async () => {
   const app = await page(), morning = new Date(1700000012000); morning.setHours(9, 0, 0, 0);
   const result = app.run(`(()=>{
     const at=${morning.getTime()},report=(seq,at)=>({seq,at,revision:0,final:true,kind:'agent',direction:'in',from:{name:'worker'},text:{text:'Report',cut:0},inbound:{form:'report'}});
-    put(report(0,at));const row=openers.get('run:0:item').view,time=()=>row.firstElementChild.querySelector('.time').textContent,first=time();
+    put(report(0,at));const row=openers.get('run:0:item').view,time=()=>row.firstElementChild.querySelector('.time'),first=time();
     put({seq:1,at:at+300000,revision:0,final:true,kind:'job',job:{id:'j',name:'build',log:'/tmp/build.log',service:false},event:{type:'ended',end:{type:'exit',code:0},tail:{text:'PASS',cut:0}}});const second=time();
     put(report(2,at+600000));
-    return [first,second,time(),openers.get('run:0:item').view===row];
+    return [first,second,time(),openers.get('run:0:item').view===row,runMarks.get(row).names.className];
   })()`);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), ['09:00','09:05','09:10',true]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [null,null,null,true,'names worked']);
 });
 
 test('mixed run durations ignore moments and outgoing calls show their tool duration', async () => {
@@ -2689,20 +2762,20 @@ test('mixed run durations ignore moments and outgoing calls show their tool dura
     const tool=(id,started,ended)=>({type:'tool',id,name:'read',args:{text:'{}'},state:{type:'done',error:false,result:{text:'done',images:[]}},started,ended});
     const reply=(seq,block)=>({seq,at,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks:[block]});
     put(report(0,at));put(reply(1,tool('read',at+1000,at+5000)));
-    const time=()=>openers.get('run:0:item').view.firstElementChild.querySelector('.time').textContent,first=time();
+    const time=()=>openers.get('run:0:item').view.firstElementChild.querySelector('.dur').textContent,first=time();
     put({seq:2,at:at+600000,revision:0,final:true,kind:'job',job:{id:'j',name:'build',log:'/tmp/build.log',service:false},event:{type:'ended',end:{type:'exit',code:0},tail:{text:'PASS',cut:0}}});const afterJob=time();
     put(reply(3,{...tool('call',at+6000,at+7500),name:'message_agent',agent:{direction:'out',to:{name:'worker'},text:{text:'Message',cut:0},call:{tool:'message',mode:'message'},outcome:{ok:true}}}));
     const outgoing=openers.get('3:0').view.querySelector('.time').textContent,afterCall=time();put(report(4,at+1200000));
     return [first,afterJob,outgoing,afterCall,time()];
   })()`);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), ['4s','4s','1.5s','6.5s','6.5s']);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), ['4s','4s','1.5s','6s','6s']);
 });
 
 test('an active tool keeps the run duration live when a later outgoing call is complete', async () => {
   const app = await page();
   const result = app.run(`(()=>{
     put({seq:0,revision:0,at:1700000000000,final:false,kind:'assistant',stop:'',error:'',blocks:[{type:'tool',id:'bash',name:'bash',args:{text:'{}'},state:{type:'running'},started:1700000000000},{type:'tool',id:'message',name:'message_agent',args:{text:'{}'},state:{type:'done',error:false,result:{text:'done',images:[]}},started:1700000001000,ended:1700000002000,agent:{direction:'out',to:{name:'worker'},text:{text:'Message',cut:0},call:{tool:'message',mode:'message'},outcome:{ok:true}}}]});
-    const time=()=>openers.get('run:0:0').view.firstElementChild.querySelector('.time').textContent,first=time(),outgoing=openers.get('0:1').view.querySelector('.time').textContent;
+    const time=()=>openers.get('run:0:0').view.firstElementChild.querySelector('.dur').textContent,first=time(),outgoing=openers.get('0:1').view.querySelector('.time').textContent;
     Date=class extends Date{static now(){return 1700000014000}};
     const current=items.get(0);put({...current,revision:1,blocks:current.blocks.map((block,index)=>index?block:{...block,args:{text:'{"command":"still running"}'}})});
     return [first,outgoing,time()];
@@ -2725,9 +2798,9 @@ test('a run keeps its source timestamp when leading thinking has no block timest
   const app = await page();
   const elapsed = app.run(`(()=>{
     put({seq:0,revision:0,at:0,final:true,kind:'assistant',stop:'stop',error:'',blocks:[{type:'thinking',text:'Thought'},{type:'tool',id:'r',name:'read',args:{text:'{}'},state:{type:'done',error:false,result:{text:'done',images:[]}},started:6000,ended:10000}]});
-    return openers.get('run:0:0').view.firstElementChild.querySelector('.time').textContent;
+    return openers.get('run:0:0').view.firstElementChild.querySelector('.dur').textContent;
   })()`);
-  assert.equal(elapsed, '10s');
+  assert.equal(elapsed, '4s');
 });
 
 test('text suffixes and another tool patch retain completed agent and tool DOM', async () => {
@@ -2810,7 +2883,7 @@ test('notices join an open run but do not open one after prose', async () => {
     put(reply(5,[tool('third')]));
     const standalone=!!views.get(4).view.querySelector('.nrow'), next=runOwner(runContext(),{kind:'block',seq:5,index:0});
     topics.debug.scopeData(topics.scope()).filter='one'; refreshTopicItems();
-    return [steps,marks.names.children.map(child=>child.textContent).join(', '),find.folds,find.step,copied.includes('Careful'),standalone,next,!!visible(1),visible(2)?.error,body.folds];
+    return [steps,marks.summary.parentElement.getAttribute('title'),find.folds,find.step,copied.includes('Careful'),standalone,next,!!visible(1),visible(2)?.error,body.folds];
   })()`);
   const value = JSON.parse(JSON.stringify(result));
   assert.deepEqual(value[0].map((step: string[]) => step[0]), ['block','notice','block','notice']);
@@ -3063,9 +3136,10 @@ test('failed agent summaries mark live and gone names as errors', async () => {
     const card=name=>({direction:'out',to:{name},text:{text:'Refused',cut:0},call:{tool:'message',mode:'message'},outcome:{ok:false,failure:'refused',message:'Refused'}});
     agentStep(card('worker'),0,'live');agentStep(card('ghost'),0,'gone');
     const view=openers.get('run:10000:0').view,marks=runMarks.get(view);
-    return marks.names.children.filter(child=>child?.classList?.contains('err')).map(name=>[name.className,name.children.find(child=>child?.classList?.contains('who')).className]);
+    return [marks.names.className,marks.summary.parentElement.getAttribute('title')];
   })()`);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['err','who'],['err','who gone']]);
+  assert.equal(result[0], 'names worked err');
+  assert.match(result[1], /worker/); assert.match(result[1], /ghost/);
   const css = await readFile(new URL('page/page.css', import.meta.url), 'utf8');
   assert.match(css, /\.run \.names \.err \.who\{color:var\(--ko-color-1\)\}/);
 });
@@ -4634,13 +4708,13 @@ test('working dots: one indicator in every frame, a bare row or a running mark, 
   show([{ type: 'text', text: 'hello' }, tool('a', 'done')]);
   assert.deepEqual([bare(), marks(), where().startsWith('sum|run')], [false, 1, true], 'a finished run last carries the dots after its summary');
   show([{ type: 'text', text: 'hello' }, tool('a', 'done'), tool('b', 'running')]);
-  assert.deepEqual([bare(), marks(), summary()], [false, 1, 'bash x2'], 'the folded summary keeps the counts');
+  assert.deepEqual([bare(), marks(), summary()], [false, 1, ''], 'the folded summary starts with dots');
   show([{ type: 'text', text: 'hello' }, tool('a', 'done'), tool('b', 'done'), tool('c', 'running')]);
   assert.deepEqual([bare(), marks()], [false, 1], 'one call finishes and the next starts in one patch');
   show([{ type: 'text', text: 'hello' }, tool('a', 'running'), tool('b', 'running')]);
   assert.deepEqual([bare(), marks()], [false, 1], 'folded: only the summary has dots');
   toggle();
-  assert.deepEqual([bare(), marks(), where().startsWith('sum|step')], [false, 2, true], 'open: only the running steps');
+  assert.deepEqual([bare(), marks(), where().startsWith('sum|run')], [false, 3, true], 'open: summary and running steps');
   toggle();
   assert.deepEqual([bare(), marks()], [false, 1]);
   show([{ type: 'text', text: 'hello' }, tool('a', 'running')], false, 'aborted');
@@ -4667,7 +4741,7 @@ test('working dots: the mark sits in the last visible element, a run row or a ba
   toggle();
   assert.deepEqual([bare(), marks(), where().startsWith('sum|line|run'), node() === first], [false, 1, true, true], 'finished run last, open');
   show(1, [{ type: 'thinking', text: 'x', started: 1, ended: 2 }, tool('a', 'done'), tool('b', 'running')]);
-  assert.deepEqual([bare(), marks(), where().startsWith('sum|line|step'), headerDots(), node() === first], [false, 1, true, 0, true], 'running step, open: on the step line, header none');
+  assert.deepEqual([bare(), marks(), where().startsWith('sum|line|run'), headerDots(), node() === first], [false, 2, true, 1, true], 'running step, open: primary stays on the header');
   toggle();
   assert.deepEqual([bare(), marks(), where().startsWith('sum|line|run'), node() === first], [false, 1, true, true], 'running step, folded: after the summary');
   toggle();
@@ -4675,7 +4749,7 @@ test('working dots: the mark sits in the last visible element, a run row or a ba
   show(1, [{ type: 'thinking', text: 'x', started: 1, ended: 2 }, tool('a', 'done'), tool('b', 'done')]);
   assert.deepEqual([bare(), marks(), where().startsWith('sum|line|run')], [false, 1, true], 'call ends: back on the header');
   show(1, [{ type: 'thinking', text: 'x', started: 1, ended: 2 }, tool('a', 'done'), tool('b', 'done'), tool('c', 'running')]);
-  assert.deepEqual([bare(), marks(), where().startsWith('sum|line|step'), rows() === before, node() === first], [false, 1, true, true, true], 'a new call joins: the same mark moves to the step');
+  assert.deepEqual([bare(), marks(), where().startsWith('sum|line|run'), rows() === before, node() === first], [false, 2, true, true, true], 'a new call joins: the primary stays on the header');
   show(1, [{ type: 'thinking', text: 'x', started: 1, ended: 2 }, tool('a', 'done'), tool('b', 'done'), tool('c', 'done')]);
   show(2, [{ type: 'text', text: 'reply' }]);
   assert.deepEqual([bare(), marks(), node() === first, ev("element('tail-slot').lastChild?.className.includes('working')")], [true, 1, true, true], 'text starts after the run: the same mark is the bare row under it');
@@ -4704,12 +4778,12 @@ test('working dots: active thinking is a live step, the mark follows it and the 
   show([done]);
   const first = ev(FIND_DOTS);
   show([done, { type: 'thinking', text: 'hm', started: 1 }]);
-  assert.deepEqual([count(), where(), ev(FIND_DOTS) === first], [1, 'sum|line|step', true], 'active thinking: on its step line');
+  assert.deepEqual([count(), where(), ev(FIND_DOTS) === first], [2, 'sum|line|run open', true], 'active thinking: primary stays on the header');
   show([done, { type: 'thinking', text: 'hm', started: 1, ended: 2 }]);
   assert.deepEqual([count(), where(), ev(FIND_DOTS) === first], [1, 'sum|line|run open', true], 'thinking ended: back on the header');
   show([done, { type: 'thinking', text: 'hm', started: 1 }]);
   show([done, { type: 'thinking', text: 'hm', started: 1, ended: 2 }, next]);
-  assert.deepEqual([count(), where(), ev(FIND_DOTS) === first], [1, 'sum|line|step', true], 'the next call: on its step line');
+  assert.deepEqual([count(), where(), ev(FIND_DOTS) === first], [2, 'sum|line|run open', true], 'the next call: primary stays on the header');
 });
 
 async function dotsWatch() {

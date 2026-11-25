@@ -79,7 +79,7 @@ type Reveal = { at: number; landing?: true; tail?: { block: Tail; view: HTMLElem
 type TextMemo = { origin: RenderOrigin; render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }>; assistant: boolean; paths: boolean; key?: string; reveal?: Reveal; grown: number };
 const texts = new Map<string, TextMemo>();
 type StepMarks = { key: string; shape: string; links: string; cwd: string; card?: NonNullable<ReturnType<typeof stepInfo>['card']>; child: HTMLElement; sum: HTMLElement; name?: HTMLElement; label: HTMLElement; after: HTMLElement; tail: HTMLElement[]; tailKey: string; result: HTMLElement; time: HTMLElement; detail: HTMLElement; current: Step; live: boolean; file?: string; images?: ReturnType<typeof thumbnails>; show?: () => void };
-type RunMarks = { key: string; links: string; cwd: string; summary: HTMLElement; names: HTMLElement; namesKey: string; time: HTMLElement; children: HTMLElement; steps: StepMarks[] };
+type RunMarks = { key: string; links: string; cwd: string; summary: HTMLElement; names: HTMLElement; namesKey: string; children: HTMLElement; steps: StepMarks[] };
 const runMarks = new WeakMap<HTMLElement, RunMarks>();
 const liveMarks = new Map<string, RunMarks>();
 type WorkingPlace = { kind: 'bare'; row: HTMLElement; line: HTMLElement; sum: HTMLElement } | { kind: 'run' };
@@ -416,7 +416,7 @@ function foldFence(pre: HTMLElement, key: string) {
   pre.after(bar);
 }
 const transcriptVisible = () => state.view.type !== 'job' && !element('items').hidden;
-const wanted = () => fontsReady && (transcriptVisible() && (extentDirty.size > 0 || commandTails.size > 0 || animating.size > 0 || windowDirty || revealDirty || fitPending.size > 0 || growing.length > 0 || measuredHolds.size > 0) || dirty.size > 0 || resetting || scrollEvents.length > 0 || scrollDecision.frame || waiters.length > 0 || transition?.phase.kind === 'layout' && !transcriptHistory.pending || !!metrics?.waiting.length);
+const wanted = () => fontsReady && (transcriptVisible() && (liveMarks.size > 0 && runClock !== Math.floor(Date.now() / 1000) || extentDirty.size > 0 || commandTails.size > 0 || animating.size > 0 || windowDirty || revealDirty || fitPending.size > 0 || growing.length > 0 || measuredHolds.size > 0) || dirty.size > 0 || resetting || scrollEvents.length > 0 || scrollDecision.frame || waiters.length > 0 || transition?.phase.kind === 'layout' && !transcriptHistory.pending || !!metrics?.waiting.length);
 function schedule() {
   if (pending || !wanted()) return;
   pending = document.hidden ? { kind: 'timer', id: setTimeout(tick, 50) } : { kind: 'frame', id: requestAnimationFrame(tick) };
@@ -442,6 +442,13 @@ function tick() {
   const { events, scrolled } = reduceEvents();
   catchUpReader();
   const now = performance.now(), geo = geometry();
+  if (runClock !== Math.floor(Date.now() / 1000)) {
+    runClock = Math.floor(Date.now() / 1000);
+    for (const marks of liveMarks.values()) {
+      const entries = patchRunLine(marks, marks.steps.map(step => step.current));
+      entries.forEach(({ value, info }, index) => stepTime(marks.steps[index], value, info));
+    }
+  }
   const grown = [...measuredHolds];
   measuredHolds.clear();
   for (const [target, height] of grown) {
@@ -803,6 +810,13 @@ function stepDetail(marks: StepMarks, step: Step & { args: Record<string, unknow
   if (!disclosure) { marks.child.classList.remove('open'); folds.delete(step.key); line?.removeAttribute('role'); line?.removeAttribute('aria-expanded'); }
   else { line?.setAttribute('role', 'button'); line?.setAttribute('aria-expanded', String(folds.get(step.key) === true)); }
 }
+function stepTime(marks: StepMarks, step: Step, info: ReturnType<typeof stepInfo>) {
+  const block = step.kind === 'block' ? step.block : undefined, error = stepFailed(step) || info.failed;
+  const result = info.aborted ? 'aborted' : '', ended = block?.ended ?? (info.aborted && step.kind === 'block' ? step.item.ended : !step.item.final ? Date.now() : undefined);
+  setText(marks.result, result); marks.result.className = error ? 'err' : '';
+  setText(marks.time, step.kind !== 'block' ? timestamp(step.item.at) : (result ? ' ' : '') + duration((block?.type === 'tool' ? block.durationMs : undefined) ?? (block?.started !== undefined && ended !== undefined ? ended - block.started : undefined)));
+  marks.time.className = step.kind === 'block' && !info.card && error ? 'time err' : 'time';
+}
 function patchStep(marks: StepMarks, step: Step & { args: Record<string, unknown>; file: string | undefined }, info: ReturnType<typeof stepInfo>, links: string) {
   const block = step.kind === 'block' ? step.block : undefined, error = stepFailed(step) || info.failed;
   const previous = marks.current, cwd = block?.type === 'tool' && block.name === 'bash' ? displayPath(state.cwd) : '';
@@ -827,10 +841,7 @@ function patchStep(marks: StepMarks, step: Step & { args: Record<string, unknown
     marks.tail = counts ? [node('span', '+' + counts[1], 'added'), node('span', ' '), node('span', '−' + counts[2], 'err')] : [node('span', info.detail, info.card ? 'agent-preview' : step.kind === 'job' && error ? 'delta err' : 'delta')];
     marks.sum.append(...marks.tail);
   }
-  const result = info.aborted ? 'aborted' : '', ended = block?.ended ?? (info.aborted && step.kind === 'block' ? step.item.ended : !step.item.final ? Date.now() : undefined);
-  setText(marks.result, result); marks.result.className = error ? 'err' : '';
-  setText(marks.time, step.kind !== 'block' ? timestamp(step.item.at) : (result ? ' ' : '') + duration((block?.type === 'tool' ? block.durationMs : undefined) ?? (block?.started !== undefined && ended !== undefined ? ended - block.started : undefined)));
-  marks.time.className = step.kind === 'block' && !info.card && error ? 'time err' : 'time';
+  stepTime(marks, step, info);
   if (detailsChanged) {
     const thinking = block?.type === 'thinking' && !block.redacted;
     if (!thinking) stepDetail(marks, step, info);
@@ -843,18 +854,19 @@ function patchStep(marks: StepMarks, step: Step & { args: Record<string, unknown
   }
   if (folds.get(step.key)) marks.show?.();
 }
-function patchRun(marks: RunMarks, input: Step[], links = JSON.stringify(state.agents)) {
-  marks.links = links; marks.cwd = displayPath(state.cwd);
+function patchRunLine(marks: RunMarks, input: Step[], links = JSON.stringify(state.agents)) {
   const entries = input.map(step => { const block = step.kind === 'block' ? step.block : undefined; const value = { ...step, args: block?.type === 'tool' ? toolArgs(block) : {}, file: block ? pathArg(block) : undefined }; return { step, value, info: stepInfo(value) }; });
   const failed = new Set(entries.filter(({ step, info }) => stepFailed(step) || info.failed).map(({ info }) => info.kind));
+  marks.names.className = 'names worked' + (failed.size ? ' err' : '');
   const aborted = input.some(step => step.kind === 'block' && step.item.stop === 'aborted' && step.item.blocks.slice(step.index + 1).every(block => block.type !== 'text' || !block.text));
-  const active = input.some(isLive), counts = new Map<string, { count: number; info: ReturnType<typeof stepInfo> }>();
+  const owner = trailingOwner();
+  const active = input.some(isLive) || state.working && state.view.type !== 'job' && state.compaction !== 'running' && state.since !== undefined && !!owner && rowKey({ kind: 'run', source: owner }) === marks.key && !aborted;
+  const counts = new Map<string, { count: number; info: ReturnType<typeof stepInfo> }>();
   for (const { info } of entries) { const old = counts.get(info.kind); counts.set(info.kind, { count: (old?.count ?? 0) + 1, info }); }
-  const namesKey = (aborted ? 'aborted' : [...counts].map(([kind, { count }]) => kind + ':' + count + (failed.has(kind) ? '!' : '')).join(',')) + ':' + links;
+  const namesKey = [...counts].map(([kind, { count }]) => kind + ':' + count + (failed.has(kind) ? '!' : '')).join(',') + ':' + links;
   if (marks.namesKey !== namesKey) {
     marks.namesKey = namesKey; const parts: (Node | string)[] = [];
-    if (aborted) parts.push('aborted, you pressed Escape');
-    else for (const [kind, { count, info }] of counts) {
+    for (const [kind, { count, info }] of counts) {
       if (parts.length) parts.push(', ');
       const name = node('span', undefined, failed.has(kind) ? 'err' : '');
       if (info.card) { const ref = info.card.direction === 'in' ? info.card.from : info.card.to; name.append((info.card.direction === 'in' ? 'from' : 'to') + ' ', who(ref)); }
@@ -863,11 +875,31 @@ function patchRun(marks: RunMarks, input: Step[], links = JSON.stringify(state.a
       parts.push(name);
     }
     marks.names.replaceChildren(...parts);
+    marks.summary.parentElement?.setAttribute('title', [...counts.values()].map(({ count, info }) => (info.card ? (info.card.direction === 'in' ? 'from @' + info.card.from.name : 'to @' + info.card.to.name) : info.summary ?? info.kind) + (count > 1 ? ' x' + count : '')).join(', '));
   }
-  const timed = input.filter((step): step is Step & Extract<StepInput, { kind: 'block' }> => step.kind === 'block');
-  const first = timed[0], last = timed.at(-1), moment = input.at(-1), started = first ? first.block.started ?? first.item.at : undefined;
-  const ended = active ? Date.now() : aborted ? last?.item.ended : last?.block.ended;
-  setText(marks.time, first ? duration(started === undefined || ended === undefined ? undefined : ended - started) : moment ? timestamp(moment.item.at) : '');
+  const intervals = input.flatMap(step => {
+    if (step.kind !== 'block') return [];
+    const block = step.block;
+    const start = block.started;
+    if (start === undefined) return [];
+    const end = block.ended ?? (block.type === 'tool' && block.durationMs !== undefined ? start + block.durationMs : step.item.stop === 'aborted' ? step.item.ended : isLive(step) ? Date.now() : undefined);
+    return end === undefined ? [] : [[start, Math.max(start, end)]];
+  }).sort((a, b) => a[0] - b[0]);
+  if (input.some(step => step.kind === 'block')) {
+    let total = 0, end = -Infinity;
+    for (const [start, finish] of intervals) { total += Math.max(0, finish - Math.max(start, end)); end = Math.max(end, finish); }
+    const seconds = Math.max(1, Math.ceil(total / 1000));
+    const text = seconds < 60 ? seconds + 's' : seconds < 3600 ? Math.floor(seconds / 60) + 'm ' + seconds % 60 + 's' : Math.floor(seconds / 3600) + 'h ' + Math.floor(seconds % 3600 / 60) + 'm';
+    marks.names.replaceChildren(...(active ? [] : ['Worked for ']), node('span', text, 'dur'));
+    if (aborted) marks.names.append(' ', node('span', '· aborted', 'ab'));
+    const line = marks.summary.parentElement;
+    line?.setAttribute('aria-label', 'Worked for ' + text + (aborted ? ' · aborted' : '') + ', ' + line.getAttribute('title'));
+  }
+  return entries;
+}
+function patchRun(marks: RunMarks, input: Step[], links = JSON.stringify(state.agents)) {
+  marks.links = links; marks.cwd = displayPath(state.cwd);
+  const entries = patchRunLine(marks, input, links);
   const known = new Map(marks.steps.map(record => [record.key, record]));
   marks.steps = entries.map(({ step, value, info }) => {
     let record = known.get(step.key); known.delete(step.key);
@@ -891,9 +923,9 @@ function trailingOwner() {
 }
 function run(input: Step[]) {
   const first = input[0];
-  const { row: view, line, sum: summary } = bareRun(), names = node('span', undefined, 'names'), time = node('span', undefined, 'time'), children = node('div', undefined, 'steps');
-  view.classList.remove('working'); summary.insertBefore(names, summary.firstChild); line.append(time);
-  const marks: RunMarks = { key: rowKey({ kind: 'run', source: first.kind === 'block' ? { kind: 'block', seq: first.item.seq, index: first.index } : { kind: 'item', seq: first.item.seq } }), links: '', cwd: '', summary, names, namesKey: '', time, children, steps: [] };
+  const { row: view, line, sum: summary } = bareRun(), names = node('span', undefined, 'names'), children = node('div', undefined, 'steps');
+  view.classList.remove('working'); summary.insertBefore(names, summary.firstChild);
+  const marks: RunMarks = { key: rowKey({ kind: 'run', source: first.kind === 'block' ? { kind: 'block', seq: first.item.seq, index: first.index } : { kind: 'item', seq: first.item.seq } }), links: '', cwd: '', summary, names, namesKey: '', children, steps: [] };
   fold(view, marks.key, line, children, undefined, 'open', reconcileWorking);
   runMarks.set(view, marks);
   patchRun(marks, input); return view;
@@ -912,6 +944,10 @@ function lastRun() { const source = trailingOwner(); return source ? openers.get
 function reconcileWorking() {
   const since = state.working && state.view.type !== 'job' && state.compaction !== 'running' ? state.since : undefined;
   const tail = lastRun();
+  for (const view of new Set([tail, working?.primary.parentElement?.parentElement?.parentElement])) {
+    const marks = view && runMarks.get(view);
+    if (marks) patchRunLine(marks, marks.steps.map(step => step.current));
+  }
   element('tail-slot').hidden = state.view.type === 'job' || !!trailingOwner();
   if (since === undefined) { clearWorking(); return; }
   if (working?.view !== state.view.id || working.since !== since) {
@@ -922,10 +958,10 @@ function reconcileWorking() {
     turn.place = { kind: 'run' };
     for (const marks of liveMarks.values()) {
       const live = marks.steps.filter(step => step.live), open = folds.get(marks.key) === true;
-      if (!open) spots.push({ key: 'sum:' + marks.key, parent: marks.summary, before: null });
+      spots.push({ key: 'sum:' + marks.key, parent: marks.summary, before: marks.names });
       if (open) for (const step of live) spots.push({ key: 'step:' + step.key, parent: step.sum, before: step.after.nextSibling });
     }
-    if (!spots.length) { const marks = runMarks.get(tail); if (marks) spots.push({ key: 'sum:' + marks.key, parent: marks.summary, before: null }); }
+    if (!spots.length) { const marks = runMarks.get(tail); if (marks) spots.push({ key: 'sum:' + marks.key, parent: marks.summary, before: marks.names }); }
   } else {
     if (turn.place.kind !== 'bare') turn.place = bareRun();
     const { row, sum } = turn.place, slot = element('tail-slot');
@@ -2424,7 +2460,14 @@ function resized(entries: ResizeObserverEntry[]) {
 }
 layoutObserver.observe(topics.measure);
 for (const id of ['scroll', 'items', 'jobv', 'dock']) layoutObserver.observe(element(id));
-setInterval(() => { job.tick(); if (state.view.type === 'job') return; for (const item of state.bash) pendingBash.get(item.id)?.update(item, undefined); }, 1000);
+let runClock = Math.floor(Date.now() / 1000);
+function clock() {
+  job.tick();
+  if (state.view.type !== 'job') for (const item of state.bash) pendingBash.get(item.id)?.update(item, undefined);
+  if (liveMarks.size) schedule();
+  setTimeout(clock, 1000 - Date.now() % 1000);
+}
+setTimeout(clock, 1000 - Date.now() % 1000);
 window.addEventListener('resize', positionPicker);
 let fontGeneration = 0;
 let fontKey = '';
