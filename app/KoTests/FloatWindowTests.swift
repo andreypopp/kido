@@ -103,6 +103,30 @@ import XCTest
         terminal.visualBeginDrag(id, try mouse(.leftMouseUp, end, in: try XCTUnwrap(view.window)))
     }
 
+    func testFloatAndDockKeepKeyboardFocusInThePane() async throws {
+        let (owner, _) = try await shownAsync(#"[{"name":"w","tree":\#(split)}]"#)
+        let session = try XCTUnwrap(owner.testSession)
+        let id = PaneID(number: 1)
+        let pane = try XCTUnwrap(session.pane(id))
+        let policy = NSApp.activationPolicy()
+        NSApp.setActivationPolicy(.regular)
+        defer { NSApp.setActivationPolicy(policy) }
+        NSApp.activate(ignoringOtherApps: true)
+        owner.window.makeKeyAndOrderFront(nil)
+        owner.window.makeFirstResponder(pane.inputResponder)
+        await waitAsync("the tiled pane owns the keyboard") {
+            NSApp.isActive && owner.window.isKeyWindow && owner.window.firstResponder === pane.inputResponder
+        }
+        owner.paneCommand(.float, id)
+        await waitAsync("Float Pane makes its window key and its surface first responder") {
+            pane.window is FloatWindow && pane.window?.isKeyWindow == true && pane.window?.firstResponder === pane.inputResponder && !session.editing()
+        }
+        owner.paneCommand(.float, id)
+        await waitAsync("Dock Pane makes the main window key and its surface first responder") {
+            pane.window === owner.window && owner.window.isKeyWindow && owner.window.firstResponder === pane.inputResponder && !session.editing()
+        }
+    }
+
     func testFloatAgainRestoresTheLastFrameAndCellSize() throws {
         let (owner, client) = try shown(twoFloats)
         let session = try XCTUnwrap(owner.testSession)
@@ -1088,6 +1112,8 @@ import XCTest
         await waitAsync("the receiving pane has focus and its window is key") {
             receiver.testModel?.selection.pane == id && receiver.window.isKeyWindow && (try? client.model().layout.layout.window(WindowID(number: 2))?.focus) == id
         }
+        let dockedPane = try XCTUnwrap(receiver.testSession?.pane(id))
+        XCTAssertTrue(receiver.window.firstResponder === dockedPane.inputResponder)
         XCTAssertEqual(try client.model().layout.layout.window(WindowID(number: 1))?.focus, PaneID(number: 1))
         await waitAsync("the source still shows its own window") { session.windows[WindowID(number: 1)]?.isHidden == false }
         XCTAssertFalse(host.isVisible)

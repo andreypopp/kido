@@ -201,6 +201,10 @@ final class WindowView: NSView {
         }
         needsReconcile = needsReconcile || (shown.map { !sameTopology($0.layout.root, layout.root) || !sameTopology($0.visible.root, visible.root) } ?? true)
         let windowResized = shown.map { $0.layout.root.geometry.width != layout.root.geometry.width || $0.layout.root.geometry.height != layout.root.geometry.height } ?? false
+        let focusedPane = PaneView.owner(inputWindow?.firstResponder)
+        let focusedWindow = focusedPane?.window
+        let wasKey = focusedWindow?.isKeyWindow == true
+        let paneFocused = focusedPane.map { focused in displayedPanes.contains { $0 === focused } } == true
         for pane in shown?.layout.root.panes ?? [] where pane.layer != .tiled {
             guard layout.root.panes.contains(where: { $0.id == pane.id && $0.layer == .tiled }),
                   let host = retainedPaneViews[pane.id]?.host.window else { continue }
@@ -226,8 +230,6 @@ final class WindowView: NSView {
             }
         }
         releaseMovedFloats(windowResized: windowResized)
-        // Hiding the focused pane gives the focus to the next key view, so read it before the relayout.
-        let paneFocused = PaneView.owner(inputWindow?.firstResponder).map { focused in displayedPanes.contains { $0 === focused } } == true
         let previous = active
         if let pane = layout.root.panes.first(where: { $0.active }), pane.layer != .tiled { active = pane.id }
         else { active = visible.root.panes.first { $0.active }?.id ?? active }
@@ -235,8 +237,11 @@ final class WindowView: NSView {
         let known = displayedPanes.contains { $0.pane == active }
         if changed { relayout() }
         raiseActiveFloat()
-        if paneFocused && active != previous { focusActive(force: true) }
-        else if !known { focusActive(force: false) }
+        let reparented = focusedPane === activePane && focusedWindow !== activePane?.window
+        if paneFocused && (active != previous || reparented) {
+            if reparented && wasKey { activePane?.window?.makeKeyAndOrderFront(nil) }
+            focusActive(force: true)
+        } else if !known { focusActive(force: false) }
         refreshFloatIdentity()
     }
 
