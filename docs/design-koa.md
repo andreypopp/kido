@@ -1031,9 +1031,11 @@ The Markdown renderer inserts private markers before parsing and
 replaces them in text nodes afterward. Producer boundaries must not
 fall inside Markdown syntax. User-provided marker characters cannot
 forge controls. Question controls edit the composer; they do not send.
-`koa/page/answers.ts` owns quote/answer text. An answer follows its
-explicit quote lines without a blank line; user rendering therefore
-does not apply CommonMark lazy quote continuation. Assistant Markdown
+`koa/page/answers.ts` owns quote/answer text. A blank line separates
+an answer, or the draft after a quoted selection, from its quote, so
+every Markdown reader, the composer, the model and pi-infer included,
+ends the quote there. User rendering still does not apply CommonMark
+lazy quote continuation, for quotes that the user types. Assistant Markdown
 keeps its normal rule. koa supplies no annotation-producing model.
 
 Topics belong only to the root. `koa/text.ts` scans markers and

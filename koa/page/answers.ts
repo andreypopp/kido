@@ -4,7 +4,7 @@ export function quote(source: string): string {
   return source.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').split('\n').map(line => plain(line).replace(/[ \t]+/g, ' ').trim()).filter(Boolean).join('\n');
 }
 
-export const head = (quote: string): string => quote.split('\n').map(line => '> ' + line).join('\n') + '\n';
+export const head = (quote: string): string => quote.split('\n').map(line => '> ' + line).join('\n') + '\n\n';
 
 function position(text: string, prefix: string): number {
   for (let at = text.indexOf(prefix); at >= 0; at = text.indexOf(prefix, at + 1)) {

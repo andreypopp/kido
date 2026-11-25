@@ -108,10 +108,10 @@ test('question answers replace quotes and preserve selected options', async () =
   let draft = answer('', question, 'one', false);
   draft = answer(draft, 'Push now?', 'No', false);
   draft = answer(draft, question, 'two', false);
-  assert.equal(draft, '> 😀 Pick one or two?\ntwo\n\n> Push now?\nNo');
+  assert.equal(draft, '> 😀 Pick one or two?\n\ntwo\n\n> Push now?\n\nNo');
   assert.equal(current(draft, question), 'two');
   assert.equal(answer(draft, question, '', false), draft);
-  assert.equal(answer(draft, question, '', true), '> 😀 Pick one or two?\n\n\n> Push now?\nNo');
+  assert.equal(answer(draft, question, '', true), '> 😀 Pick one or two?\n\n\n\n> Push now?\n\nNo');
   const options = ['one', 'two'].map(value => {
     const node = app.context.document.createElement('span');
     Object.assign(node.dataset, { quote: question, answer: value }); return node;
@@ -426,12 +426,12 @@ test('quoteSelection appends transcript quotes, preserves composer selections an
   evaluate('window.__koComposer=value=>{window.composerState=value};reportComposer()');
   assert.equal(evaluate('window.composerState.type'), 'quote');
   evaluate('window.__koQuoteSelection()');
-  assert.equal(app.text(), '> First line\n> Second\n');
+  assert.equal(app.text(), '> First line\n> Second\n\n');
   assert.equal(evaluate('window.cleared'), true);
   assert.equal(app.context.document.activeElement, app.prompt());
   for (const ending of ['Answer', 'Answer\n', 'Answer\n\n']) {
     evaluate(`editor.setText(${JSON.stringify(ending)});quoteSelection()`);
-    assert.equal(app.text(), 'Answer\n\n> First line\n> Second\n');
+    assert.equal(app.text(), 'Answer\n\n> First line\n> Second\n\n');
     assert.equal(app.prompt()?.selectionStart, app.text().length);
   }
   evaluate("window.getSelection=()=>null;document.activeElement=element('items');quoteSelection();reportComposer()");
@@ -445,9 +445,9 @@ test('quoteSelection appends transcript quotes, preserves composer selections an
   assert.equal(app.text(), before);
   assert.notEqual(app.context.document.activeElement, app.prompt());
   evaluate("state={...state,view:{type:'subagent',id:'child',path:[]}};editor.setText('Child draft');window.getSelection=()=>({anchorNode:element('items'),focusNode:element('items'),isCollapsed:false,toString:()=> 'Child quote',removeAllRanges(){}});quoteSelection()");
-  assert.equal(app.text(), 'Child draft\n\n> Child quote\n');
+  assert.equal(app.text(), 'Child draft\n\n> Child quote\n\n');
   evaluate("leaveView('root');state={...state,view:{type:'root',id:'root',path:[]}};editor.setText('Root draft');leaveView('child');state={...state,view:{type:'subagent',id:'child',path:[]}}");
-  assert.equal(app.text(), 'Child draft\n\n> Child quote\n');
+  assert.equal(app.text(), 'Child draft\n\n> Child quote\n\n');
   evaluate("leaveView('root')");
   assert.equal(app.text(), 'Root draft');
 });
@@ -479,7 +479,7 @@ test('a quote edit resets the Escape sequence like typing', async () => {
   escape();
   evaluate('quoteSelection()');
   escape();
-  assert.equal(app.text(), 'Keep the draft\n\n> Keep this quote\n');
+  assert.equal(app.text(), 'Keep the draft\n\n> Keep this quote\n\n');
 });
 
 test('browser quote shortcut prevents the default on each modifier platform', async () => {
