@@ -2867,7 +2867,7 @@ test('parallel completion and abort retain the run row until reset', async () =>
   show([tool('a','running'),tool('b','running')]);
   row = ev("views.get(0).slots.get('0:0').view.firstElementChild");
   assert.equal(ev("views.get(0).slots.get('0:0').view.firstElementChild"), row);
-  assert.equal(ev(dotsCount), 3);
+  assert.equal(ev(dotsCount), 1);
   show([tool('a','done'),tool('b','running')]);
   assert.equal(ev("views.get(0).slots.get('0:0').view.firstElementChild"), row);
   show([tool('a','done'),tool('b','running')], 'aborted');
@@ -2882,7 +2882,7 @@ test('parallel completion and abort retain the run row until reset', async () =>
   assert.equal(ev(dotsCount), 0);
 });
 
-test('a run is inserted above the retained ending slot', async () => {
+test('a trailing run replaces the bare ending slot', async () => {
   const fixture = await revealPage(200), ev = fixture.evaluate;
   ev("state={...state,working:true,since:1699999990000}; reconcileWorking()");
   const row = ev("element('tail-slot').lastChild"), line = ev("element('tail-slot').lastChild.firstElementChild");
@@ -2891,7 +2891,7 @@ test('a run is inserted above the retained ending slot', async () => {
   ev("put({seq:1,revision:0,at:0,kind:'assistant',final:false,stop:'',error:'',blocks:[{type:'text',text:'Reading'},{type:'thinking',text:'Checking',started:1}]})");
   assert.notEqual(ev("views.get(1).slots.get('1:1').view.firstElementChild"), row, 'a run has its own row');
   assert.notEqual(ev("views.get(1).slots.get('1:1').view.firstElementChild.firstElementChild"), line, 'a run has its own line');
-  assert.equal(ev("element('tail-slot').hidden"), false);
+  assert.equal(ev("element('tail-slot').hidden"), true);
 });
 
 test('mixed idle steps join without unread growth', async () => {
@@ -3738,30 +3738,36 @@ test('a command opens finished output at the tail and preserves an inner reader 
   assert.equal(page.evaluate("views.get(1).view.querySelector('.cmdrun').classList.contains('open')"), true);
 });
 
-test('the ending slot remains under a finished run and a filtered run with hidden prose', async () => {
+test('the ending slot is occupied by a finished run and a filtered run with hidden prose', async () => {
   const page = await flowPage();
   page.evaluate("state={...state,sessionId:'ending',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'two'}]}");
   page.open([{seq:0,at:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{type:'thinking',text:'Checking',topic:'one',started:1,ended:2}]}]);
-  assert.equal(page.evaluate("element('tail-slot').hidden"), false, 'a finished run retains the ending row');
+  assert.equal(page.evaluate("element('tail-slot').hidden"), true, 'a finished run occupies the ending row');
   page.evaluate("put({seq:1,at:1,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{type:'text',text:'Other topic',topic:'two'}]});topics.debug.scopeData(topics.scope()).filter='one';refreshTopicItems();resetting=true;renderDirty()");
-  assert.equal(page.evaluate("element('tail-slot').hidden"), false, 'hidden prose cannot remove the ending row');
+  assert.equal(page.evaluate("element('tail-slot').hidden"), true, 'hidden prose leaves the run occupying the ending row');
   page.evaluate("state={...state,working:true,since:100};reconcileWorking()");
   assert.equal(page.evaluate("working.place.kind"),'run','hidden prose leaves the working dots on the last visible run');
   page.evaluate("state={...state,working:false};reconcileWorking()");
-  assert.equal(page.evaluate("element('tail-slot').hidden"),false);
+  assert.equal(page.evaluate("element('tail-slot').hidden"),true);
+  page.evaluate("topics.debug.scopeData(topics.scope()).filter=undefined;refreshTopicItems();resetting=true;renderDirty()");
+  assert.equal(page.evaluate("element('tail-slot').hidden"), false);
+  page.evaluate("topics.debug.scopeData(topics.scope()).filter='one';refreshTopicItems();resetting=true;renderDirty()");
+  assert.equal(page.evaluate("element('tail-slot').hidden"), true);
 });
 
-test('the ending slot is retained when dots move to a run and when a turn ends', async () => {
+test('the ending slot is occupied when dots move to a run and when a turn ends', async () => {
   const fixture = await flowPage(), { evaluate } = fixture;
   fixture.open([{seq:0,at:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{type:'text',text:'Reply'}]}]);
   evaluate("state={...state,working:true,since:1700000000000};reconcileWorking()");
   const slot = evaluate("element('tail-slot')");
+  const before = evaluate("element('scroll').scrollHeight");
   evaluate("put({seq:1,at:1,kind:'assistant',final:false,stop:'',error:'',blocks:[{type:'thinking',text:'Checking',started:1}]})");
-  assert.equal(evaluate("working.place.kind==='run'&&!element('tail-slot').hidden"), true);
+  assert.equal(evaluate("element('scroll').scrollHeight"), before, 'dots becoming a folded run cannot grow the transcript');
+  assert.equal(evaluate("working.place.kind==='run'&&element('tail-slot').hidden"), true);
   const height = evaluate("element('transcript').offsetHeight");
   evaluate("state={...state,working:false};reconcileWorking()");
   assert.equal(evaluate("element('tail-slot')"), slot);
-  assert.equal(evaluate("element('tail-slot').hidden"), false);
+  assert.equal(evaluate("element('tail-slot').hidden"), true);
   assert.equal(evaluate("element('transcript').offsetHeight"), height);
 });
 
@@ -4560,11 +4566,11 @@ test('working dots: one indicator in every frame, a bare row or a running mark, 
   show([{ type: 'text', text: 'hello' }, tool('a', 'done'), tool('b', 'done'), tool('c', 'running')]);
   assert.deepEqual([bare(), marks()], [false, 1], 'one call finishes and the next starts in one patch');
   show([{ type: 'text', text: 'hello' }, tool('a', 'running'), tool('b', 'running')]);
-  assert.deepEqual([bare(), marks()], [false, 3], 'folded: one after the summary and one on each running step');
+  assert.deepEqual([bare(), marks()], [false, 1], 'folded: only the summary has dots');
   toggle();
   assert.deepEqual([bare(), marks(), where().startsWith('sum|step')], [false, 2, true], 'open: only the running steps');
   toggle();
-  assert.deepEqual([bare(), marks()], [false, 3]);
+  assert.deepEqual([bare(), marks()], [false, 1]);
   show([{ type: 'text', text: 'hello' }, tool('a', 'running')], false, 'aborted');
   assert.deepEqual([bare(), marks(), where().startsWith('sum|run')], [false, 1, true], 'an aborted call is no running call: the dots stay on the run');
   ev("apply({...state,type:'state',working:false})");
@@ -4680,6 +4686,54 @@ test('the working dots are never detached while a turn runs, and move once when 
   assert.equal(page.evaluate("liveMarks.size"), 0);
   assert.equal(page.evaluate("!!element('tail-slot').lastChild?.className.includes('working')"), false);
   assert.equal(page.evaluate("(()=>{const run=views.get(1).slots.get('1:0').view.firstElementChild;return runMarks.get(run).summary.children.includes(working.primary)})()"), true);
+});
+
+test('ending run merging and its last visible step disappearing preserve the ending line', async () => {
+  const page = await flowPage();
+  page.evaluate("state={...state,working:true,since:100}");
+  const reply = (seq: number, blocks: object[], revision = 0) => page.evaluate(`put({seq:${seq},revision:${revision},at:1,kind:'assistant',final:false,stop:'',error:'',blocks:${JSON.stringify(blocks)}})`);
+  page.open([]);
+  const height = () => page.evaluate("element('scroll').scrollHeight");
+  const before = height();
+  reply(0, [bash('a', 'one', running)]);
+  assert.equal(height(), before);
+  const run = page.evaluate('lastRun()');
+  reply(1, [bash('b', 'two', running)]);
+  assert.equal(page.evaluate('lastRun()'), run, 'adjacent tools retain the earlier run owner');
+  assert.equal(height(), before, 'merging another tool adds no row');
+  reply(1, [], 1);
+  assert.equal(height(), before);
+  reply(0, [], 1);
+  assert.equal(page.evaluate("element('tail-slot').hidden"), false, 'the last step disappearing restores the empty ending line');
+  assert.equal(height(), before);
+  assert.equal(page.evaluate("element('tail-slot').contains(working.primary)"), true);
+  reply(2, [bash('c', 'three', running)]);
+  assert.equal(height(), before);
+  page.evaluate("put({seq:3,revision:0,at:3,kind:'user',final:true,text:'Continue',images:[],attachments:[]})");
+  assert.equal(page.evaluate("element('tail-slot').hidden"), false, 'a following user message restores the ending line');
+  assert.ok(Number(height()) > Number(before), 'the earlier run stays above the new ending line');
+});
+
+test('ending folded parallel calls keep one summary indicator', async () => {
+  const page = await flowPage();
+  page.evaluate("state={...state,working:true,since:100}");
+  page.open([{seq:0,at:0,kind:'user',revision:0,final:true,text:'Go',images:[],attachments:[]}]);
+  const height = () => page.evaluate("element('scroll').scrollHeight");
+  const before = height();
+  const put = (blocks: object[], revision: number, stop = '') => page.evaluate(`put({seq:1,revision:${revision},at:1,kind:'assistant',final:${!!stop},stop:${JSON.stringify(stop)},error:'',blocks:${JSON.stringify(blocks)}})`);
+  put([bash('a', 'one', running), bash('b', 'two', running)], 0);
+  assert.equal(page.evaluate(dotsCount), 1, 'a folded parallel run has only its summary dots');
+  assert.equal(height(), before, 'parallel tools replace the bare ending line');
+  put([bash('a', 'one', finished), bash('b', 'two', running), bash('c', 'three', running)], 1);
+  assert.equal(height(), before, 'more tools change only the summary');
+  assert.equal(page.evaluate(dotsCount), 1);
+  put([bash('a', 'one', finished), bash('b', 'two', finished), bash('c', 'three', finished)], 2, 'aborted');
+  page.evaluate("state={...state,working:false};reconcileWorking()");
+  assert.equal(height(), before, 'abort keeps the run in the ending line');
+  assert.equal(page.evaluate("element('tail-slot').hidden"), true);
+  put([bash('a', 'one', finished), {type:'text',text:'Reply'}], 3, 'stop');
+  assert.equal(page.evaluate("element('tail-slot').hidden"), false, 'prose restores the empty ending line');
+  assert.ok(Number(height()) >= Number(before), 'prose adds space');
 });
 
 test('with parallel calls the ended call loses its dots and the other keeps its own', async () => {
@@ -4962,6 +5016,23 @@ test('a scrollbar jump mounts the reader and preserves its offset', async () => 
   page.settle(4);
   assert.equal(page.offset(anchor), before);
   assert.equal(page.padding() > 0, true);
+});
+
+test('a finished ending run keeps its slot hidden while unmounted', async () => {
+  const page = await windowPage();
+  page.open([...page.rows(0, 300), {seq:300,revision:0,at:300,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{type:'thinking',text:'Done',started:1,ended:2}]}]);
+  page.evaluate("for(const seq of order)extents.set(seq,{kind:'estimated',px:seq===300?33:100});table=undefined;frame()");
+  page.settle(8);
+  const height = page.evaluate("element('scroll').scrollHeight");
+  assert.equal(page.evaluate("element('tail-slot').hidden"), true);
+  page.reader(0); page.settle(8);
+  assert.equal(page.seqs().includes(300), false, 'the finished tail unmounts');
+  assert.equal(page.evaluate("element('tail-slot').hidden"), true, 'slot visibility does not depend on mounting');
+  assert.equal(page.evaluate("element('scroll').scrollHeight"), height);
+  page.reader(Number(height)); page.settle(8);
+  assert.equal(page.seqs().includes(300), true);
+  assert.equal(page.evaluate("element('tail-slot').hidden"), true);
+  assert.equal(page.evaluate("element('scroll').scrollHeight"), height);
 });
 
 test('a reader window keeps the live tail connected', async () => {

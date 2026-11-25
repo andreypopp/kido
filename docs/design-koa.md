@@ -538,13 +538,19 @@ The working mark belongs to the turn, not a Markdown block. It moves
 between its own row and a running step without being rebuilt for each
 token. Run rows are patched in place. Keeping the node attached lets
 WebKit's compositor animate it while the main thread is busy. The
-transcript view always ends in one ending row (`#tail-slot`), under
-a message and under a run alike; it is never hidden or removed. Only
-the dots move: they stand on the ending row while the turn works and
-the transcript ends in a message, on the run's line when it ends in a
-visible run (also when a filter hides the prose after it), and go at
-the turn's end or an abort. A run that arrives is a new row above the
-ending row. So a turn's start and end never change the transcript's
+transcript view always ends in one ending row. Under a message it is
+the empty slot `#tail-slot`; when the view's last visible element is a
+run, working or finished (also when a filter hides the prose after
+it), the run is the ending row and the slot is hidden. A folded run's
+line has the slot's height and its ending margin is the slot's
+margin, so a run that replaces the slot changes no height; an open run
+only adds its steps. Prose or a message after the run goes below it,
+and the slot comes back below them: growth only. The dots stand on the
+slot while the turn works and the transcript ends in a message, on the
+run's summary when it ends in a run, and go at the turn's end or an
+abort. A folded run keeps one line with parallel tools: its dots stand
+only on the summary; an open run puts them on each live step. So a
+turn's start, its tools and its end never change the transcript's
 height, in every view; a job view has no ending row. Reduced motion makes the dots static and disables grow and
 scroll travel; it does not disable chunking or fence folds.
 

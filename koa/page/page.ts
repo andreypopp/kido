@@ -911,8 +911,8 @@ function clearWorking() {
 function lastRun() { const source = trailingOwner(); return source ? openers.get(rowKey({ kind: 'run', source }))?.view : undefined; }
 function reconcileWorking() {
   const since = state.working && state.view.type !== 'job' && state.compaction !== 'running' ? state.since : undefined;
-  const tail = since === undefined ? undefined : lastRun();
-  element('tail-slot').hidden = state.view.type === 'job';
+  const tail = lastRun();
+  element('tail-slot').hidden = state.view.type === 'job' || !!trailingOwner();
   if (since === undefined) { clearWorking(); return; }
   if (working?.view !== state.view.id || working.since !== since) {
     clearWorking(); working = { view: state.view.id, since, primary: dots(), place: bareRun(), extra: new Map() };
@@ -923,7 +923,7 @@ function reconcileWorking() {
     for (const marks of liveMarks.values()) {
       const live = marks.steps.filter(step => step.live), open = folds.get(marks.key) === true;
       if (!open) spots.push({ key: 'sum:' + marks.key, parent: marks.summary, before: null });
-      if (open || live.length > 1) for (const step of live) spots.push({ key: 'step:' + step.key, parent: step.sum, before: step.after.nextSibling });
+      if (open) for (const step of live) spots.push({ key: 'step:' + step.key, parent: step.sum, before: step.after.nextSibling });
     }
     if (!spots.length) { const marks = runMarks.get(tail); if (marks) spots.push({ key: 'sum:' + marks.key, parent: marks.summary, before: null }); }
   } else {

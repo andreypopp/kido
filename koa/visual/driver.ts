@@ -219,7 +219,7 @@ async function takeKoaSnapshot(name: string, appearance: string, scenario: Scena
     else await context.pageSnapshot(capture, "testKoaWebviewMockupStates()");
   } finally { if (gap) await webviewJS(web,"document.querySelector('#unread-gap-crop').remove()"); }
 }
-const followingChecks = `window.koaFollowCheck=(${followMonitor.toString()})();window.koaFollowSample=()=>{const scroll=document.querySelector('#scroll'),slot=document.querySelector('#tail-slot'),dock=document.querySelector('#dock');if(!scroll||!slot||!dock)return;const bounds=dock.getBoundingClientRect(),rows=[...document.querySelectorAll('#items>[data-seq]')].flatMap(root=>[...root.querySelectorAll('.msg.prose,.run,.cmdrun,.nrow,.user')].map((row,index)=>{const rect=row.getBoundingClientRect();return {key:root.dataset.seq+':'+index,top:rect.top,bottom:rect.bottom}}));const reveals=document.querySelectorAll('.reveal').length,exemption=window.koaFollowExemption??(window.koaPriorReveals>reveals?'completion':undefined);window.koaFollowExemption=undefined;window.koaPriorReveals=reveals;koaFollowCheck({scope:document.body.dataset.sessionId+':'+document.querySelector('#topics .selected')?.textContent+':'+document.querySelector('#bar')?.textContent,viewport:scroll.clientHeight,width:scroll.clientWidth,dock:bounds.top,following:window.koaFollowEnabled===true,covered:!!document.querySelector('#presentation')||slot.hidden,max:scroll.scrollHeight-scroll.clientHeight,rows,bottomSpace:bounds.top-slot.getBoundingClientRect().bottom,exemption})};document.addEventListener('click',event=>{if(event.target.closest('.line,button.more'))window.koaFollowExemption='fold'},true);`;
+const followingChecks = `window.koaFollowCheck=(${followMonitor.toString()})();window.koaFollowSample=()=>{const scroll=document.querySelector('#scroll'),slot=document.querySelector('#tail-slot'),dock=document.querySelector('#dock');if(!scroll||!slot||!dock)return;const ending=slot.hidden?[...document.querySelectorAll('#items .run')].at(-1):slot;const bounds=dock.getBoundingClientRect(),rows=[...document.querySelectorAll('#items>[data-seq]')].flatMap(root=>[...root.querySelectorAll('.msg.prose,.run,.cmdrun,.nrow,.user')].map((row,index)=>{const rect=row.getBoundingClientRect();return {key:root.dataset.seq+':'+index,top:rect.top,bottom:rect.bottom}}));const reveals=document.querySelectorAll('.reveal').length,exemption=window.koaFollowExemption??(window.koaPriorReveals>reveals?'completion':undefined);window.koaFollowExemption=undefined;window.koaPriorReveals=reveals;koaFollowCheck({scope:document.body.dataset.sessionId+':'+document.querySelector('#topics .selected')?.textContent+':'+document.querySelector('#bar')?.textContent,viewport:scroll.clientHeight,width:scroll.clientWidth,dock:bounds.top,following:window.koaFollowEnabled===true,covered:!!document.querySelector('#presentation')||!ending,max:scroll.scrollHeight-scroll.clientHeight,rows,bottomSpace:bounds.top-(ending?.getBoundingClientRect().bottom??bounds.top),exemption})};document.addEventListener('click',event=>{if(event.target.closest('.line,button.more'))window.koaFollowExemption='fold'},true);`;
 const followingTick = "window.koaTickRequests=0;const followRequest=requestAnimationFrame;window.requestAnimationFrame=callback=>{if(callback.name==='tick')koaTickRequests++;return followRequest(time=>{callback(time);if(callback.name==='tick')koaFollowSample()})};";
 async function scrollPage(module: string, key: string, condition = "", follow = false): Promise<Page> {
   if (shared && module === 'dots') {
@@ -787,8 +787,8 @@ async function testKoaWebviewDots() {
             const retained = await webviewJS(web, "document.querySelector('#tail-slot')===window.dotSlot&&(!window.dotRow||document.querySelector('#items .run')===window.dotRow)")
             equal(retained, true, "A run is inserted above the retained ending slot")
             await webviewJS(web, "window.dotRow=document.querySelector('#items .run')")
-            const noTail = await webviewJS(web, "(()=>{const slot=document.querySelector('#tail-slot'),transcript=document.querySelector('#transcript');return !slot.hidden&&slot.getBoundingClientRect().height>0&&transcript.getBoundingClientRect().bottom-parseFloat(getComputedStyle(transcript).paddingBottom)>=slot.getBoundingClientRect().bottom})()")
-            equal(noTail, true, 'The ending row remains blank under a working run')
+            const noTail = await webviewJS(web, "(()=>{const slot=document.querySelector('#tail-slot'),transcript=document.querySelector('#transcript');const run=[...document.querySelectorAll('#items .run')].at(-1);return slot.hidden&&!!run&&transcript.getBoundingClientRect().bottom-parseFloat(getComputedStyle(transcript).paddingBottom)>=run.getBoundingClientRect().bottom})()")
+            equal(noTail, true, 'The working run occupies the ending row')
             const tool = await measure()
             if (name == "light") { await webviewPageSnapshot("light-tool", ".run", { top: 4, left: 4, bottom: 4, right: 4 }, "testKoaWebviewDots()") }
             await patch(base + 1, "done")
@@ -931,12 +931,24 @@ async function testKoaWebviewBangTail() {
 async function testKoaWebviewEndingRow() {
   const web = await scrollPage('dots', 'EndingRow', '', true);
   await web.emulateMedia({ reducedMotion: 'reduce' });
+  await webviewJS(web, '(()=>{' + followHelpers + `push(view(root,[root],{working:true,since:1700000000000}));push({type:'reset',epoch:'ending-transitions',more:false,items:[{seq:0,revision:0,at:0,kind:'user',final:true,text:'Check the result',images:[],attachments:[]}]});return true})()`);
+  await webviewUntil(web, "document.querySelector('#items>[data-seq=\"0\"]')?.textContent.includes('Check the result')&&!!document.querySelector('#tail-slot>.working .dots')&&!document.querySelector('#presentation')&&Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===document.querySelector('#dock').getBoundingClientRect().height");
+  const extent = () => webviewJS<number[]>(web, "[document.querySelector('#transcript').getBoundingClientRect().height,document.querySelector('#items>[data-seq=\"0\"]').getBoundingClientRect().top]");
+  const before = await extent();
+  for (let revision = 0; revision < 4; revision++) {
+    const count = Math.min(revision + 1, 3), ended = revision === 3;
+    const blocks = Array.from({length:count}, (_, index) => ({type:'tool',id:'ending-'+index,name:'bash',args:{text:'{}'},started:1700000000000,...(ended ? {ended:1700000001000} : {}),state:ended ? {type:'done',error:false,result:{text:'done',cut:0,images:[]}} : {type:'running'}}));
+    await webviewJS(web, '(()=>{' + followHelpers + `push({type:'item',item:${JSON.stringify({seq:1,revision,at:1,kind:'assistant',final:ended,stop:ended ? 'stop' : '',error:'',blocks})}});${ended ? 'push(view(root,[root]));' : ''}return true})()`);
+    await webviewUntil(web, `document.querySelectorAll('#items .step').length===${count}&&document.querySelectorAll('.dots').length===${ended ? 0 : 1}&&document.querySelector('#tail-slot').hidden`);
+    const after = await extent();
+    require(after.every((value, index) => Math.abs(value - before[index]) < .01), `Ending transition ${revision} keeps total height and the earlier row fixed: ${before} -> ${after}`);
+  }
   for (const appearance of ['light','dark'] as const) {
     await setTheme(appearance);
     for (const kind of ['prose','run']) for (const mode of ['idle','working','abort']) {
       const block = kind === 'prose' ? {type:'text',text:'The final response.'} : {type:'thinking',text:'Checking the result',started:1700000000000,ended:1700000002000};
       await webviewJS(web, '(()=>{' + followHelpers + `push(view(root,[root],{working:${mode === 'working'},since:1700000000000}));push({type:'reset',epoch:'ending-${kind}-${mode}',more:false,items:[{seq:0,at:0,revision:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{type:'text',text:${JSON.stringify('Earlier response.\n\n'.repeat(30))}}]},{seq:1,at:1,revision:0,kind:'assistant',final:true,stop:'${mode === 'abort' ? 'aborted' : 'stop'}',error:'',blocks:[${JSON.stringify(block)}]}]});return true})()`);
-      await webviewUntil(web, `(()=>{const content=document.querySelector(${JSON.stringify(kind === 'prose' ? '#items>[data-seq="1"] .prose p' : '#items>[data-seq="1"] .run>.line')}),scroll=document.querySelector('#scroll'),slot=document.querySelector('#tail-slot'),dock=document.querySelector('#dock');if(!content||document.querySelector('#presentation'))return false;const bounds=content.getBoundingClientRect(),ending=slot.getBoundingClientRect();return !slot.hidden&&document.querySelectorAll('.dots').length===${mode === 'working' ? 1 : 0}&&bounds.height>0&&bounds.top>=0&&bounds.bottom<=dock.getBoundingClientRect().top&&ending.top>=bounds.bottom&&scroll.scrollHeight-scroll.clientHeight-scroll.scrollTop<=1})()`);
+      await webviewUntil(web, `(()=>{const content=document.querySelector(${JSON.stringify(kind === 'prose' ? '#items>[data-seq="1"] .prose p' : '#items>[data-seq="1"] .run>.line')}),scroll=document.querySelector('#scroll'),slot=document.querySelector('#tail-slot'),dock=document.querySelector('#dock');if(!content||document.querySelector('#presentation'))return false;const bounds=content.getBoundingClientRect(),ending=slot.getBoundingClientRect();return slot.hidden===${kind === 'run'}&&document.querySelectorAll('.dots').length===${mode === 'working' ? 1 : 0}&&bounds.height>0&&bounds.top>=0&&bounds.bottom<=dock.getBoundingClientRect().top&&${kind === 'run' ? 'Math.abs(bounds.height-parseFloat(getComputedStyle(slot).height))<.5' : 'ending.top>=bounds.bottom'}&&scroll.scrollHeight-scroll.clientHeight-scroll.scrollTop<=1})()`);
       await webviewJS(web,"new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))");
       equal(await webviewJS(web,"(()=>{const row=document.querySelector('#items>[data-seq=\"1\"]'),bounds=row.getBoundingClientRect();return bounds.height>0&&bounds.top<document.querySelector('#dock').getBoundingClientRect().top&&bounds.bottom>0})()"),true,'A committed ending capture contains a visible final row');
       await pinComposerCaret(web, kind === 'prose' ? mode !== 'abort' : mode === 'abort');
@@ -967,9 +979,9 @@ async function testKoaWebviewRunStepsTransitions() {
         }
         await advance("!!document.querySelector('.run.working')")
         await webviewJS(web, "(()=>{window.firstRun=document.querySelector('.run');window.endingSlot=document.querySelector('#tail-slot');return true})()")
-        await advance("document.querySelectorAll('.step').length===6&&document.querySelectorAll('.dots').length===3")
-        const adopted = await webviewJS(web, "document.querySelector('.run')!==window.firstRun&&document.querySelector('#tail-slot')===window.endingSlot&&!window.endingSlot.hidden")
-        equal(adopted, true, "A run has a new node above the retained ending slot")
+        await advance("document.querySelectorAll('.step').length===6&&document.querySelectorAll('.dots').length===1")
+        const adopted = await webviewJS(web, "document.querySelector('.run')!==window.firstRun&&document.querySelector('#tail-slot')===window.endingSlot&&window.endingSlot.hidden")
+        equal(adopted, true, "A run replaces the bare ending slot")
         await webviewJS(web, "window.firstRun=document.querySelector('#items .run')")
         await capture("mixed-folded")
 
@@ -991,7 +1003,7 @@ async function testKoaWebviewRunStepsTransitions() {
         await webviewJS(web, "(()=>{window.nextBare=document.querySelector('.run.working');window.nextHeight=document.querySelector('#items').getBoundingClientRect().height;return true})()")
         await advance("document.querySelectorAll('.step').length===10&&!document.querySelector('.run.working')")
         const next = await webviewJS(web, "[...document.querySelectorAll('.run')].at(-1)!==window.nextBare&&document.querySelector('#items').getBoundingClientRect().height>=window.nextHeight")
-        equal(next, true, "The next run is inserted above the ending row without a shrink")
+        equal(next, true, "The next run replaces the ending row without a shrink")
         await advance("!document.querySelector('.dots')&&document.querySelector('#items').textContent.includes('aborted')")
         await capture("aborted")
         await advance("document.querySelectorAll('.run .names .err .who').length===2")
