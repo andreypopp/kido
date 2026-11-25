@@ -1414,6 +1414,26 @@ test('message naming keeps focus and text through updates and ignores composing 
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [[[true,'New topic',true,0],[true,'New topic',true,1]],[{sessionId:'s',seq:0,topic:'New topic'},{sessionId:'s',seq:1,topic:'New topic'}],null,'Composer']);
 });
 
+test('assigned user topic chips edit on double click without changing the reply topic', async () => {
+  const app = await page(), evaluate = app.repl();
+  evaluate(`state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},topics:[{name:'one'},{name:'reply'}]};put({seq:0,at:1,revision:0,kind:'user',final:true,text:'Question',topic:'one',images:[],attachments:[]});window.requests=[];fetchJSON=async(path,body)=>{window.requests.push([path,body]);return {}};window.key=value=>({key:value,preventDefault(){},stopPropagation(){}});window.openAssigned=()=>{const chip=views.get(0).view.querySelector('.topic-chip');chip.onclick({detail:1});chip.onclick({detail:2});chip.ondblclick({preventDefault(){},stopPropagation(){}});return views.get(0).view.querySelector('.topic-input')};topics.debug.setComposerTopic('reply');`);
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate(`(()=>{const input=window.openAssigned();return [input.value,input.selectionStart,input.selectionEnd,topics.composer()]})()`))), ['one',0,3,'reply']);
+  evaluate(`views.get(0).view.querySelector('.topic-input').onkeydown(window.key('Escape'))`);
+  assert.equal(evaluate(`views.get(0).view.querySelector('.topic-chip').dataset.topic`), 'one');
+  evaluate(`window.openAssigned().onkeydown(window.key('Enter'))`);
+  assert.equal(evaluate('window.requests.length'), 0);
+  evaluate(`const input=window.openAssigned();input.value='new';input.onkeydown(window.key('Enter'));`);
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate('window.requests'))), [['/messages/topic',{sessionId:'s',seq:0,topic:'new'}]]);
+  evaluate(`put({...items.get(0),revision:1,topic:'new'});renderDirty()`);
+  assert.equal(evaluate(`views.get(0).view.querySelector('.topic-chip').dataset.topic`), 'new');
+  evaluate(`views.get(0).view.querySelector('.topic-chip').onclick({detail:1})`);
+  assert.equal(evaluate('topics.composer()'), 'new');
+  evaluate(`window.openAssigned();views.get(0).view.querySelector('.topic-clear').onclick()`);
+  assert.equal(evaluate(`views.get(0).view.querySelector('.topic-chip').dataset.topic`), 'new');
+  evaluate(`topics.debug.scopeData(topics.scope()).filter='new';refreshTopicItems();resetting=true;renderDirty()`);
+  assert.equal(evaluate(`!!views.get(0).view.querySelector('.topic-chip')`), false);
+});
+
 test('message naming sends its turn identity and cancels on Escape, outside click or session change', async () => {
   const app = await page(), evaluate = app.repl();
   evaluate(`state={...state,life:{type:'ready'},sessionId:'origin',view:{id:'root',path:[],type:'root'},topics:[{name:'old'}]};put({seq:0,at:1,revision:0,kind:'user',final:true,text:'Question',images:[],attachments:[]});window.requests=[];fetchJSON=async(path,body)=>{window.requests.push([path,body]);return {}};window.openName=()=>{views.get(0).view.querySelector('.topic-new').onclick();return views.get(0).view.querySelector('.topic-input')};window.key=value=>({key:value,preventDefault(){},stopPropagation(){}});`);

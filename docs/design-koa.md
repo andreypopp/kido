@@ -1142,7 +1142,10 @@ topic exists only when a message carries it. On the header of a
 message without a topic it moves the message's turn through the same
 `koa.message-topic` entry as a drag. A message with a topic, or a
 reply with a topic in any section, has no "+ topic": a drag from the
-widget changes its topic. A name that no topic has yet creates that topic, so the
+widget changes its topic, and a double click on a user message's chip
+opens the same name field, prefilled, so the turn can also move to a
+new topic. The double click keeps the composer topic that its first
+click would set. Under a topic filter user messages show no chip. A name that no topic has yet creates that topic, so the
 move route accepts any valid name. There is no slash command for
 topics.
 

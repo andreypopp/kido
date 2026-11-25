@@ -1191,7 +1191,7 @@ function renderItem(item: WireItem) {
     view.className = 'msg ' + item.kind;
     if (item.kind === 'user') {
       const names = topicItems.get(item.seq)?.topics ?? [];
-      const header = topics.header(item.topic ?? (names.length === 1 ? names[0] : undefined), item.at, item.topic || names.length ? undefined : { kind: 'message', seq: item.seq, key: item.seq + ':user' });
+      const header = topics.header(item.topic ?? (names.length === 1 ? names[0] : undefined), item.at, { kind: 'message', seq: item.seq, key: item.seq + ':user' });
       const text = node('div', undefined, 't'); text.append(prose(item.seq + ':user', item.text, true, undefined, 'user'));
       if (item.images.length) { const images = thumbnails(item.images, () => slots); images.load(); text.append(images.view); }
       const paths = item.attachments.filter(file => file.kind === 'file').map(file => file.path);

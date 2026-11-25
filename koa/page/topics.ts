@@ -7,7 +7,7 @@ type ComposerTopic = { type: 'topic'; name: TopicName } | { type: 'dropped' };
 export type TopicsMemory = { filters: [scope: string, topic: TopicName][]; composerTopics: [scope: string, topic: ComposerTopic][] };
 type Correction = { sessionId: string | undefined } & ({ kind: 'message'; seq: number; topic: TopicName } | { kind: 'move'; from: TopicName; to: TopicName } | { kind: 'archive'; name: TopicName; archived: boolean });
 type TopicNamingTarget = { kind: 'composer' } | { kind: 'message'; seq: number; key: string };
-type Interaction = { kind: 'naming'; scope: string; sessionId: string | undefined; target: TopicNamingTarget; chip: HTMLElement; input: HTMLInputElement } | { kind: 'rename'; cancel(): void } | { kind: 'drag'; cancel(): void };
+type Interaction = { kind: 'naming'; scope: string; sessionId: string | undefined; target: TopicNamingTarget; original: HTMLElement; chip: HTMLElement; input: HTMLInputElement } | { kind: 'rename'; cancel(): void } | { kind: 'drag'; cancel(): void };
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 export function topicsMemory(stored: unknown): stored is TopicsMemory {
   return isRecord(stored) && ['filters', 'composerTopics'].every(key => { const entries = stored[key]; return Array.isArray(entries) && entries.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && (key === 'composerTopics' ? isRecord(entry[1]) && (entry[1].type === 'dropped' || entry[1].type === 'topic' && parseTopicName(entry[1].name) !== undefined) : parseTopicName(entry[1]) !== undefined)); });
@@ -91,16 +91,16 @@ export function createTopics(deps: {
     const name = commit ? parseTopicName(naming.input.value) : undefined;
     if (commit && !name) { naming.input.focus(); return; }
     interaction.naming = undefined;
-    const replacement = newTopicChip(naming.target);
+    const replacement = naming.original;
     naming.chip.replaceWith(replacement); deps.layout(replacement);
     if (naming.scope !== filterKey()) return;
     if (naming.target.kind === 'composer') { if (commit) setComposerTopic(name); deps.focus(); }
-    else if (name) void deps.correct({ kind: 'message', sessionId: naming.sessionId, seq: naming.target.seq, topic: name }).catch(() => {});
+    else if (name && name !== naming.original.dataset.topic) void deps.correct({ kind: 'message', sessionId: naming.sessionId, seq: naming.target.seq, topic: name }).catch(() => {});
   }
   function startTopicNaming(plus: HTMLElement, target: TopicNamingTarget) {
     finishTopicNaming(false);
     const chip = node('span', undefined, 'topic-chip topic-naming'), input = node('input', undefined, 'topic-input');
-    input.placeholder = 'topic name'; input.spellcheck = false; input.setAttribute('aria-label', 'Topic name');
+    input.value = plus.dataset.topic ?? ''; input.placeholder = 'topic name'; input.spellcheck = false; input.setAttribute('aria-label', 'Topic name');
     const colour = () => {
       chip.style.setProperty('--topic-color', topicColour(parseTopicName(input.value)));
       input.style.width = Math.max(6, input.value.length || input.placeholder.length) + 'ch';
@@ -115,7 +115,7 @@ export function createTopics(deps: {
     };
     const cancel = node('button', '×', 'topic-clear'); cancel.type = 'button'; cancel.setAttribute('aria-label', 'Cancel topic name'); cancel.onclick = () => finishTopicNaming(false);
     chip.append(node('span', '#', 'topic-hash'), input, cancel); plus.replaceWith(chip); deps.layout(chip);
-    interaction.naming = { kind: 'naming', target, scope: filterKey(), sessionId: current.state.sessionId, chip, input }; input.focus();
+    interaction.naming = { kind: 'naming', target, scope: filterKey(), sessionId: current.state.sessionId, original: plus, chip, input }; input.focus(); input.select();
   }
   function topicChip(name: TopicName, clear = false) {
     const mark = node('span', undefined, 'topic-chip');
@@ -134,8 +134,26 @@ export function createTopics(deps: {
   function messageHeader(name: TopicName | undefined, at?: number, target?: Extract<TopicNamingTarget, { kind: 'message' }>) {
     if (target && interaction.naming?.scope === filterKey() && interaction.naming.target.kind === 'message' && interaction.naming.target.key === target.key && interaction.naming.chip.parentElement?.classList.contains('message-header')) return interaction.naming.chip.parentElement;
     const row = node('div', undefined, 'message-header');
-    if (name && !topicFilter() && current.state.view.type === 'root') row.append(topicChip(name));
-    if (target && current.state.view.type === 'root') row.append(interaction.naming?.scope === filterKey() && interaction.naming.target.kind === 'message' && interaction.naming.target.key === target.key ? interaction.naming.chip : newTopicChip(target));
+    if (name && !topicFilter() && current.state.view.type === 'root') {
+      const mark = topicChip(name);
+      if (target) {
+        const scope = filterKey();
+        let previous = scopes.get(scope)?.composer;
+        mark.onclick = event => {
+          if (event?.detail === 2) return;
+          previous = scopes.get(scope)?.composer;
+          setComposerTopic(name);
+        };
+        mark.ondblclick = event => {
+          event.preventDefault(); event.stopPropagation();
+          if (scope !== filterKey()) return;
+          scopeData(scope).composer = previous; refreshComposer();
+          startTopicNaming(mark, target);
+        };
+      }
+      row.append(mark);
+    }
+    if (!name && target && current.state.view.type === 'root') row.append(interaction.naming?.scope === filterKey() && interaction.naming.target.kind === 'message' && interaction.naming.target.key === target.key ? interaction.naming.chip : newTopicChip(target));
     if (at !== undefined) { const time = node('time', timestamp(at)); time.dateTime = new Date(at).toISOString(); row.append(time); }
     return row;
   }
