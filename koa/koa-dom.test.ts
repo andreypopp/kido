@@ -307,7 +307,7 @@ async function page() {
     assert.equal(moduleSource.split(marker).length, 2, name + ' factory return marker');
     const injected = name === 'topics'
       ? `return { debug: {
-        scopes, scopeData, interaction, setTopic, setComposerTopic,
+        scopes, scopeData, interaction, setTopic, setComposerTopic, deps,
         clickTopic, moveTopic, topicChip, topicMode, topicAge,
         renameTopic, dragTopic, updateTopicFilter, toggleTopics, fitTopics, topicColour,
         newTopicChip, startTopicNaming, finishTopicNaming,
@@ -1464,6 +1464,50 @@ test('archive controls do not filter or drag and archived rows follow live rows 
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [['live','archived','older'],'#live…',[['/topics/archive',{sessionId:'s',name:'live',archived:true}],['/topics/archive',{sessionId:'s',name:'archived',archived:false}]],['DIV','BUTTON','×','↺',3,null,false,false],true,'…']);
 });
 
+test('block archived topics fold, pin the filter and remember the open scope', async () => {
+  const app=await page();
+  const result=app.run(`(()=>{
+    topics.measure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:Array.from({length:5},(_,i)=>({name:'old-'+i,archived:true,last:{summary:'Old',at:10-i}}))};topics.render();
+    const absent=!element('topics').querySelector('.topic-fold');
+    state={...state,topics:[{name:'live'},...state.topics,{name:'old-5',archived:true,last:{summary:'Old',at:5}},{name:'old-6',archived:true,last:{summary:'Old',at:4}}]};
+    topics.debug.deps.unread=()=>new Map([['old-5',120],['old-6',3]]);topics.render();
+    const rows=()=>element('topics').querySelector('.topic-panel').querySelectorAll('.topic-entry').filter(row=>row.dataset.topic).map(row=>row.dataset.topic),fold=()=>element('topics').querySelector('.topic-fold');
+    const initial=[rows(),fold().textContent,fold().querySelector('.topic-unread').textContent];
+    topics.debug.setTopic('old-5');topics.render();const pinned=[rows(),fold().querySelector('.topic-unread').textContent,element('topics').querySelector('.topic-panel').children.map(row=>row.className)];
+    topics.debug.setTopic(undefined);topics.render();const cleared=rows();fold().onclick();const opened=[rows(),fold().textContent,!!fold().querySelector('.topic-unread')];
+    const memory=JSON.parse(JSON.stringify(topics.memory())),valid=topicsMemory(memory);fold().onclick();
+    state={...state,topics:state.topics.map(topic=>topic.name==='old-6'?{...topic,archived:false}:topic)};topics.render();const restored=rows();
+    return [absent,initial,pinned[0],pinned[1],pinned[2].slice(-3),cleared,opened,valid,memory.expandedArchives,restored];
+  })()`);
+  const five=['live','old-0','old-1','old-2','old-3','old-4'];
+  assert.deepEqual(JSON.parse(JSON.stringify(result)),[true,[five,'Show older topics','99+'],[...five,'old-5'],'3',['topic-entry archived current','topic-entry topic-fold','topic-entry topic-all'],five,[[...five,'old-5','old-6'],'Hide older topics',false],true,['root:s'],['live','old-6',...five.slice(1)]]);
+});
+
+test('fold unread refreshes during rename without replacing the input', async () => {
+  const app=await page();
+  const result=app.run(`(()=>{
+    topics.measure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:Array.from({length:7},(_,i)=>({name:'old-'+i,archived:true,last:{summary:'Old',at:10-i}}))};
+    let count=1;topics.debug.deps.unread=()=>new Map([['old-6',count]]);topics.render();
+    const panel=element('topics').querySelector('.topic-panel');topics.debug.renameTopic(panel.children.find(row=>row.dataset.topic==='old-0'),'old-0');
+    const input=element('topics').querySelector('.topic-rename');input.value='Draft';count=8;topics.render();
+    const updated=element('topics').querySelector('.topic-fold').querySelector('.topic-unread').textContent;
+    count=0;topics.render();return [updated,!!element('topics').querySelector('.topic-fold').querySelector('.topic-unread'),element('topics').querySelector('.topic-rename')===input,input.value];
+  })()`);
+  assert.deepEqual(Array.from(result),['8',false,true,'Draft']);
+});
+
+test('expanded archives survive page memory reload and stay in their pane scope', async () => {
+  const app=await page(),evaluate=app.repl();
+  const setup=`topics.measure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:Array.from({length:7},(_,i)=>({name:'old-'+i,archived:true}))};topics.render();`;
+  evaluate(setup+`element('topics').querySelector('.topic-fold').onclick()`);
+  app.windowListeners.get('pagehide')?.();
+  const restored=app.repl();
+  assert.equal(restored(setup+`element('topics').querySelector('.topic-fold').textContent`),'Hide older topics');
+  assert.equal(restored(`state={...state,sessionId:'other'};topics.render();element('topics').querySelector('.topic-fold').textContent`),'Show older topics');
+});
+
 test('block topic updates preserve the scrolled panel position', async () => {
   const app=await page();
   const result=app.run(`(()=>{topics.measure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},topics:Array.from({length:32},(_,index)=>({name:'topic-'+index,last:{summary:'Before',at:index}}))};topics.render();element('topics').querySelector('.topic-panel').scrollTop=140;apply({...state,type:'state',topics:state.topics.map(topic=>({...topic,last:{...topic.last,summary:'After'}}))});return element('topics').querySelector('.topic-panel').scrollTop})()`);
@@ -1660,7 +1704,7 @@ test('a resumed session publishes its scope before reset and commits after ready
 test('a saved target filter survives preparation until the ready state reconciles topics', async () => {
   for (const life of ['starting', 'reloading', 'switching']) {
     const app = await page();
-    app.context.history.replaceState({ scroll: [], drafts: [], filters: [['root:new', 'target']], composerTopics: [] });
+    app.context.history.replaceState({ scroll: [], drafts: [], filters: [['root:new', 'target']], composerTopics: [], expandedArchives: [] });
     const result = await app.run(`(async()=>{
       if('${life}'!=='starting')state={...state,life:{type:'ready'},sessionId:'old',view:{id:'root',path:[],type:'root'},topics:[{name:'old-topic'}]};
       rendered=async()=>{};fetch=async()=>({ok:true,json:async()=>({epoch:'new',items:[],more:false})});

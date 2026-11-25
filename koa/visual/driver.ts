@@ -128,6 +128,8 @@ function captureTarget(name: string, scenario: Scenario): { selector: string; pa
       return { selector: '#items > [data-seq="10"]', padding: { top: 8, left: 8, bottom: 8, right: 8 } };
     case "topics/topic-archive-panel-live":
     case "topics/topic-archive-panel-restore":
+    case "topics/topic-archive-fold-folded":
+    case "topics/topic-archive-fold-open":
     case "topics/topic-archive-block":
       return { selector: '.topic-panel:not([hidden])', padding: { top: 8, left: 8, bottom: 8, right: 8 } };
     case "topics/topic-archive-filter":
@@ -397,8 +399,8 @@ async function driveTopics(web: Page, phases: string[], capture: (name: string) 
                 await webviewJS(web, "(()=>{document.querySelector('.topic-clear')?.click();if(document.querySelector('.topic-input,.topic-rename'))document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));const topics=document.querySelector('#topics');if(topics.dataset.mode==='line'&&topics.querySelector('.topic-panel')?.hidden===false)(topics.querySelector('.topic-overflow')??topics.querySelector('.topic-open'))?.click();window.composer.setText('');return true})()")
                 await advance()
             }
-            await web.setViewportSize({ width: name === 'topic-archive-block' ? 1280 : name == "topics-marks-narrow" ? 448 : name.startsWith("topics-drag") || name == "topics-rename" || name == "topics-pending" ? 980 : 960, height: 557 })
-        await webviewUntil(web, name === 'topic-archive-block' ? "document.querySelector('#topics').dataset.mode==='block'" : "!document.querySelector('#topics').hidden&&document.querySelector('.topic-capsule')!==null")
+            await web.setViewportSize({ width: (name === 'topic-archive-block' || name.startsWith('topic-archive-fold-')) ? 1280 : name == "topics-marks-narrow" ? 448 : name.startsWith("topics-drag") || name == "topics-rename" || name == "topics-pending" ? 980 : 960, height: 557 })
+        await webviewUntil(web, (name === 'topic-archive-block' || name.startsWith('topic-archive-fold-')) ? "document.querySelector('#topics').dataset.mode==='block'" : "!document.querySelector('#topics').hidden&&document.querySelector('.topic-capsule')!==null")
         if (name == "topics-many" || name == "topics-many-narrow") {
             const expected = name == "topics-many" ? 9 : 4
             await webviewUntil(web, `(()=>{const capsule=document.querySelector('.topic-capsule');return capsule.querySelectorAll('.topic-open>.topic-name').length===${expected}&&${expected == 9 ? "capsule.querySelector('.topic-more')===null" : "capsule.querySelector('.topic-more')?.textContent==='+5'"}})()`)
@@ -555,7 +557,15 @@ async function driveTopics(web: Page, phases: string[], capture: (name: string) 
             }
         }
         if (name.startsWith('topic-archive-')) {
-            if (name === 'topic-archive-filter') {
+            if (name.startsWith('topic-archive-fold-')) {
+                await web.locator('.topic-fold').click()
+                await web.locator('.topic-entry[data-topic=palette]').click()
+                await webviewUntil(web, "document.querySelector('.topic-entry.current[data-topic=palette]')!==null")
+                await webviewJS(web, "(()=>{for(let seq=100;seq<103;seq++)window.topicSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'item',item:{kind:'assistant',seq,revision:0,at:Date.now(),final:true,stop:'stop',error:'',blocks:[{type:'text',topic:'ci-linux-flake',text:'Earlier unread reply.'}]}})}));return true})()")
+                if (name === 'topic-archive-fold-folded') await web.locator('.topic-fold').click()
+                await webviewUntil(web, name === 'topic-archive-fold-folded' ? "document.querySelector('.topic-fold .topic-unread')!==null" : "document.querySelector('.topic-fold').textContent==='Hide older topics'")
+                await web.mouse.move(0, 0)
+            } else if (name === 'topic-archive-filter') {
                 await web.locator('.topic-overflow').click()
                 await web.locator('.topic-entry[data-topic=palette]').click()
                 await webviewUntil(web, "document.querySelector('.topic-capsule .topic-name.archived')!==null")
@@ -566,6 +576,11 @@ async function driveTopics(web: Page, phases: string[], capture: (name: string) 
             } else equal(await webviewJS(web, "document.querySelector('.topic-capsule').textContent"), '…', 'An all-archived capsule has only its panel opener')
         }
         await capture(name)
+        if (name.startsWith('topic-archive-fold-')) {
+            const step = await webviewJS<number>(web, "fetch('/replay/status').then(r=>r.json()).then(s=>s.step)")
+            await web.locator('.topic-all').click()
+            await webviewUntil(web, `fetch('/replay/status').then(r=>r.json()).then(s=>s.step>${step}&&s.mismatches===0)`)
+        }
         if (name === 'topics-filter') await capture('topics-filter-composer')
         if (name.startsWith("topics-drag") || name == "topics-rename") {
             await web.keyboard.press('Escape')
@@ -1251,8 +1266,8 @@ async function koaWebview(key: string, width: number, height: number, scenario: 
         if (phases.includes("foot-responsive") || phases.includes("foot-editing") || phases.includes("narrow-foot-editing")) {
             initialScript = initialScript + "const FootSource=EventSource;window.EventSource=class extends FootSource{constructor(...args){super(...args);window.footSource=this;this.addEventListener('message',event=>{const record=JSON.parse(event.data);if(record.type==='state')window.footState=record})}};"
         }
-        if (key === 'TopicsGeometry') initialScript += "const TopicSource=EventSource;window.EventSource=class extends TopicSource{constructor(...args){super(...args);window.topicSource=this}};"
-        if (key === 'TopicsFilterRestored') initialScript += "history.replaceState({scroll:[],drafts:[],filters:[['00000000-0000-7000-8000-000000000001:00000000-0000-7000-8000-000000000001','sidebar']],composerTopics:[]},'');"
+        if (key === 'TopicsGeometry' || key === 'TopicsArchive') initialScript += "const TopicSource=EventSource;window.EventSource=class extends TopicSource{constructor(...args){super(...args);window.topicSource=this}};"
+        if (key === 'TopicsFilterRestored') initialScript += "history.replaceState({scroll:[],drafts:[],filters:[['00000000-0000-7000-8000-000000000001:00000000-0000-7000-8000-000000000001','sidebar']],composerTopics:[],expandedArchives:[]},'');"
         initialScript += followingChecks + followingTick;
         let initial = initialScript
         initial = "Element.prototype.animate=function(){return {}};" + paneFocus + (scenario == "latest" || scenario == "jobs" ? "" : hideLatest) + initial
@@ -2198,7 +2213,7 @@ const entries: Record<string, () => Promise<void>> = {
   "TopicsFilterRestored": () => koaWebview("TopicsFilterRestored", 960, 557, "topics", false, ["topic-create-filter-restored"]),
 
   "TopicsCreate": () => koaWebview("TopicsCreate", 960, 557, "topics", false, ["topic-create-empty", "topic-create-typed", "topic-create-reply-hover", "topic-create-user-hover", "topic-create-message-name"]),
-  "TopicsArchive": () => koaWebview("TopicsArchive", 960, 557, "topics", false, ["topic-archive-panel-live", "topic-archive-panel-restore", "topic-archive-block", "topic-archive-filter", "topic-archive-all"]),
+  "TopicsArchive": () => koaWebview("TopicsArchive", 960, 557, "topics", false, ["topic-archive-panel-live", "topic-archive-panel-restore", "topic-archive-block", "topic-archive-filter", "topic-archive-all", "topic-archive-fold-folded", "topic-archive-fold-open"]),
   "TopicsEdit": () => koaWebview("TopicsEdit", 980, 557, "topics", false, ["topics-drag-row", "topics-drag-reply", "topics-rename", "topics-pending"]),
   "TopicsFilter": () => koaWebview("TopicsFilter", 960, 557, "topics", false, ["topics-filter"]),
   "TopicsFilterPanel": () => koaWebview("TopicsFilterPanel", 960, 557, "topics", false, ["topics-filter-panel"]),

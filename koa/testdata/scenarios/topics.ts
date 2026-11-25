@@ -108,11 +108,12 @@ export const scenarios: Scenarios = {
     return result;
   })),
   TopicsCreate: dir => sequence(Array.from({ length: 5 }, () => scene(dir, 'marks-narrow', true))),
-  TopicsArchive: dir => sequence(Array.from({ length: 5 }, (_, index) => {
+  TopicsArchive: dir => sequence(Array.from({ length: 7 }, (_, index) => {
     const result = scene(dir, 'many'), state = result.open.find(record => record.type === 'state'), reset = result.open.find(record => record.type === 'reset');
     if (!state || !('topics' in state) || !reset) throw Error('Missing archive fixture state');
     state.topics = state.topics.map(topic => ({ ...topic, ...(index === 4 || topic.name === paletteName || topic.name === 'docs-cleanup-after-the-sessions' ? { archived: true as const } : {}) }));
-    if (index === 3) {
+    if (index >= 5) state.topics = state.topics.map((topic, i) => ({ ...topic, archived: i !== 0 ? true : undefined, last: { summary: 'Earlier discussion', at: Date.now() - (topic.name === paletteName ? 10 : i + 1) * 3600000 } }));
+    if (index === 3 || index >= 5) {
       const labels = new Map(reset.items.flatMap(item => item.kind === 'topics' ? [[item.target, item.topics] as const] : []));
       const items = reset.items.filter(item => item.kind === 'topics' ? item.topics.includes(paletteName) : labels.get(item.seq)?.includes(paletteName) || 'topic' in item && item.topic === paletteName || item.kind === 'assistant' && item.blocks.some(block => block.topic === paletteName));
       result.steps.push(expect({ on: { method: 'GET', path: '/items', body: value => same(value, { before: String(Number.MAX_SAFE_INTEGER), topic: paletteName, sessionId: state.sessionId }) }, reply: { status: 200, json: { epoch: reset.epoch, more: false, items } } }), expect({ on: { method: 'GET', path: '/items', body: value => same(value, { before: String(Number.MAX_SAFE_INTEGER), sessionId: state.sessionId }) }, reply: { status: 200, json: { epoch: reset.epoch, more: false, items: reset.items } } }));

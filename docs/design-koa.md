@@ -360,13 +360,13 @@ fallback, so the cover never stays. `pagehide` during a switch saves
 the memory of the view that the cover shows.
 
 A reload of the same document entry keeps this memory: the saved
-positions with the current reader anchor, the non-empty drafts and
-the topic filters. The page writes them to `history.state` on
-`pagehide`, so a `reload` record and the app's Reload Page keep them,
+positions with the current reader anchor, the non-empty drafts, the
+topic filters and the fold of older archived topics. The page writes
+them to `history.state` on `pagehide`, so a `reload` record and the app's Reload Page keep them,
 and reads them once at start. `history.state` needs no storage
 permission or origin and ends with its entry. A following view saves
 its following intent, not an anchor. Restoration is the `restoring` path of a switch, so a
-position of another session is not used. Folds do not survive,
+position of another session is not used. Transcript folds do not survive,
 because their keys depend on the loaded range. Attachments, pickers
 and dialogs do not survive. A process replacement loads a new entry,
 so the memory is gone.
@@ -1166,6 +1166,15 @@ without a marker. The archive route is serial with the prompt routes,
 so an archive cannot land while a prompt waits for its
 classification. Archived state reaches the page as an optional field
 of the root state's topics. No feed item changes and no reset occurs.
+
+In block mode the panel shows every live topic but only the five most
+recent archived ones. A fold row after the archived group shows or
+hides the older ones; while they are hidden it carries the sum of
+their unread counts. A filter on a hidden topic keeps that row
+visible, last in the archived group and outside the sum, until the
+filter changes. The fold is page state of each scope, as the filter
+is, not session state: a pane's choice does not change another
+pane's panel. The line-mode panel has no fold.
 
 ## Agent extension, subagents and jobs
 

@@ -4,13 +4,13 @@ import { topicTurn } from '../topic-turn.ts';
 import { markdownLine } from '../markdown-line.ts';
 
 type ComposerTopic = { type: 'topic'; name: TopicName } | { type: 'dropped' };
-export type TopicsMemory = { filters: [scope: string, topic: TopicName][]; composerTopics: [scope: string, topic: ComposerTopic][] };
+export type TopicsMemory = { filters: [scope: string, topic: TopicName][]; composerTopics: [scope: string, topic: ComposerTopic][]; expandedArchives: string[] };
 type Correction = { sessionId: string | undefined } & ({ kind: 'message'; seq: number; topic: TopicName } | { kind: 'move'; from: TopicName; to: TopicName } | { kind: 'archive'; name: TopicName; archived: boolean });
 type TopicNamingTarget = { kind: 'composer' } | { kind: 'message'; seq: number; key: string };
 type Interaction = { kind: 'naming'; scope: string; sessionId: string | undefined; target: TopicNamingTarget; original: HTMLElement; chip: HTMLElement; input: HTMLInputElement } | { kind: 'rename'; cancel(): void } | { kind: 'drag'; cancel(): void };
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 export function topicsMemory(stored: unknown): stored is TopicsMemory {
-  return isRecord(stored) && ['filters', 'composerTopics'].every(key => { const entries = stored[key]; return Array.isArray(entries) && entries.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && (key === 'composerTopics' ? isRecord(entry[1]) && (entry[1].type === 'dropped' || entry[1].type === 'topic' && parseTopicName(entry[1].name) !== undefined) : parseTopicName(entry[1]) !== undefined)); });
+  return isRecord(stored) && Array.isArray(stored.expandedArchives) && stored.expandedArchives.every(scope => typeof scope === 'string') && ['filters', 'composerTopics'].every(key => { const entries = stored[key]; return Array.isArray(entries) && entries.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && (key === 'composerTopics' ? isRecord(entry[1]) && (entry[1].type === 'dropped' || entry[1].type === 'topic' && parseTopicName(entry[1].name) !== undefined) : parseTopicName(entry[1]) !== undefined)); });
 }
 export function createTopics(deps: {
   state(): State; items: ReadonlyMap<number, WireItem>; unread(): ReadonlyMap<TopicName, number>;
@@ -20,10 +20,11 @@ export function createTopics(deps: {
   filterChanged(name: TopicName | undefined): void; correct(correction: Correction): Promise<void>;
 }, memory?: TopicsMemory) {
   const { element, node, timestamp, refreshComposer, items } = deps;
-  const scopes = new Map<string, { filter?: TopicName; composer?: ComposerTopic; move?: { from: TopicName; to: TopicName } }>();
+  const scopes = new Map<string, { filter?: TopicName; composer?: ComposerTopic; expandedArchives?: true; move?: { from: TopicName; to: TopicName } }>();
   const scopeData = (scope: string) => { let value = scopes.get(scope); if (!value) { value = {}; scopes.set(scope, value); } return value; };
   for (const [scope, filter] of memory?.filters ?? []) scopeData(scope).filter = filter;
   for (const [scope, composer] of memory?.composerTopics ?? []) scopeData(scope).composer = composer;
+  for (const scope of memory?.expandedArchives ?? []) scopeData(scope).expandedArchives = true;
   const interactions: Interaction[] = [];
   const interaction = {
     get naming() { return interactions.find((entry): entry is Extract<Interaction, { kind: 'naming' }> => entry.kind === 'naming'); },
@@ -333,7 +334,18 @@ export function createTopics(deps: {
       if (entry.querySelector('.topic-unread')?.textContent !== unreadBadge(topic.name, unread)?.textContent && topicCapsule) topicCapsule.width = undefined;
       if (interaction.rename) refreshAge(entry, topic, unread);
     }
-    if (interaction.rename) { fitTopics(undefined, unread); return; }
+    const topics = [...records.values()].map((topic, index) => ({ ...topic, index })).sort((a, b) => Number(!!a.archived) - Number(!!b.archived) || (a.last && b.last ? b.last.at - a.last.at || b.index - a.index : a.last ? 1 : b.last ? -1 : b.index - a.index));
+    const expanded = !!scopes.get(filterKey())?.expandedArchives;
+    const refreshFold = (fold: HTMLElement, older: Topic[]) => {
+      fold.querySelector('.topic-unread')?.remove();
+      const count = expanded ? 0 : older.reduce((sum, topic) => sum + (topic.name === topicFilter() ? 0 : unread.get(topic.name) ?? 0), 0);
+      if (count > 0) fold.append(node('span', count > 99 ? '99+' : String(count), 'topic-unread'));
+    };
+    if (interaction.rename) {
+      const fold = element('topics').querySelector<HTMLElement>('.topic-fold');
+      if (fold) refreshFold(fold, topics.filter(topic => topic.archived).slice(5));
+      fitTopics(undefined, unread); return;
+    }
     const host = element('topics'), filter = topicFilter();
     host.hidden = current.state.view.type !== 'root' || !('topics' in current.state) || !current.state.topics.length;
     const column = element('transcript').getBoundingClientRect(), width = document.documentElement.clientWidth;
@@ -345,7 +357,6 @@ export function createTopics(deps: {
     if (!('topics' in current.state) || host.hidden) { host.replaceChildren(); topicCapsule = undefined; return; }
     const previousPanel = host.querySelector<HTMLElement>('.topic-panel'), open = previousMode === 'line' && previousPanel?.hidden === false;
     const scrollTop = previousPanel?.scrollTop ?? 0;
-    const topics = current.state.topics.map((topic, index) => ({ ...topic, index })).sort((a, b) => Number(!!a.archived) - Number(!!b.archived) || (a.last && b.last ? b.last.at - a.last.at || b.index - a.index : a.last ? 1 : b.last ? -1 : b.index - a.index));
     const names = topics.filter(topic => !topic.archived).map(topic => topic.name), changed = !topicCapsule || topicCapsule.selected !== filter || names.length !== topicCapsule.names.length || names.some((name, index) => name !== topicCapsule?.names[index]);
     if (mode === 'block') topicCapsule = undefined;
     else if (changed) {
@@ -360,7 +371,9 @@ export function createTopics(deps: {
     const capsule = topicCapsule?.view;
     if (filter) capsule?.querySelector('.topic-open')?.setAttribute('aria-expanded', String(open));
     const panel = node('div', undefined, 'topic-panel'); panel.hidden = mode === 'line' && !open; panel.setAttribute('aria-label', 'Choose topic');
+    const older = mode === 'block' ? topics.filter(topic => topic.archived).slice(5) : [];
     for (const topic of topics) {
+      if (!expanded && older.includes(topic) && topic.name !== filter) continue;
       const entry = node('div', undefined, 'topic-entry'); entry.setAttribute('role', 'button'); entry.tabIndex = -1; entry.dataset.topic = topic.name;
       entry.classList.toggle('archived', !!topic.archived);
       entry.classList.toggle('current', topic.name === filter); entry.setAttribute('aria-pressed', String(topic.name === filter));
@@ -376,6 +389,12 @@ export function createTopics(deps: {
       entry.onkeydown = event => { if (event.target === entry && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setTopic(topic.name); } };
       entry.onpointerdown = event => dragTopic(event, entry, topic.name);
       entry.onclick = event => clickTopic(event, entry, topic.name); panel.append(entry);
+    }
+    if (older.length) {
+      const fold = node('button', expanded ? 'Hide older topics' : 'Show older topics', 'topic-entry topic-fold'); fold.type = 'button'; fold.setAttribute('aria-expanded', String(expanded));
+      refreshFold(fold, older);
+      fold.onclick = () => { const scope = scopeData(filterKey()); if (expanded) delete scope.expandedArchives; else scope.expandedArchives = true; renderTopics(); };
+      panel.append(fold);
     }
     if (filter) { const all = node('button', 'All topics', 'topic-entry topic-all'); all.type = 'button'; all.onclick = () => setTopic(undefined); panel.append(all); }
     host.replaceChildren(...(capsule ? [capsule, panel] : [panel]));
@@ -425,7 +444,7 @@ export function createTopics(deps: {
     memory(): TopicsMemory {
       const filters: TopicsMemory['filters'] = [], composerTopics: TopicsMemory['composerTopics'] = [];
       for (const [scope, value] of scopes) { if (value.filter) filters.push([scope, value.filter]); if (value.composer) composerTopics.push([scope, value.composer]); }
-      return { filters, composerTopics };
+      return { filters, composerTopics, expandedArchives: [...scopes].filter(([, value]) => value.expandedArchives).map(([scope]) => scope) };
     },
   };
 }
