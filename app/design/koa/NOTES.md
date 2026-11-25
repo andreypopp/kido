@@ -2702,7 +2702,7 @@ run).
   subagent's view shows its own messages to its children, their
   reports, and its parent's messages as steps of its runs.
 
-## The folded run line says how long it worked (user, 2026-11-25, spec; steps.html section 1b)
+## The folded run line says how long it worked (user, 2026-11-25, approved; steps.html section 1b)
 
 The user: a folded run (tool, thinking, agent and job steps) no
 longer lists its tools. Running, the folded line is the working dots
