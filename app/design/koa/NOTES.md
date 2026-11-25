@@ -2702,6 +2702,56 @@ run).
   subagent's view shows its own messages to its children, their
   reports, and its parent's messages as steps of its runs.
 
+## The folded run line says how long it worked (user, 2026-11-25, spec)
+
+The user: a folded run (tool, thinking, agent and job steps) no
+longer lists its tools. Running, the folded line is the working dots
+and the duration ("··· 12s"); finished, it is "Worked for 12s"; the
+duration at the right of the line goes. Unfolded runs are unchanged
+(each step keeps its own time; the run line of an open run shows the
+same text as folded). A click on the line folds and unfolds as today.
+Supersedes "The folded run summary" and the right-hand time of
+"Times" for the folded line; the step rules of both stay.
+
+- **The duration** is the time the run worked: the union of its
+  timed steps' intervals (a tool, a thinking block, an outgoing
+  agent call), from each step's start to its end, or to now while it
+  runs; overlapping parallel steps count once, and the idle time
+  between steps counts not at all. A moment step (an incoming
+  message, a report, a child's end, a notice, a job event) adds
+  nothing, so a late report that joins a finished run does not
+  change its "Worked for". Whole seconds, rounded up (a run never
+  says "0s"): "12s" under a minute, "4m 5s" under an hour, "1h 12m"
+  from an hour (the seconds dropped). Tabular numerals.
+- **Running:** the dots (the 15×8 box of "Running: one indicator",
+  `--faint`, the 1.1s bounce, static under Reduce Motion) at the
+  summary's place, where the first tool name stood, then a 6px gap
+  (the dots' gap after a running tool's name), then the duration in
+  the run line's font and colour (.95em prose, `--muted`). The clock
+  ticks once a second, on the second, on the frame; with tabular
+  numerals a tick within the same unit changes no width, and the
+  text only grows ("59s" to "1m 0s"), at the left, so nothing at the
+  right moves and the row's height is the run line's. The right end
+  of the line is empty (the time's slot is gone).
+- **Finished:** "Worked for 12s", the same font and colour, the
+  dots gone; nothing at the right. A run with a failed step: the
+  whole text in `--ko-color-1` (the colour says the failure, as the
+  red tool name did; unfolded, the failed step is red as today). An
+  aborted run: "Worked for 12s · aborted", the "· aborted" in
+  `--faint` ("aborted" is the one outcome word). A run whose steps
+  are all moments (only reports, messages, notices, job events: it
+  worked for nothing) keeps the names summary of "The folded run
+  summary" ("from @palette", "job verify-sidebar"), because there
+  is no work to time.
+- **The names stay reachable:** the folded line's `title` is the
+  old summary ("read, edit, bash x2"), so a hover still says what
+  ran; accessibility reads "Worked for 12s, read, edit, bash x2".
+- **Geometry:** the line keeps the run line's height
+  (`calc(1.5em + 2px)` at .95em) and left padding, so a folded run
+  and the ending row are the same height as before; the chevron,
+  the hover and the click target are unchanged. Light and dark: the
+  tokens above.
+
 ## Runs split only at prose (user, 2026-11-20)
 
 The user saw one turn as three adjacent run rows: its tools carried
