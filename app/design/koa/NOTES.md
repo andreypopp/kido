@@ -1682,9 +1682,7 @@ Open WebUI): the scroll has two states and one animation.
   they were. Everything the layout does under a following reader is
   instant in the scroll, because an animated follow and a streaming
   layout fight each other.
-- **The ending row** (user, 2026-11-23; superseded 2026-11-24 by
-  "The tail only grows", D2: the ending row is always there, also
-  under a run). A transcript that ends
+- **The ending row** (user, 2026-11-23). A transcript that ends
   with a message (the user's or the agent's) ends in one row of the
   bare working row's height, with the same space above it as that
   row has. With nothing running the row is blank; while the turn
@@ -1700,9 +1698,7 @@ Open WebUI): the scroll has two states and one animation.
   filter, an agent), following or reading, after a restore or a
   reload. A job page has no ending row.
 - **The tail reserve** (user, 2026-11-23: nothing visible moves
-  when content shrinks; superseded 2026-11-24: no reserve, the tail
-  only grows, "The tail only grows" below and docs/design-koa.md,
-  "The scroll contract"). While following, the scroll never moves
+  when content shrinks). While following, the scroll never moves
   up. Content that grows is at the new bottom in the same frame,
   with no slide. Content that still shrinks at the tail (a folded
   run's parallel step lines that go when the calls end, a revealed
@@ -2433,9 +2429,66 @@ these:
   bare row in the same frame. These are the only removals.
 - **Reduce Motion**: the same frames, static dots.
 
-## The tail only grows: the ending row, the divider in the gap, the open `!` row (2026-11-24, spec for the koa-scroll plan's unit 1)
+## The composer shows what the transcript shows: compact empty lines, quote bars (2026-11-25, spec)
 
-The user's invariants (docs/design-koa.md, "The scroll contract"): while
+The user (2026-11-25, revised the same day): the composer is full
+Markdown. Shift-Enter inserts a paragraph break (an empty line,
+`\n\n`); inside a list item or a quote it continues the marker (a
+new item; a `>` line in a quote). The transcript's user messages
+keep standard Markdown (a single newline is a space, not a break),
+so the composer must show a paragraph gap where the transcript will
+show one. Two rendering rules in the composer (CodeMirror, `koa/page/composer.ts`;
+`#prompt .cm-content` is `var(--size)/1.6` prose, a line 1.6em =
+20.8px at the 13px base). Every size in CSS px at that base.
+
+- **An empty line is compact.** A line with no characters (also one
+  of only spaces, and a `>` alone inside a quote) gets a line
+  decoration `cm-empty`: `line-height: 10px; height: 10px` (about
+  half a line), the font unchanged. It reads as the transcript's
+  paragraph gap without being pixel-equal: the user block's
+  paragraphs are .65em = 8.45px apart at line-height 1.5, the
+  composer's lines are at 1.6, so an exact match does not exist;
+  10px is the nearest round value that keeps the caret legible (8px
+  would be a dot). The point is that one gap in the composer is one
+  gap in the transcript, not the same number of pixels. The caret on an
+  empty line is the line's height, 10px, 1px wide in `--ko-cursor`,
+  as CodeMirror sizes it from the line: short, which says "a gap
+  line"; it does not overflow into the next line. Two empty lines
+  in a row are 10px each (the document shows what was typed; the
+  Markdown collapses them on send). The first and the last line of
+  the draft are never compact when they are the only line (an empty
+  draft keeps its `min-height` of one line, so the placeholder and
+  the caret stand at full height). Selection highlight on an empty
+  line is the 10px box.
+- **A quoted line shows the bar, not the marker.** A line whose
+  Markdown is a blockquote (the `QuoteMark` tokens at its start,
+  `> `, `>>`, `> > `) gets a line decoration `cm-quote-line` with
+  the nesting level in `--q` (1, 2, …), and its markers are hidden
+  with a zero-width replace decoration (the characters stay in the
+  document; the caret steps over them as one position; Backspace at
+  the text's start deletes the marker, as the text). The line draws
+  the transcript's blockquote in its own geometry: `padding-left:
+  calc(var(--q) * 14px)` (a 2px bar and the transcript's 12px gap
+  per level) and the bars as a background,
+  `repeating-linear-gradient(to right, var(--hair2) 0 2px,
+  transparent 2px 14px)` with `background-size: calc(var(--q) *
+  14px) 100%; background-repeat: no-repeat`, full line height, so
+  consecutive quote lines join into one continuous bar, and `>>` is
+  two bars 14px apart with the text at 28px. The quoted text is
+  `--muted` (the transcript's reply blockquote; the composer is not
+  the solid user block, so not the ink values), the bar `--hair2`,
+  the same tokens light and dark. The caret on a quote line changes
+  nothing: the bar, the colour and the hidden marker stay (no active
+  state, no marker reveal); the caret stands after the bar's gap.
+  No margin above or below a quote: lines are lines, and the
+  compact empty line is the gap. An empty quote line (`>` alone)
+  is compact (10px) with its bar. The quote-answer draft (the
+  reply annotations) therefore shows the quoted question as the
+  transcript shows it, under a bar, and the answer below it.
+
+## The tail only grows: the ending row, the divider in the gap, the open `!` row (2026-11-24, spec for plans/koa-scroll.md unit 1)
+
+The user's invariants (plans/koa-scroll.md, "The invariants"): while
 following nothing moves against the output and no blank space
 appears at the bottom; a fresh render equals the live view. Three
 visual rules follow; every size at the 13px base, every length in
