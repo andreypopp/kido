@@ -1682,7 +1682,9 @@ Open WebUI): the scroll has two states and one animation.
   they were. Everything the layout does under a following reader is
   instant in the scroll, because an animated follow and a streaming
   layout fight each other.
-- **The ending row** (user, 2026-11-23). A transcript that ends
+- **The ending row** (user, 2026-11-23; superseded 2026-11-24 by
+  "The tail only grows", D2: the ending row is always there, also
+  under a run). A transcript that ends
   with a message (the user's or the agent's) ends in one row of the
   bare working row's height, with the same space above it as that
   row has. With nothing running the row is blank; while the turn
@@ -1698,7 +1700,9 @@ Open WebUI): the scroll has two states and one animation.
   filter, an agent), following or reading, after a restore or a
   reload. A job page has no ending row.
 - **The tail reserve** (user, 2026-11-23: nothing visible moves
-  when content shrinks). While following, the scroll never moves
+  when content shrinks; superseded 2026-11-24: no reserve, the tail
+  only grows, "The tail only grows" below and docs/design-koa.md,
+  "The scroll contract"). While following, the scroll never moves
   up. Content that grows is at the new bottom in the same frame,
   with no slide. Content that still shrinks at the tail (a folded
   run's parallel step lines that go when the calls end, a revealed
@@ -2239,6 +2243,37 @@ light and dark in the gallery.
   names and no "+N", so the panel stays reachable (unit B,
   2026-11-21). The state is koa's, per session, in the session's topic
   list (`archived: true`), so it survives a reload and a resume.
+- **Older archived topics fold** (user, 2026-11-25). In block mode
+  (koa/page/topics.ts) the live topics all show as today; of the
+  archived ones only the 5 most recent (by last message, the list's
+  order) show, and the rest are behind a fold row at the end of the
+  archived group; no fold row when 5 or fewer are archived. Line
+  mode (the capsule and its panel) is unchanged. The fold row: a row
+  of the panel's metrics (min-height 28px, padding 4px 8px, 6px
+  radius, hover the well, the hand cursor), text "Show older topics"
+  folded and "Hide older topics" open, in the muted colour at 500,
+  .88em prose like the rows, starting at the row's 8px padding (no
+  indent: it aligns with the rows' "#"); no chevron, no age, no ×,
+  no separator above it (the archived group's dimming sets it
+  apart; the fold row itself is not dimmed). The "All topics" row,
+  when a filter is on, keeps its hairline and stays last, after the
+  fold row. Order, top to bottom: live topics, the 5 shown archived,
+  the pinned one (below), the fold row, "All topics". The summed
+  badge: the unread counts of the hidden archived topics, summed, in
+  the fold row's right slot, the badge of "Unread counts in the
+  widget" (16px, `--ko-color-1`, white 600 10px tabular, "99+"), at
+  full strength; shown only when the sum is above 0 and only while
+  folded ("Hide older topics" has no badge: the topics show their
+  own); nothing takes the slot on hover. A selected filter on a
+  hidden archived topic stays visible while folded: its row is
+  pinned as the last row of the archived group, right above the
+  fold row, dimmed as any archived row with the current fill
+  (well2); it is not in the sum, and it folds back when it is no
+  longer the filter. The fold state is per pane and page-local
+  (`history.state`, as the filter is; survives a reload, not in the
+  session). Folding and unfolding redraw at once, no animation
+  (nothing to reduce for Reduce Motion). Light and dark: the tokens
+  above.
 - **The classifier MVP, reviewed** (2026-11-21; the user promoted
   the MVP of plans/koa-topic-classifier.md; the page's panel
   gained drag, rename and a pending prompt; header.html section 3
@@ -2486,9 +2521,9 @@ show one. Two rendering rules in the composer (CodeMirror, `koa/page/composer.ts
   reply annotations) therefore shows the quoted question as the
   transcript shows it, under a bar, and the answer below it.
 
-## The tail only grows: the ending row, the divider in the gap, the open `!` row (2026-11-24, spec for plans/koa-scroll.md unit 1)
+## The tail only grows: the ending row, the divider in the gap, the open `!` row (2026-11-24, spec for the koa-scroll plan's unit 1)
 
-The user's invariants (plans/koa-scroll.md, "The invariants"): while
+The user's invariants (docs/design-koa.md, "The scroll contract"): while
 following nothing moves against the output and no blank space
 appears at the bottom; a fresh render equals the live view. Three
 visual rules follow; every size at the 13px base, every length in
