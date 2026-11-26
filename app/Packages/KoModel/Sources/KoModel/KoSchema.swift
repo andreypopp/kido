@@ -136,6 +136,12 @@ public enum KoSchema {
         }
     }
 
+    public enum AlphaBlending: String, Codable, Equatable, Sendable {
+        case native
+        case linear
+        case linearCorrected = "linear_corrected"
+    }
+
     public struct App: Codable, Equatable, Sendable {
         public var clipboard: Clipboard
         public var font: Font
@@ -969,23 +975,29 @@ public enum KoSchema {
     }
 
     public struct Font: Codable, Equatable, Sendable {
+        public var blending: AlphaBlending
         public var family: FontFamily?
         public var features: [FontFeature]
         public var lineHeight: LineHeight
         public var size: FontSize
+        public var style: FontStyles
         public var thicken: Bool
-        public init(family: FontFamily? = nil, features: [FontFeature], lineHeight: LineHeight, size: FontSize, thicken: Bool) {
+        public init(blending: AlphaBlending, family: FontFamily? = nil, features: [FontFeature], lineHeight: LineHeight, size: FontSize, style: FontStyles, thicken: Bool) {
+            self.blending = blending
             self.family = family
             self.features = features
             self.lineHeight = lineHeight
             self.size = size
+            self.style = style
             self.thicken = thicken
         }
         private enum CodingKeys: String, CodingKey {
+            case blending
             case family
             case features
             case lineHeight = "line_height"
             case size
+            case style
             case thicken
         }
     }
@@ -995,6 +1007,27 @@ public enum KoSchema {
     public typealias FontFeature = String
 
     public typealias FontSize = Double
+
+    public typealias FontStyleName = String
+
+    public struct FontStyles: Codable, Equatable, Sendable {
+        public var bold: FontStyleName?
+        public var boldItalic: FontStyleName?
+        public var italic: FontStyleName?
+        public var regular: FontStyleName?
+        public init(bold: FontStyleName? = nil, boldItalic: FontStyleName? = nil, italic: FontStyleName? = nil, regular: FontStyleName? = nil) {
+            self.bold = bold
+            self.boldItalic = boldItalic
+            self.italic = italic
+            self.regular = regular
+        }
+        private enum CodingKeys: String, CodingKey {
+            case bold
+            case boldItalic = "bold_italic"
+            case italic
+            case regular
+        }
+    }
 
     public struct Foreground: Codable, Equatable, Sendable {
         public var name: String

@@ -18,7 +18,7 @@ import XCTest
         XCTAssertEqual(ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv), GHOSTTY_SUCCESS)
         let file = try fixture("""
         app:
-          font: {family: Menlo, size: 15, features: [ss13, -ss17, +liga], thicken: true, line_height: 12}
+          font: {family: Menlo, size: 15, features: [ss13, -ss17, +liga], thicken: true, line_height: 12, blending: linear_corrected, style: {regular: Light, bold: Semibold, italic: Light Italic, bold_italic: Semibold Italic}}
           keyboard: {option_as_alt: left}
           mouse: {scroll_multiplier: {precision: 2, discrete: 4}, hide_while_typing: true}
           clipboard: {read: allow, write: deny, copy_on_select: true, paste_protection: false, trim_trailing_spaces: false}
@@ -30,7 +30,7 @@ import XCTest
         defer { ghostty_config_free(loaded.config) }
         let paths = ThemePaths(light: ThemePaths.path("solarized-light", configFile: file), dark: ThemePaths.path("solarized-dark", configFile: file))
         XCTAssertEqual(loaded.text, """
-        alpha-blending = linear
+        alpha-blending = linear-corrected
         cursor-style-blink = false
         keybind = super+k=unbind
         keybind = super+j=unbind
@@ -41,6 +41,10 @@ import XCTest
         font-feature = ss13
         font-feature = -ss17
         font-feature = +liga
+        font-style = Light
+        font-style-bold = Semibold
+        font-style-italic = Light Italic
+        font-style-bold-italic = Semibold Italic
         font-thicken = true
         adjust-cell-height = 12.0%
         macos-option-as-alt = left

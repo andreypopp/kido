@@ -16,9 +16,11 @@
           "write": "allow"
         },
         "font": {
+          "blending": "linear",
           "features": [],
           "line_height": 0.0,
           "size": 13.0,
+          "style": {},
           "thicken": false
         },
         "keyboard": {
@@ -90,6 +92,14 @@
       "type": "string",
       "pattern": "^(unbind|paste_from_clipboard|copy_to_clipboard|reset_font_size|(text|csi|esc):[^\\u0000-\\u001f\\u007f ]([^\\u0000-\\u001f\\u007f]*[^\\u0000-\\u001f\\u007f ])?|(increase|decrease)_font_size:[0-9.]+)$"
     },
+    "AlphaBlending": {
+      "type": "string",
+      "enum": [
+        "native",
+        "linear",
+        "linear_corrected"
+      ]
+    },
     "App": {
       "description": "Kido.app's settings.",
       "type": "object",
@@ -107,9 +117,11 @@
         "font": {
           "$ref": "#/$defs/Font",
           "default": {
+            "blending": "linear",
             "features": [],
             "line_height": 0.0,
             "size": 13.0,
+            "style": {},
             "thicken": false
           }
         },
@@ -360,6 +372,11 @@
     "Font": {
       "type": "object",
       "properties": {
+        "blending": {
+          "description": "How glyph edges blend with the background.",
+          "$ref": "#/$defs/AlphaBlending",
+          "default": "linear"
+        },
         "family": {
           "description": "The font family. Absent means the system's monospaced font.",
           "anyOf": [
@@ -389,6 +406,11 @@
           "$ref": "#/$defs/FontSize",
           "default": 13.0
         },
+        "style": {
+          "description": "The font style name of each face. Absent means the family's default.",
+          "$ref": "#/$defs/FontStyles",
+          "default": {}
+        },
         "thicken": {
           "description": "Draw thicker glyphs.",
           "type": "boolean",
@@ -412,6 +434,57 @@
       "type": "number",
       "maximum": 72.0,
       "minimum": 4.0
+    },
+    "FontStyleName": {
+      "description": "a font style name without a newline",
+      "type": "string",
+      "pattern": "^[^\\r\\n]+$"
+    },
+    "FontStyles": {
+      "type": "object",
+      "properties": {
+        "bold": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FontStyleName"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bold_italic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FontStyleName"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "italic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FontStyleName"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "regular": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FontStyleName"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "HiddenPages": {
       "description": "A number of at least 0 and at most 16.",

@@ -1100,8 +1100,12 @@ binding maps a `Trigger` (Ghostty's `modifier+key`, kept in one
 canonical spelling) to an `Action` of the few that Kido names. A
 trigger of the app's own menus (`ko_config::keys::MENU_OWNED`) is
 refused, in any spelling. An absent `font.family` is the system's
-monospaced font, which the app resolves. The server decodes `app:` and
-does not use it.
+monospaced font, which the app resolves. `font.style` names the face
+of each of `regular`, `bold`, `italic` and `bold_italic` (Ghostty's
+`font-style` keys), such as `Light` or `Semibold Italic`; an absent
+name is the family's default. `font.blending` is `native`, `linear`
+(the default) or `linear_corrected`: Ghostty's `alpha-blending`. The server decodes `app:`
+and does not use it.
 
 **The C ABI.** Kido.app reads the file through `ko_client`, because
 the app must work without a server. `ko_config_defaults` returns the

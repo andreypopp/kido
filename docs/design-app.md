@@ -650,6 +650,8 @@ stderr, and the tests fail on it. An absent `font.family` is the
 system's monospaced font: the family name of
 `NSFont.monospacedSystemFont` (`.AppleSystemUIFontMonospaced`), which
 Ghostty's CoreText discovery resolves to its Regular face.
+`font.style` writes one `font-style*` line for each name that is set,
+and `font.blending` writes `alpha-blending`, with `_` as `-`.
 `copy_on_select` is a bool: Ghostty's `primary` has no effect on macOS,
 so `true` is `clipboard` and `false` is `none`, Ghostty's macOS default.
 `app.keys` becomes one `keybind` line for each binding; the visual

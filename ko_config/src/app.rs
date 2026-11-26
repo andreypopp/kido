@@ -5,7 +5,9 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::keys::{Action, Trigger};
-use crate::values::{FontFamily, FontFeature, HiddenPages, ThemeName, ranged, word_or_map};
+use crate::values::{
+    FontFamily, FontFeature, FontStyleName, HiddenPages, ThemeName, ranged, word_or_map,
+};
 
 /// Kido.app's settings.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -119,6 +121,32 @@ pub struct Font {
     pub thicken: bool,
     /// The change of the cell height in percent.
     pub line_height: LineHeight,
+    /// The font style name of each face. Absent means the family's default.
+    pub style: FontStyles,
+    /// How glyph edges blend with the background.
+    pub blending: AlphaBlending,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct FontStyles {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub regular: Option<FontStyleName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bold: Option<FontStyleName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub italic: Option<FontStyleName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bold_italic: Option<FontStyleName>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AlphaBlending {
+    Native,
+    #[default]
+    Linear,
+    LinearCorrected,
 }
 
 /// Whether the option key acts as alt: off, on, or the left or right one only.
@@ -241,7 +269,7 @@ mod tests {
             serde_json::to_value(&found).unwrap(),
             serde_json::json!({
                 "theme": {"light": "kido-light", "dark": "kido-dark"},
-                "font": {"size": 13.0, "features": [], "thicken": false, "line_height": 0.0},
+                "font": {"size": 13.0, "features": [], "thicken": false, "line_height": 0.0, "style": {}, "blending": "linear"},
                 "keyboard": {"option_as_alt": "off"},
                 "mouse": {"scroll_multiplier": {"precision": 1.0, "discrete": 3.0}, "hide_while_typing": false},
                 "clipboard": {"read": "ask", "write": "allow", "copy_on_select": false, "paste_protection": true, "trim_trailing_spaces": true},
@@ -263,6 +291,8 @@ app:
     features: [ss13, -ss17, +liga, '0123']
     thicken: true
     line_height: -5.5
+    style: {regular: Light, bold: Semibold, italic: Light Italic, bold_italic: Semibold Italic}
+    blending: linear_corrected
   keyboard: {option_as_alt: left}
   mouse:
     scroll_multiplier: {precision: 0.5, discrete: 10}
@@ -284,7 +314,7 @@ app:
             json,
             serde_json::json!({
                 "theme": {"light": "a", "dark": "b"},
-                "font": {"family": "PragmataPro Mono Liga", "size": 16.0, "features": ["ss13", "-ss17", "+liga", "0123"], "thicken": true, "line_height": -5.5},
+                "font": {"family": "PragmataPro Mono Liga", "size": 16.0, "features": ["ss13", "-ss17", "+liga", "0123"], "thicken": true, "line_height": -5.5, "style": {"regular": "Light", "bold": "Semibold", "italic": "Light Italic", "bold_italic": "Semibold Italic"}, "blending": "linear_corrected"},
                 "keyboard": {"option_as_alt": "left"},
                 "mouse": {"scroll_multiplier": {"precision": 0.5, "discrete": 10.0}, "hide_while_typing": true},
                 "clipboard": {"read": "deny", "write": "deny", "copy_on_select": true, "paste_protection": false, "trim_trailing_spaces": false},
@@ -399,6 +429,16 @@ app:
                 parse(&format!("app:\n  font: {{family: {bad}}}\n")).is_err(),
                 "{bad}"
             );
+            assert!(
+                parse(&format!("app:\n  font: {{style: {{bold: {bad}}}}}\n")).is_err(),
+                "{bad}"
+            );
+        }
+        for bad in ["beam", "on", "Linear"] {
+            assert!(
+                parse(&format!("app:\n  font: {{blending: {bad}}}\n")).is_err(),
+                "{bad}"
+            );
         }
         for good in ["ss01", "-ss01", "+liga", "calt", "ZERO"] {
             assert!(
@@ -483,7 +523,7 @@ app:
             ),
             (
                 "app:\n  font: {colour: red}\n",
-                "app: font: unknown field `colour`, expected one of `family`, `size`, `features`, `thicken`, `line_height` at line 2 column 10",
+                "app: font: unknown field `colour`, expected one of `family`, `size`, `features`, `thicken`, `line_height`, `style`, `blending` at line 2 column 10",
             ),
             (
                 "app:\n  mouse: {scroll_multiplier: {rows: 3}}\n",

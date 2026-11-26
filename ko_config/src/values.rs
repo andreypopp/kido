@@ -330,6 +330,12 @@ word!(
     |text: &str| !text.is_empty() && !text.contains(['\r', '\n'])
 );
 word!(
+    FontStyleName,
+    "a font style name without a newline",
+    "^[^\\r\\n]+$",
+    |text: &str| !text.is_empty() && !text.contains(['\r', '\n'])
+);
+word!(
     FontFeature,
     "an OpenType feature tag with an optional + or -",
     "^[+-]?[a-zA-Z0-9]{4}$",
