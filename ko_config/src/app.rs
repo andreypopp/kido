@@ -224,13 +224,25 @@ impl Default for Clipboard {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct WindowSettings {
     /// The shade of the sidebar in percent. The sign follows the theme.
     pub sidebar_shade: SidebarShade,
     /// The shift of the background of an unfocused pane in percent.
     pub unfocused_shift: UnfocusedShift,
+    /// Show the row of window tabs at the top of the terminal area.
+    pub tab_bar: bool,
+}
+
+impl Default for WindowSettings {
+    fn default() -> WindowSettings {
+        WindowSettings {
+            sidebar_shade: SidebarShade::default(),
+            unfocused_shift: UnfocusedShift::default(),
+            tab_bar: true,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -273,7 +285,7 @@ mod tests {
                 "keyboard": {"option_as_alt": "off"},
                 "mouse": {"scroll_multiplier": {"precision": 1.0, "discrete": 3.0}, "hide_while_typing": false},
                 "clipboard": {"read": "ask", "write": "allow", "copy_on_select": false, "paste_protection": true, "trim_trailing_spaces": true},
-                "window": {"sidebar_shade": 5.0, "unfocused_shift": 3.0},
+                "window": {"sidebar_shade": 5.0, "unfocused_shift": 3.0, "tab_bar": true},
                 "webview": {"enabled": true, "inspector": false, "keep_hidden": 4},
                 "keys": {}
             })
@@ -303,7 +315,7 @@ app:
     copy_on_select: true
     paste_protection: false
     trim_trailing_spaces: false
-  window: {sidebar_shade: -10, unfocused_shift: 0}
+  window: {sidebar_shade: -10, unfocused_shift: 0, tab_bar: false}
   keys:
     super+e: text:X
     ctrl+shift+arrow_up: csi:1;5A
@@ -318,7 +330,7 @@ app:
                 "keyboard": {"option_as_alt": "left"},
                 "mouse": {"scroll_multiplier": {"precision": 0.5, "discrete": 10.0}, "hide_while_typing": true},
                 "clipboard": {"read": "deny", "write": "deny", "copy_on_select": true, "paste_protection": false, "trim_trailing_spaces": false},
-                "window": {"sidebar_shade": -10.0, "unfocused_shift": 0.0},
+                "window": {"sidebar_shade": -10.0, "unfocused_shift": 0.0, "tab_bar": false},
                 "webview": {"enabled": true, "inspector": false, "keep_hidden": 4},
                 "keys": {"alt+k": "unbind", "ctrl+shift+arrow_up": "csi:1;5A", "super+e": "text:X"}
             })
@@ -531,7 +543,7 @@ app:
             ),
             (
                 "app:\n  window: {sidebar: 1}\n",
-                "app: window: unknown field `sidebar`, expected `sidebar_shade` or `unfocused_shift` at line 2 column 12",
+                "app: window: unknown field `sidebar`, expected one of `sidebar_shade`, `unfocused_shift`, `tab_bar` at line 2 column 12",
             ),
             (
                 "app: [a]\n",

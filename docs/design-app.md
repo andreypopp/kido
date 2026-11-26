@@ -2322,6 +2322,36 @@ right; its buttons send their action to the responder chain, which ends
 at the window's `WindowOwner`. When the sidebar collapses, New Session
 hides but keeps its slot.
 
+`window.tab_bar: false` removes the window's `NSToolbar` (`window.toolbar =
+nil`; `Sidebar.applyToolbar` runs at launch and in `Sidebar.updateAppearance`,
+so a reload applies it, and the `WindowOwner` keeps the toolbar for the next
+`true`). The window then has a title strip, `Sidebar.strip`, at the top of the
+terminal column. Its height is the native titlebar height: its bottom is the
+top of `terminalHost`'s safe area, which AppKit sets to the titlebar. The
+height is not a constant (32 pt on the current macOS; the
+tests compare it with `window.frame.height - contentLayoutRect.maxY`). AppKit
+centers the standard window buttons in that same height, so the buttons, the
+title and the sidebar toggle share one centerline and the app moves no button.
+The strip shows the window title (`NSWindow.title`, the same text as the native
+title) centered in 12 pt medium type. The sidebar keeps the full window height
+beside it. The terminal starts at the bottom of the strip (`content.top` is
+`strip.bottom`), so no terminal row is in the titlebar region and every click
+on the terminal reaches the pane. `PaneView`, `WindowView` and `SessionView`
+return `false` from `mouseDownCanMoveWindow`: a non-opaque `NSView` returns
+`true` by default, and AppKit then moves the window from a mouse-down in the
+transparent titlebar region. A mouse-down on the strip drags the window
+(`performDrag`). A double-click does the system action of
+`AppleActionOnDoubleClick` (zoom, or minimize, or none).
+
+The lights are over the sidebar while it is shown and at the left of the strip
+while it is hidden. The strip's title view starts 120 pt from the left edge of
+the column, so it never overlaps them. The Back, Forward and New Window buttons
+go with the toolbar; their menu items and shortcuts remain. The sidebar toggle
+is a button in the top right of the sidebar's dock (`Sidebar.dockToggle`),
+centered on the strip's centerline; while the sidebar is hidden it is available
+from the menu and its shortcut. The remote user@host label is part of the tabs
+and goes with them.
+
 Titlebar tabs and the remote user@host label occupy a flexible native
 `NSToolbarItem` after `sidebarTrackingSeparator`, not a content overlay.
 They follow the native separator when the floating sidebar opens.

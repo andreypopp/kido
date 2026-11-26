@@ -45,6 +45,7 @@
         },
         "window": {
           "sidebar_shade": 5.0,
+          "tab_bar": true,
           "unfocused_shift": 3.0
         }
       }
@@ -173,6 +174,7 @@
           "$ref": "#/$defs/WindowSettings",
           "default": {
             "sidebar_shade": 5.0,
+            "tab_bar": true,
             "unfocused_shift": 3.0
           }
         }
@@ -1117,6 +1119,11 @@
           "description": "The shade of the sidebar in percent. The sign follows the theme.",
           "$ref": "#/$defs/SidebarShade",
           "default": 5.0
+        },
+        "tab_bar": {
+          "description": "Show the row of window tabs at the top of the terminal area.",
+          "type": "boolean",
+          "default": true
         },
         "unfocused_shift": {
           "description": "The shift of the background of an unfocused pane in percent.",

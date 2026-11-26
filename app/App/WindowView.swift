@@ -22,6 +22,7 @@ private extension NSCursor.FrameResizePosition {
 }
 
 final class WindowView: NSView {
+    override var mouseDownCanMoveWindow: Bool { false }
     #if KIDO_VISUAL
     @MainActor static var toolbarFadeDuration: TimeInterval = 0.15
     #else

@@ -1104,8 +1104,9 @@ monospaced font, which the app resolves. `font.style` names the face
 of each of `regular`, `bold`, `italic` and `bold_italic` (Ghostty's
 `font-style` keys), such as `Light` or `Semibold Italic`; an absent
 name is the family's default. `font.blending` is `native`, `linear`
-(the default) or `linear_corrected`: Ghostty's `alpha-blending`. The server decodes `app:`
-and does not use it.
+(the default) or `linear_corrected`: Ghostty's `alpha-blending`.
+`window.tab_bar` is a bool, `true` by default: `false` hides the window
+tabs. The server decodes `app:` and does not use it.
 
 **The C ABI.** Kido.app reads the file through `ko_client`, because
 the app must work without a server. `ko_config_defaults` returns the

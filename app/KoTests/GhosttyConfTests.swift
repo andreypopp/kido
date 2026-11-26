@@ -231,6 +231,63 @@ import XCTest
         XCTAssertEqual(runtime.values.font.size, 13)
     }
 
+    func testTabBarFalseHasAThinTitleStripAboveTheTerminalAtLaunchAndReload() throws {
+        let file = try fixture("app: {window: {tab_bar: false}}\n")
+        let board = NSPasteboard(name: .init(UUID().uuidString))
+        let runtime = try XCTUnwrap(GhosttyRuntime(configFile: file, pasteboard: board))
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        addTeardownBlock { @MainActor in owner.close(); board.releaseGlobally() }
+        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 1), font: 13))
+        addTeardownBlock { @MainActor in pane.dispose() }
+        owner.sidebar.content.addSubview(pane)
+        pane.autoresizingMask = [.width, .height]
+        func gap() -> CGFloat {
+            owner.window.contentView?.layoutSubtreeIfNeeded()
+            let area = owner.sidebar.content.convert(owner.sidebar.content.bounds, to: nil)
+            return owner.window.frame.height - owner.window.convertToScreen(area).maxY + owner.window.frame.minY
+        }
+        func titlebar() -> CGFloat { owner.window.frame.height - owner.window.contentLayoutRect.maxY }
+        func centerY(_ view: NSView) -> CGFloat { view.convert(view.bounds, to: nil).midY }
+        func frame() -> NSView { owner.window.contentView!.superview! }
+        func hit(_ view: NSView, y: CGFloat) -> NSView? {
+            owner.window.contentView?.layoutSubtreeIfNeeded()
+            return frame().hitTest(frame().convert(NSPoint(x: view.bounds.midX, y: y), from: view))
+        }
+        func topRow() -> NSView? {
+            pane.frame = owner.sidebar.content.bounds
+            return hit(pane, y: pane.bounds.maxY - 3)
+        }
+        XCTAssertNil(owner.window.toolbar)
+        for collapsed in [false, true, false] {
+            owner.sidebar.isCollapsed = collapsed
+            let strip = owner.sidebar.strip
+            XCTAssertEqual(gap(), titlebar(), accuracy: 0.5)
+            XCTAssertGreaterThan(titlebar(), 0)
+            XCTAssertEqual(strip.convert(strip.bounds, to: nil).height, titlebar(), accuracy: 0.5)
+            let lights = centerY(try XCTUnwrap(owner.window.standardWindowButton(.closeButton)))
+            XCTAssertEqual(centerY(strip), lights, accuracy: 0.5)
+            XCTAssertEqual(centerY(owner.sidebar.dockToggle), lights, accuracy: 0.5)
+            XCTAssertEqual(strip.convert(strip.bounds, to: nil).minY, owner.sidebar.content.convert(owner.sidebar.content.bounds, to: nil).maxY, accuracy: 0.5)
+            XCTAssertEqual(strip.title, owner.window.title)
+            XCTAssertTrue(topRow() === pane)
+            XCTAssertFalse(try XCTUnwrap(topRow()).mouseDownCanMoveWindow)
+            XCTAssertTrue(hit(strip, y: strip.bounds.midY) === strip)
+            XCTAssertTrue(strip.mouseDownCanMoveWindow)
+            XCTAssertFalse(owner.window.standardWindowButton(.closeButton)?.isHidden ?? true)
+        }
+        for (text, tabs) in [("app: {window: {tab_bar: true}}\n", true), ("app: {window: {tab_bar: false}}\n", false), ("", true)] {
+            let changed = expectation(description: "config load")
+            runtime.onConfigChange = { owner.updateAppearance(); changed.fulfill() }
+            try text.write(toFile: file, atomically: true, encoding: .utf8)
+            wait(for: [changed], timeout: 5)
+            runtime.onConfigChange = {}
+            XCTAssertEqual(owner.window.toolbar != nil, tabs)
+            XCTAssertEqual(owner.sidebar.strip.isHidden, tabs)
+            if tabs { XCTAssertGreaterThan(gap(), 40) } else { XCTAssertEqual(gap(), titlebar(), accuracy: 0.5) }
+            XCTAssertFalse(try XCTUnwrap(topRow()).mouseDownCanMoveWindow)
+        }
+    }
+
     func testConfigNoticeKeepsGeometryAndStaysAboveLinkFailure() throws {
         let file = try fixture("app: {font: {size: bad}}\n")
         let board = NSPasteboard(name: .init(UUID().uuidString))

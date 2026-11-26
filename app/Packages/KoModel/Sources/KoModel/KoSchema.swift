@@ -2414,13 +2414,16 @@ public enum KoSchema {
 
     public struct WindowSettings: Codable, Equatable, Sendable {
         public var sidebarShade: SidebarShade
+        public var tabBar: Bool
         public var unfocusedShift: UnfocusedShift
-        public init(sidebarShade: SidebarShade, unfocusedShift: UnfocusedShift) {
+        public init(sidebarShade: SidebarShade, tabBar: Bool, unfocusedShift: UnfocusedShift) {
             self.sidebarShade = sidebarShade
+            self.tabBar = tabBar
             self.unfocusedShift = unfocusedShift
         }
         private enum CodingKeys: String, CodingKey {
             case sidebarShade = "sidebar_shade"
+            case tabBar = "tab_bar"
             case unfocusedShift = "unfocused_shift"
         }
     }
