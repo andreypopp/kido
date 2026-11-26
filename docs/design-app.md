@@ -2904,6 +2904,12 @@ while the palette or a sheet is up: `OwnerWindow.sendEvent` takes both
 their press and release before a terminal can receive them. On a float
 they do nothing: the history is the main window's. The actions are `navigateHistoryBack:` and `navigateHistoryForward:`, not `goBack:` and `goForward:`, because a focused webview implements those two itself and takes a responder-chain action of that name. ko_tui has no history.
 
+The Shell menu's Split Up item opens a pane above the focused pane and
+selects it, as Split Down does below. It has no key equivalent, so the user
+can assign one in System Settings, Keyboard Shortcuts, App Shortcuts by its
+title "Split Up". It is not a palette command; Ghostty's split-up action runs
+the same command.
+
 ## Command palette
 
 Command-P (View → Command Palette…) opens the palette and closes it.
