@@ -288,6 +288,27 @@ import XCTest
         }
     }
 
+    func testSidebarFontSizeScalesTheFontsAndRowsAtLaunchAndReload() throws {
+        let file = try fixture("app: {window: {sidebar_font_size: 11}}\n")
+        let board = NSPasteboard(name: .init(UUID().uuidString))
+        let runtime = try XCTUnwrap(GhosttyRuntime(configFile: file, pasteboard: board))
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        addTeardownBlock { @MainActor in owner.close(); board.releaseGlobally() }
+        let list = owner.sidebar.list
+        XCTAssertEqual(list.fonts.regular.pointSize, 11)
+        XCTAssertEqual(list.fonts.scale * 43, 43 * 11 / 14, accuracy: 0.001)
+        for (text, size) in [("app: {window: {sidebar_font_size: 20}}\n", 20), ("", 14)] {
+            let changed = expectation(description: "config load")
+            runtime.onConfigChange = { owner.updateAppearance(); changed.fulfill() }
+            try text.write(toFile: file, atomically: true, encoding: .utf8)
+            wait(for: [changed], timeout: 5)
+            runtime.onConfigChange = {}
+            XCTAssertEqual(list.fonts.regular.pointSize, CGFloat(size))
+            XCTAssertEqual(list.fonts.clock.pointSize, 10 * CGFloat(size) / 14, accuracy: 0.001)
+        }
+        XCTAssertEqual(list.fonts.scale, 1)
+    }
+
     func testConfigNoticeKeepsGeometryAndStaysAboveLinkFailure() throws {
         let file = try fixture("app: {font: {size: bad}}\n")
         let board = NSPasteboard(name: .init(UUID().uuidString))

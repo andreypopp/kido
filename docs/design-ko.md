@@ -1105,6 +1105,9 @@ of each of `regular`, `bold`, `italic` and `bold_italic` (Ghostty's
 `font-style` keys), such as `Light` or `Semibold Italic`; an absent
 name is the family's default. `font.blending` is `native`, `linear`
 (the default) or `linear_corrected`: Ghostty's `alpha-blending`.
+`window.sidebar_font_size` is the sidebar's row font in points, 6 to 40,
+14 by default. The row heights, the insets, the heading, the second
+line and the status marks scale with it (see docs/design-app.md).
 `window.tab_bar` is a bool, `true` by default: `false` hides the window
 tabs. The server decodes `app:` and does not use it.
 

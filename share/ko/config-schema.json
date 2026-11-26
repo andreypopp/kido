@@ -44,6 +44,7 @@
           "keep_hidden": 4
         },
         "window": {
+          "sidebar_font_size": 14.0,
           "sidebar_shade": 5.0,
           "tab_bar": true,
           "unfocused_shift": 3.0
@@ -173,6 +174,7 @@
         "window": {
           "$ref": "#/$defs/WindowSettings",
           "default": {
+            "sidebar_font_size": 14.0,
             "sidebar_shade": 5.0,
             "tab_bar": true,
             "unfocused_shift": 3.0
@@ -937,6 +939,12 @@
       },
       "additionalProperties": false
     },
+    "SidebarFontSize": {
+      "description": "A number of at least 6 and at most 40.",
+      "type": "number",
+      "maximum": 40.0,
+      "minimum": 6.0
+    },
     "SidebarShade": {
       "description": "A number of at least -100 and at most 100.",
       "type": "number",
@@ -1115,6 +1123,11 @@
     "WindowSettings": {
       "type": "object",
       "properties": {
+        "sidebar_font_size": {
+          "description": "The font size of the sidebar in points. Its rows scale with it.",
+          "$ref": "#/$defs/SidebarFontSize",
+          "default": 14.0
+        },
         "sidebar_shade": {
           "description": "The shade of the sidebar in percent. The sign follows the theme.",
           "$ref": "#/$defs/SidebarShade",

@@ -103,6 +103,7 @@ impl<'de> Deserialize<'de> for Theme {
 ranged!(FontSize, 4.0..=72.0, 13.0);
 ranged!(LineHeight, -50.0..=100.0, 0.0);
 ranged!(SidebarShade, -100.0..=100.0, 5.0);
+ranged!(SidebarFontSize, 6.0..=40.0, 14.0);
 ranged!(UnfocusedShift, -100.0..=100.0, 3.0);
 ranged!(PrecisionScroll, 0.01..=100.0, 1.0);
 ranged!(DiscreteScroll, 0.01..=100.0, 3.0);
@@ -233,6 +234,8 @@ pub struct WindowSettings {
     pub unfocused_shift: UnfocusedShift,
     /// Show the row of window tabs at the top of the terminal area.
     pub tab_bar: bool,
+    /// The font size of the sidebar in points. Its rows scale with it.
+    pub sidebar_font_size: SidebarFontSize,
 }
 
 impl Default for WindowSettings {
@@ -241,6 +244,7 @@ impl Default for WindowSettings {
             sidebar_shade: SidebarShade::default(),
             unfocused_shift: UnfocusedShift::default(),
             tab_bar: true,
+            sidebar_font_size: SidebarFontSize::default(),
         }
     }
 }
@@ -285,7 +289,7 @@ mod tests {
                 "keyboard": {"option_as_alt": "off"},
                 "mouse": {"scroll_multiplier": {"precision": 1.0, "discrete": 3.0}, "hide_while_typing": false},
                 "clipboard": {"read": "ask", "write": "allow", "copy_on_select": false, "paste_protection": true, "trim_trailing_spaces": true},
-                "window": {"sidebar_shade": 5.0, "unfocused_shift": 3.0, "tab_bar": true},
+                "window": {"sidebar_shade": 5.0, "unfocused_shift": 3.0, "tab_bar": true, "sidebar_font_size": 14.0},
                 "webview": {"enabled": true, "inspector": false, "keep_hidden": 4},
                 "keys": {}
             })
@@ -315,7 +319,7 @@ app:
     copy_on_select: true
     paste_protection: false
     trim_trailing_spaces: false
-  window: {sidebar_shade: -10, unfocused_shift: 0, tab_bar: false}
+  window: {sidebar_shade: -10, unfocused_shift: 0, tab_bar: false, sidebar_font_size: 11}
   keys:
     super+e: text:X
     ctrl+shift+arrow_up: csi:1;5A
@@ -330,7 +334,7 @@ app:
                 "keyboard": {"option_as_alt": "left"},
                 "mouse": {"scroll_multiplier": {"precision": 0.5, "discrete": 10.0}, "hide_while_typing": true},
                 "clipboard": {"read": "deny", "write": "deny", "copy_on_select": true, "paste_protection": false, "trim_trailing_spaces": false},
-                "window": {"sidebar_shade": -10.0, "unfocused_shift": 0.0, "tab_bar": false},
+                "window": {"sidebar_shade": -10.0, "unfocused_shift": 0.0, "tab_bar": false, "sidebar_font_size": 11.0},
                 "webview": {"enabled": true, "inspector": false, "keep_hidden": 4},
                 "keys": {"alt+k": "unbind", "ctrl+shift+arrow_up": "csi:1;5A", "super+e": "text:X"}
             })
@@ -394,6 +398,7 @@ app:
             ("font: {line_height: ", -50.0, 100.0),
             ("window: {sidebar_shade: ", -100.0, 100.0),
             ("window: {unfocused_shift: ", -100.0, 100.0),
+            ("window: {sidebar_font_size: ", 6.0, 40.0),
             ("mouse: {scroll_multiplier: {precision: ", 0.01, 100.0),
             ("mouse: {scroll_multiplier: {discrete: ", 0.01, 100.0),
         ] {
@@ -543,7 +548,7 @@ app:
             ),
             (
                 "app:\n  window: {sidebar: 1}\n",
-                "app: window: unknown field `sidebar`, expected one of `sidebar_shade`, `unfocused_shift`, `tab_bar` at line 2 column 12",
+                "app: window: unknown field `sidebar`, expected one of `sidebar_shade`, `unfocused_shift`, `tab_bar`, `sidebar_font_size` at line 2 column 12",
             ),
             (
                 "app: [a]\n",

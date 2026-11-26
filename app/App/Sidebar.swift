@@ -174,6 +174,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate, NSMenuItemValidat
         separatorColor = runtime.sidebarSeparator
         list.appearance = NSAppearance(named: shade.luminance < 0.179 ? .darkAqua : .aqua)
         list.terminalDark = background.isDark
+        list.fontSize = CGFloat(runtime.values.window.sidebarFontSize)
     }
 
     func applyToolbar() {

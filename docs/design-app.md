@@ -2322,6 +2322,16 @@ right; its buttons send their action to the responder chain, which ends
 at the window's `WindowOwner`. When the sidebar collapses, New Session
 hides but keeps its slot.
 
+`window.sidebar_font_size` (14 pt by default) sets the sidebar's size.
+`SidebarFonts(size:)` derives every font from it, and its `scale`
+(size / 14) multiplies each length that `SidebarCell` and
+`SidebarChildren` draw or lay out: the row height (43 pt pane row, 26 pt
+heading, rounded to a whole point), the paddings, the tree indent, the
+selection radius, the second line, the clock, the status mark and the
+buttons' slots. `Sidebar.updateAppearance` sets `SidebarView.fontSize` on
+every reload, and a changed size reloads the rows. At 14 pt the scale is
+1 and the drawing is the same as before.
+
 `window.tab_bar: false` removes the window's `NSToolbar` (`window.toolbar =
 nil`; `Sidebar.applyToolbar` runs at launch and in `Sidebar.updateAppearance`,
 so a reload applies it, and the `WindowOwner` keeps the toolbar for the next
