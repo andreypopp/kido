@@ -10,6 +10,8 @@ import SidebarFeed
     let window = NSMenu(title: "Window")
     let session = NSMenu(title: "Session")
 
+    private let zoom = NSMenuItem(title: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+
     func update(_ model: SessionModel) {
         window.items = [
             item("Next Window", "}", .switchWindow(next: true)),
@@ -19,7 +21,7 @@ import SidebarFeed
             let entry = item(w.name, n < 9 ? "\(n + 1)" : "", model.select(.number(n + 1)))
             entry.state = w.id == model.window ? .on : .off
             return entry
-        }
+        } + [.separator(), zoom]
         session.items = [
             item("Next Session", "]", .switchSession(next: true), [.command, .option]),
             item("Previous Session", "[", .switchSession(next: false), [.command, .option]),

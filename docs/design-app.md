@@ -2379,6 +2379,10 @@ palette and Ghostty's tab actions) step through the tabs with
 `ko_client_switch`, the server's window switch, which visits every
 window in document order, across sessions.
 
+The Window menu also has the standard Zoom item (`performZoom:`, no key in
+code). A user App Shortcut for the title "Zoom" works on it. Zoom Pane has a
+different title. The palette does not list it.
+
 Tabs project the current session's windows from the snapshot, and the
 client's current window is the active tab. Each title is
 the composed label of that window's focus pane, or of the client's active

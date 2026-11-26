@@ -821,7 +821,7 @@ import XCTest
         }
         let menus = SessionMenus()
         menus.update(SessionModel())
-        for item in menus.window.items + menus.session.items where !item.isSeparatorItem {
+        for item in menus.window.items + menus.session.items where !item.isSeparatorItem && item.target === menus {
             XCTAssertFalse(menus.validateMenuItem(item), item.title)
         }
         for action in [#selector(Sidebar.toggleSidebar(_:)), #selector(Sidebar.focusSidebar(_:)), #selector(NSWindow.toggleFullScreen(_:)), #selector(AppDelegate.closeWindow)] {
