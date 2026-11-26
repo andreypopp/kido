@@ -150,6 +150,14 @@ pub enum AlphaBlending {
     LinearCorrected,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SidebarDensity {
+    #[default]
+    Regular,
+    Compact,
+}
+
 /// Whether the option key acts as alt: off, on, or the left or right one only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -236,6 +244,8 @@ pub struct WindowSettings {
     pub tab_bar: bool,
     /// The font size of the sidebar in points. Its rows scale with it.
     pub sidebar_font_size: SidebarFontSize,
+    /// The height of the sidebar rows: `compact` drops the spare space above and below the text.
+    pub sidebar_density: SidebarDensity,
 }
 
 impl Default for WindowSettings {
@@ -245,6 +255,7 @@ impl Default for WindowSettings {
             unfocused_shift: UnfocusedShift::default(),
             tab_bar: true,
             sidebar_font_size: SidebarFontSize::default(),
+            sidebar_density: SidebarDensity::default(),
         }
     }
 }
@@ -289,7 +300,7 @@ mod tests {
                 "keyboard": {"option_as_alt": "off"},
                 "mouse": {"scroll_multiplier": {"precision": 1.0, "discrete": 3.0}, "hide_while_typing": false},
                 "clipboard": {"read": "ask", "write": "allow", "copy_on_select": false, "paste_protection": true, "trim_trailing_spaces": true},
-                "window": {"sidebar_shade": 5.0, "unfocused_shift": 3.0, "tab_bar": true, "sidebar_font_size": 14.0},
+                "window": {"sidebar_shade": 5.0, "unfocused_shift": 3.0, "tab_bar": true, "sidebar_font_size": 14.0, "sidebar_density": "regular"},
                 "webview": {"enabled": true, "inspector": false, "keep_hidden": 4},
                 "keys": {}
             })
@@ -319,7 +330,7 @@ app:
     copy_on_select: true
     paste_protection: false
     trim_trailing_spaces: false
-  window: {sidebar_shade: -10, unfocused_shift: 0, tab_bar: false, sidebar_font_size: 11}
+  window: {sidebar_shade: -10, unfocused_shift: 0, tab_bar: false, sidebar_font_size: 11, sidebar_density: compact}
   keys:
     super+e: text:X
     ctrl+shift+arrow_up: csi:1;5A
@@ -334,7 +345,7 @@ app:
                 "keyboard": {"option_as_alt": "left"},
                 "mouse": {"scroll_multiplier": {"precision": 0.5, "discrete": 10.0}, "hide_while_typing": true},
                 "clipboard": {"read": "deny", "write": "deny", "copy_on_select": true, "paste_protection": false, "trim_trailing_spaces": false},
-                "window": {"sidebar_shade": -10.0, "unfocused_shift": 0.0, "tab_bar": false, "sidebar_font_size": 11.0},
+                "window": {"sidebar_shade": -10.0, "unfocused_shift": 0.0, "tab_bar": false, "sidebar_font_size": 11.0, "sidebar_density": "compact"},
                 "webview": {"enabled": true, "inspector": false, "keep_hidden": 4},
                 "keys": {"alt+k": "unbind", "ctrl+shift+arrow_up": "csi:1;5A", "super+e": "text:X"}
             })
@@ -457,6 +468,12 @@ app:
                 "{bad}"
             );
         }
+        for bad in ["dense", "Compact", "1"] {
+            assert!(
+                parse(&format!("app:\n  window: {{sidebar_density: {bad}}}\n")).is_err(),
+                "{bad}"
+            );
+        }
         for good in ["ss01", "-ss01", "+liga", "calt", "ZERO"] {
             assert!(
                 parse(&format!("app:\n  font: {{features: ['{good}']}}\n")).is_ok(),
@@ -548,7 +565,7 @@ app:
             ),
             (
                 "app:\n  window: {sidebar: 1}\n",
-                "app: window: unknown field `sidebar`, expected one of `sidebar_shade`, `unfocused_shift`, `tab_bar`, `sidebar_font_size` at line 2 column 12",
+                "app: window: unknown field `sidebar`, expected one of `sidebar_shade`, `unfocused_shift`, `tab_bar`, `sidebar_font_size`, `sidebar_density` at line 2 column 12",
             ),
             (
                 "app: [a]\n",

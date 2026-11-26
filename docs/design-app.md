@@ -2332,6 +2332,21 @@ buttons' slots. `Sidebar.updateAppearance` sets `SidebarView.fontSize` on
 every reload, and a changed size reloads the rows. At 14 pt the scale is
 1 and the drawing is the same as before.
 
+A pane row is 43 pt because it always holds two lines: the title line
+(5 pt padding, 19 pt) and, from 24 pt, the tail line of 14 pt for the
+second line and the folded children, whether or not the row has a tail.
+`window.sidebar_density: compact` makes the row follow its content
+(`SidebarRow.compactHeight`, from `showsTail`, scaled and rounded by
+`SidebarFonts.height`): a pane row without a tail is 27 pt (23 pt at
+12 pt, 25 pt at 13 pt), a row with a tail is 40 pt with the tail line at
+23 pt, and a heading is 22 pt. The title keeps its 5 pt offset, so the
+status mark stays centered on the text. The selection radius is 5 pt
+instead of 7 pt, and the group slices of a block use the same radius, so
+the hierarchy guides stay continuous. `regular` (the default) keeps the
+sizes above. `Sidebar.updateAppearance` sets `SidebarView.compact` on
+every reload. A row changes height when its tail appears or goes, as the
+caption debounce decides.
+
 `window.tab_bar: false` removes the window's `NSToolbar` (`window.toolbar =
 nil`; `Sidebar.applyToolbar` runs at launch and in `Sidebar.updateAppearance`,
 so a reload applies it, and the `WindowOwner` keeps the toolbar for the next

@@ -37,6 +37,7 @@ func drawStatusMark(_ status: SidebarRow.Status, at center: NSPoint, flipped: Bo
 struct SidebarFonts {
     static let baseSize: CGFloat = 14
     let scale: CGFloat
+    let compact: Bool
     let regular: NSFont
     let selected: NSFont
     let section: NSFont
@@ -44,9 +45,10 @@ struct SidebarFonts {
     let clock: NSFont
     let suffix: NSFont
 
-    init(size: CGFloat = baseSize) {
+    init(size: CGFloat = baseSize, compact: Bool = false) {
         let k = size / Self.baseSize
         scale = k
+        self.compact = compact
         regular = .systemFont(ofSize: 14 * k)
         selected = .systemFont(ofSize: 14 * k, weight: .semibold)
         section = .systemFont(ofSize: 11 * k, weight: .semibold)
@@ -54,6 +56,11 @@ struct SidebarFonts {
         clock = .monospacedDigitSystemFont(ofSize: 10 * k, weight: .regular)
         suffix = .systemFont(ofSize: 13 * k)
     }
+
+    func height(_ row: SidebarRow) -> CGFloat { ((compact ? row.compactHeight : row.height) * scale).rounded() }
+    func tailY(_ row: SidebarRow) -> CGFloat { (compact ? row.compactTailY : row.tailY) * scale }
+    var radius: CGFloat { (compact ? 5 : 7) * scale }
+    var headerY: CGFloat { (compact ? 3.5 : 5) * scale }
 }
 
 final class SidebarChildren: NSView {
@@ -131,7 +138,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
 
     override func mouseDown(with event: NSEvent) {
         if case .header = row?.kind, event.clickCount == 2,
-           NSRect(x: 5 * k, y: 5 * k, width: max(0, bounds.width - 29 * k), height: 18 * k).contains(convert(event.locationInWindow, from: nil)) {
+           NSRect(x: 5 * k, y: fonts.headerY, width: max(0, bounds.width - 29 * k), height: 18 * k).contains(convert(event.locationInWindow, from: nil)) {
             beginRename()
         } else { super.mouseDown(with: event) }
     }
@@ -272,11 +279,11 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
         if let row {
             let width = children.fittingWidth(max(0, bounds.width - row.leading * k - 6 * k))
             children.isHidden = children.content.isEmpty || width == 0
-            children.frame = NSRect(x: bounds.width - 6 * k - width, y: row.tailY * k, width: width, height: 12 * k)
+            children.frame = NSRect(x: bounds.width - 6 * k - width, y: fonts.tailY(row), width: width, height: 12 * k)
         }
-        addWindow.frame = NSRect(x: bounds.width - 22 * k, y: 0, width: 22 * k, height: 28 * k)
-        nameField.frame = NSRect(x: 3 * k, y: 5 * k, width: max(0, bounds.width - 27 * k), height: 18 * k)
-        renameError.frame = NSRect(x: 5 * k, y: 26.5 * k, width: max(0, bounds.width - 29 * k), height: max(1, errorHeight - 6 * k))
+        addWindow.frame = NSRect(x: bounds.width - 22 * k, y: 0, width: 22 * k, height: (fonts.compact ? 22 : 28) * k)
+        nameField.frame = NSRect(x: 3 * k, y: fonts.headerY, width: max(0, bounds.width - 27 * k), height: 18 * k)
+        renameError.frame = NSRect(x: 5 * k, y: fonts.headerY + 21.5 * k, width: max(0, bounds.width - 29 * k), height: max(1, errorHeight - 6 * k))
         updateTrackingAreas()
     }
 
@@ -296,11 +303,11 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
                 && window?.firstResponder === enclosingScrollView?.documentView
             let rowFill = NSBezierPath(roundedRect: NSRect(x: CGFloat(row.indent) * 15 * k, y: 0,
                                                          width: bounds.width - CGFloat(row.indent) * 15 * k, height: bounds.height),
-                                       xRadius: 7 * k, yRadius: 7 * k)
+                                       xRadius: fonts.radius, yRadius: fonts.radius)
             if let block = row.block {
-                let top: CGFloat = block == .last || block == .middle ? -7 * k : 0
-                let bottom: CGFloat = block == .first || block == .middle ? 7 * k : 0
-                let slice = NSBezierPath(roundedRect: NSRect(x: 0, y: top, width: bounds.width, height: bounds.height - top + bottom), xRadius: 7 * k, yRadius: 7 * k)
+                let top: CGFloat = block == .last || block == .middle ? -fonts.radius : 0
+                let bottom: CGFloat = block == .first || block == .middle ? fonts.radius : 0
+                let slice = NSBezierPath(roundedRect: NSRect(x: 0, y: top, width: bounds.width, height: bounds.height - top + bottom), xRadius: fonts.radius, yRadius: fonts.radius)
                 slice.addClip()
                 NSGraphicsContext.saveGraphicsState()
                 if row.focused || selected {
@@ -326,7 +333,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             }
             if case .gap = row.kind { return }
             let header = { if case .header = row.kind { return true }; return false }()
-            let y: CGFloat = (header ? 5 : row.padding) * k
+            let y: CGFloat = header ? fonts.headerY : row.padding * k
             let line: CGFloat = (header ? 18 : 19) * k
             let dotX = bounds.width - 11 * k
             let end = header ? addWindow.frame.minX : bounds.width - (clock.isEmpty ? 23 * k : trailing + clockWidth + 6 * k)
@@ -358,7 +365,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
                 text.draw(in: NSRect(x: suffix.minX + 16 * k, y: y, width: max(0, suffix.width - 16 * k), height: line))
             }
             let tailEnd = children.isHidden ? bounds.width - 5 * k : children.frame.minX - 6 * k
-            let tailRect = NSRect(x: leading, y: row.tailY * k, width: max(0, tailEnd - leading), height: 14 * k)
+            let tailRect = NSRect(x: leading, y: fonts.tailY(row), width: max(0, tailEnd - leading), height: 14 * k)
             if tailRect.width >= 16 * k, dirtyRect.intersects(tailRect) {
                 (second as NSString).draw(in: tailRect,
                                           withAttributes: [.font: fonts.tail, .foregroundColor: Chrome.inkSecondary, .paragraphStyle: paragraph])

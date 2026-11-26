@@ -164,13 +164,12 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     private var snapshot: Snapshot?
     private var projection = PaneProjection(nil)
     private(set) var fonts = SidebarFonts()
-    var fontSize = SidebarFonts.baseSize {
-        didSet {
-            guard fontSize != oldValue else { return }
-            fonts = SidebarFonts(size: fontSize)
-            editing?.cell.fonts = fonts
-            table.reloadData()
-        }
+    var fontSize = SidebarFonts.baseSize { didSet { if fontSize != oldValue { refont() } } }
+    var compact = false { didSet { if compact != oldValue { refont() } } }
+    private func refont() {
+        fonts = SidebarFonts(size: fontSize, compact: compact)
+        editing?.cell.fonts = fonts
+        table.reloadData()
     }
     private var captionTimer: Timer?
     private var tick: Timer?
@@ -348,7 +347,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         table.reloadData(forRowIndexes: IndexSet(items.indices.filter { index in
             items[index].id != editing?.id && previousRows[items[index].id].map { $0 != items[index] } == true
         }), columnIndexes: [0])
-        resizeRows(IndexSet(items.indices.filter { previousRows[items[$0].id]?.height != items[$0].height }))
+        resizeRows(IndexSet(items.indices.filter { previousRows[items[$0].id].map(fonts.height) != fonts.height(items[$0]) }))
         if let edit = editing, let selection, window?.firstResponder !== editor {
             window?.makeFirstResponder(edit.cell.nameField)
             (edit.cell.nameField.currentEditor() as? NSTextView)?.setSelectedRange(selection)
@@ -679,7 +678,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
 
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        (items[row].height * fonts.scale).rounded() + (items[row].id == editing?.id ? editing!.cell.errorHeight : 0)
+        fonts.height(items[row]) + (items[row].id == editing?.id ? editing!.cell.errorHeight : 0)
     }
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { items[row].clickTarget != nil }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {

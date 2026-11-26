@@ -1108,6 +1108,9 @@ name is the family's default. `font.blending` is `native`, `linear`
 `window.sidebar_font_size` is the sidebar's row font in points, 6 to 40,
 14 by default. The row heights, the insets, the heading, the second
 line and the status marks scale with it (see docs/design-app.md).
+`window.sidebar_density` is `regular` (the default) or `compact`:
+`compact` gives a row without a second line the height of its text, and
+a heading less space (see docs/design-app.md).
 `window.tab_bar` is a bool, `true` by default: `false` hides the window
 tabs. The server decodes `app:` and does not use it.
 

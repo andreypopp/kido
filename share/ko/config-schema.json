@@ -44,6 +44,7 @@
           "keep_hidden": 4
         },
         "window": {
+          "sidebar_density": "regular",
           "sidebar_font_size": 14.0,
           "sidebar_shade": 5.0,
           "tab_bar": true,
@@ -174,6 +175,7 @@
         "window": {
           "$ref": "#/$defs/WindowSettings",
           "default": {
+            "sidebar_density": "regular",
             "sidebar_font_size": 14.0,
             "sidebar_shade": 5.0,
             "tab_bar": true,
@@ -939,6 +941,13 @@
       },
       "additionalProperties": false
     },
+    "SidebarDensity": {
+      "type": "string",
+      "enum": [
+        "regular",
+        "compact"
+      ]
+    },
     "SidebarFontSize": {
       "description": "A number of at least 6 and at most 40.",
       "type": "number",
@@ -1123,6 +1132,11 @@
     "WindowSettings": {
       "type": "object",
       "properties": {
+        "sidebar_density": {
+          "description": "The height of the sidebar rows: `compact` drops the spare space above and below the text.",
+          "$ref": "#/$defs/SidebarDensity",
+          "default": "regular"
+        },
         "sidebar_font_size": {
           "description": "The font size of the sidebar in points. Its rows scale with it.",
           "$ref": "#/$defs/SidebarFontSize",

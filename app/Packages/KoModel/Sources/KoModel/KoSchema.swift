@@ -2250,6 +2250,11 @@ public enum KoSchema {
         }
     }
 
+    public enum SidebarDensity: String, Codable, Equatable, Sendable {
+        case regular
+        case compact
+    }
+
     public typealias SidebarFontSize = Double
 
     public typealias SidebarShade = Double
@@ -2415,17 +2420,20 @@ public enum KoSchema {
     public typealias WindowId = WindowID
 
     public struct WindowSettings: Codable, Equatable, Sendable {
+        public var sidebarDensity: SidebarDensity
         public var sidebarFontSize: SidebarFontSize
         public var sidebarShade: SidebarShade
         public var tabBar: Bool
         public var unfocusedShift: UnfocusedShift
-        public init(sidebarFontSize: SidebarFontSize, sidebarShade: SidebarShade, tabBar: Bool, unfocusedShift: UnfocusedShift) {
+        public init(sidebarDensity: SidebarDensity, sidebarFontSize: SidebarFontSize, sidebarShade: SidebarShade, tabBar: Bool, unfocusedShift: UnfocusedShift) {
+            self.sidebarDensity = sidebarDensity
             self.sidebarFontSize = sidebarFontSize
             self.sidebarShade = sidebarShade
             self.tabBar = tabBar
             self.unfocusedShift = unfocusedShift
         }
         private enum CodingKeys: String, CodingKey {
+            case sidebarDensity = "sidebar_density"
             case sidebarFontSize = "sidebar_font_size"
             case sidebarShade = "sidebar_shade"
             case tabBar = "tab_bar"

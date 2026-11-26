@@ -309,6 +309,23 @@ import XCTest
         XCTAssertEqual(list.fonts.scale, 1)
     }
 
+    func testCompactSidebarDensityGivesSmallerRowsAtTheSameFontSizeAtLaunchAndReload() throws {
+        let file = try fixture("app: {window: {sidebar_font_size: 12, sidebar_density: compact}}\n")
+        let board = NSPasteboard(name: .init(UUID().uuidString))
+        let runtime = try XCTUnwrap(GhosttyRuntime(configFile: file, pasteboard: board))
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        addTeardownBlock { @MainActor in owner.close(); board.releaseGlobally() }
+        let list = owner.sidebar.list
+        XCTAssertEqual(list.fonts.regular.pointSize, 12)
+        XCTAssertTrue(list.fonts.compact)
+        let changed = expectation(description: "config load")
+        runtime.onConfigChange = { owner.updateAppearance(); changed.fulfill() }
+        try "app: {window: {sidebar_font_size: 12}}\n".write(toFile: file, atomically: true, encoding: .utf8)
+        wait(for: [changed], timeout: 5)
+        runtime.onConfigChange = {}
+        XCTAssertFalse(list.fonts.compact)
+    }
+
     func testConfigNoticeKeepsGeometryAndStaysAboveLinkFailure() throws {
         let file = try fixture("app: {font: {size: bad}}\n")
         let board = NSPasteboard(name: .init(UUID().uuidString))

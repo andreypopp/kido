@@ -582,3 +582,11 @@ private func recordRows(_ records: [KoSchema.ProgramRecord], client: Int, lifecy
     let rows = recordRows([.idle(.init(id: "b", selection: .selected)), .idle(.init(id: "a", selection: .selected))], client: 0)
     #expect(rows.filter(\.focused).map(\.title) == ["a"])
 }
+
+@Test func compactRowsDropTheTailSlotOnlyWhenTheRowHasNoTail() throws {
+    let plain = try #require(renderedRows(makeSnapshot([pane(1)], client: 1)).first { $0.target?.pane == PaneID(number: 1) })
+    #expect(!plain.showsTail && plain.compactHeight == 27 && plain.height == 43)
+    let agentRow = try #require(renderedRows(makeSnapshot([pane(1, lifecycle: agent(working(), msg: "Reading"))], client: 1)).first { $0.target?.pane == PaneID(number: 1) })
+    #expect(agentRow.showsTail && agentRow.compactHeight == 40 && agentRow.compactTailY + 14 <= agentRow.compactHeight)
+    #expect(renderedRows(makeSnapshot([pane(1)], client: 1)).first { $0.kind == .header }?.compactHeight == 22)
+}
