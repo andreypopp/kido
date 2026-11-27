@@ -35,7 +35,7 @@ final class FloatWindow: OwnerWindow {
         hasShadow = false
         isReleasedWhenClosed = false
         level = .normal
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .participatesInCycle]
+        collectionBehavior = [.fullScreenAuxiliary, .participatesInCycle]
         isExcludedFromWindowsMenu = false
         content.isHidden = true
         contentView = content

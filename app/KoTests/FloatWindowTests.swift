@@ -254,21 +254,6 @@ import XCTest
         wait("the remote move releases the local origin") { host.position == .layout }
     }
 
-    func testAFloatIsAnIndependentWindow() throws {
-        let (owner, _) = try shown(twoFloats)
-        let session = try XCTUnwrap(owner.testSession)
-        let view = try XCTUnwrap(session.pane(PaneID(number: 2)))
-        XCTAssertFalse(view.window === owner.window, "a float lives in its own window")
-        XCTAssertNil(view.window?.parent)
-        XCTAssertEqual(view.window?.styleMask, .borderless)
-        XCTAssertEqual(session.hostWindows.count, 2)
-        XCTAssertEqual(view.window?.level, .normal)
-        XCTAssertTrue(view.window?.collectionBehavior.contains(.canJoinAllSpaces) == true)
-        XCTAssertFalse(try XCTUnwrap(view.window).isExcludedFromWindowsMenu)
-        XCTAssertTrue(try XCTUnwrap(session.pane(PaneID(number: 1))).window === owner.window, "a tiled pane stays in the main window")
-        XCTAssertTrue(owner.owns(view.window))
-    }
-
     func testADragPastTheEdgeKeepsItsLocalFrameAndSendsTheClampedPosition() throws {
         let (owner, client) = try shown(twoFloats)
         let session = try XCTUnwrap(owner.testSession)

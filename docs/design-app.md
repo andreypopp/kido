@@ -1726,8 +1726,9 @@ chrome, border and shadow inside a margin of the window, and `hasShadow`
 is off, so a float looks the same over the main window and past its
 edge. A float is independent of the main window: a move, a resize, a
 miniaturize or a full-screen change of the main window, a tab or session
-switch and a zoom leave it on screen. It is on all Spaces
-(`canJoinAllSpaces` with `fullScreenAuxiliary`), takes part in ⌘\`
+switch and a zoom leave it on screen. It is an ordinary window that
+stays on the Space where it opened, with `fullScreenAuxiliary` for
+full-screen Spaces. It takes part in ⌘\`
 cycling, Mission Control and the Dock menu under its title, "<pane
 title> — <session> / <window>", and has no miniaturize. Hide Kido hides
 it with the app. The float window has the main window's `WindowOwner` as
