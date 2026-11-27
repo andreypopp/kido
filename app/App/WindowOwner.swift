@@ -446,7 +446,8 @@ private class AlertEscape: NSView {
         toolbar.delegate = sidebar
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
-        window.toolbar = toolbar
+        sidebar.toolbar = toolbar
+        sidebar.applyToolbar()
         window.toolbarStyle = .unified
         window.setContentSize(NSSize(width: 900, height: 560))
         window.contentView?.layoutSubtreeIfNeeded()

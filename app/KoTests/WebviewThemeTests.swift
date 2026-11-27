@@ -32,4 +32,15 @@ import XCTest
             XCTAssertEqual(theme(actual), theme(expected))
         }
     }
+
+    func testFontScaleMultipliesThePageFontOnly() throws {
+        let config = FileManager.default.temporaryDirectory.appendingPathComponent("koa-scale-" + UUID().uuidString + ".yaml")
+        defer { try? FileManager.default.removeItem(at: config) }
+        try "app: {font: {size: 13}, webview: {font_scale: 1.5}}\n".write(to: config, atomically: true, encoding: .utf8)
+        let board = NSPasteboard(name: .init("koa-scale-" + UUID().uuidString))
+        defer { board.releaseGlobally() }
+        let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
+        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 1), font: 13))
+        XCTAssertEqual(WebviewTheme.data(pane).theme["--ko-font-size"], "19.5px")
+    }
 }

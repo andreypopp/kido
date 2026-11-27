@@ -6,6 +6,7 @@ import PaneGeometry
 import SidebarFeed
 
 final class SessionView: NSView {
+    override var mouseDownCanMoveWindow: Bool { false }
     // The client whose views feed the panes.
     weak var client: KoClient?
     var host = Host.local

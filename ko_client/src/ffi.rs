@@ -4702,7 +4702,7 @@ mod tests {
         assert_eq!(code, Code::Ok);
         assert_eq!(
             value["config"]["app"]["font"],
-            json!({"family": "Menlo", "size": 16.0, "features": [], "thicken": false, "line_height": 0.0})
+            json!({"family": "Menlo", "size": 16.0, "features": [], "thicken": false, "line_height": 0.0, "style": {}, "blending": "linear"})
         );
         assert_eq!(
             value["config"]["server"]["runtime_idle_seconds"],

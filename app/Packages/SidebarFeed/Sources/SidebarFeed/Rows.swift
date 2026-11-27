@@ -68,8 +68,11 @@ public struct SidebarRow: Equatable, Sendable {
     public var root: WindowID?
     public var started: Int?
     public var padding: Double { 5 }
+    public var showsTail: Bool { second != .none || !hidden.isEmpty }
+    public var compactHeight: Double { switch kind { case .header: 22; case .pane, .program: showsTail ? 40 : 27; default: height } }
     public var leading: Double { 5 + Double(indent) * 15 }
     public var tailY: Double { 24 }
+    public var compactTailY: Double { 23 }
     public var hidden: [HiddenChild] {
         switch kind { case .pane(_, _, let hidden), .program(_, let hidden): hidden; default: [] }
     }

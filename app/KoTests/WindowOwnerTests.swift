@@ -629,4 +629,20 @@ import KoModel
         XCTAssertTrue(owner.testBanner.testText.detail.contains("did not welcome"), owner.testBanner.testText.detail)
         XCTAssertEqual(owner.testBanner.testText.button, "Start")
     }
+
+    func testWindowMenuHasZoom() throws {
+        let owner = try owner(try server(), start: false)
+        let menus = SessionMenus()
+        menus.update(SessionModel())
+        let zoom = try XCTUnwrap(menus.window.items.first { $0.title == "Zoom" })
+        XCTAssertEqual(zoom.action, #selector(NSWindow.performZoom(_:)))
+        XCTAssertNil(zoom.target)
+        owner.window.setFrame(NSRect(x: 100, y: 100, width: 600, height: 400), display: false)
+        owner.window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(owner.window.validateMenuItem(zoom))
+        let before = owner.window.frame
+        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(zoom.action), to: owner.window, from: zoom))
+        wait("window zooms") { owner.window.frame != before }
+        XCTAssertTrue(owner.window.isZoomed)
+    }
 }

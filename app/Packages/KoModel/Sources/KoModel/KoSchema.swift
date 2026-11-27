@@ -136,6 +136,12 @@ public enum KoSchema {
         }
     }
 
+    public enum AlphaBlending: String, Codable, Equatable, Sendable {
+        case native
+        case linear
+        case linearCorrected = "linear_corrected"
+    }
+
     public struct App: Codable, Equatable, Sendable {
         public var clipboard: Clipboard
         public var font: Font
@@ -969,23 +975,29 @@ public enum KoSchema {
     }
 
     public struct Font: Codable, Equatable, Sendable {
+        public var blending: AlphaBlending
         public var family: FontFamily?
         public var features: [FontFeature]
         public var lineHeight: LineHeight
         public var size: FontSize
+        public var style: FontStyles
         public var thicken: Bool
-        public init(family: FontFamily? = nil, features: [FontFeature], lineHeight: LineHeight, size: FontSize, thicken: Bool) {
+        public init(blending: AlphaBlending, family: FontFamily? = nil, features: [FontFeature], lineHeight: LineHeight, size: FontSize, style: FontStyles, thicken: Bool) {
+            self.blending = blending
             self.family = family
             self.features = features
             self.lineHeight = lineHeight
             self.size = size
+            self.style = style
             self.thicken = thicken
         }
         private enum CodingKeys: String, CodingKey {
+            case blending
             case family
             case features
             case lineHeight = "line_height"
             case size
+            case style
             case thicken
         }
     }
@@ -994,7 +1006,30 @@ public enum KoSchema {
 
     public typealias FontFeature = String
 
+    public typealias FontScale = Double
+
     public typealias FontSize = Double
+
+    public typealias FontStyleName = String
+
+    public struct FontStyles: Codable, Equatable, Sendable {
+        public var bold: FontStyleName?
+        public var boldItalic: FontStyleName?
+        public var italic: FontStyleName?
+        public var regular: FontStyleName?
+        public init(bold: FontStyleName? = nil, boldItalic: FontStyleName? = nil, italic: FontStyleName? = nil, regular: FontStyleName? = nil) {
+            self.bold = bold
+            self.boldItalic = boldItalic
+            self.italic = italic
+            self.regular = regular
+        }
+        private enum CodingKeys: String, CodingKey {
+            case bold
+            case boldItalic = "bold_italic"
+            case italic
+            case regular
+        }
+    }
 
     public struct Foreground: Codable, Equatable, Sendable {
         public var name: String
@@ -2217,6 +2252,13 @@ public enum KoSchema {
         }
     }
 
+    public enum SidebarDensity: String, Codable, Equatable, Sendable {
+        case regular
+        case compact
+    }
+
+    public typealias SidebarFontSize = Double
+
     public typealias SidebarShade = Double
 
     public struct Snapshot: Codable, Equatable, Sendable {
@@ -2304,22 +2346,26 @@ public enum KoSchema {
 
     public struct WebviewSettings: Codable, Equatable, Sendable {
         public var enabled: Bool
+        public var fontScale: FontScale
         public var inspector: Bool
         public var keepHidden: HiddenPages
-        public init(enabled: Bool, inspector: Bool, keepHidden: HiddenPages) {
+        public init(enabled: Bool, fontScale: FontScale, inspector: Bool, keepHidden: HiddenPages) {
             self.enabled = enabled
+            self.fontScale = fontScale
             self.inspector = inspector
             self.keepHidden = keepHidden
         }
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.enabled = try container.decode(Bool.self, forKey: .enabled)
+            self.fontScale = try container.decode(FontScale.self, forKey: .fontScale)
             self.inspector = try container.decode(Bool.self, forKey: .inspector)
             self.keepHidden = try container.decode(HiddenPages.self, forKey: .keepHidden)
             guard 0 <= self.keepHidden, self.keepHidden <= 16 else { throw DecodingError.dataCorruptedError(forKey: .keepHidden, in: container, debugDescription: "keep_hidden is 0...16, not \(self.keepHidden)") }
         }
         private enum CodingKeys: String, CodingKey {
             case enabled
+            case fontScale = "font_scale"
             case inspector
             case keepHidden = "keep_hidden"
         }
@@ -2380,14 +2426,23 @@ public enum KoSchema {
     public typealias WindowId = WindowID
 
     public struct WindowSettings: Codable, Equatable, Sendable {
+        public var sidebarDensity: SidebarDensity
+        public var sidebarFontSize: SidebarFontSize
         public var sidebarShade: SidebarShade
+        public var tabBar: Bool
         public var unfocusedShift: UnfocusedShift
-        public init(sidebarShade: SidebarShade, unfocusedShift: UnfocusedShift) {
+        public init(sidebarDensity: SidebarDensity, sidebarFontSize: SidebarFontSize, sidebarShade: SidebarShade, tabBar: Bool, unfocusedShift: UnfocusedShift) {
+            self.sidebarDensity = sidebarDensity
+            self.sidebarFontSize = sidebarFontSize
             self.sidebarShade = sidebarShade
+            self.tabBar = tabBar
             self.unfocusedShift = unfocusedShift
         }
         private enum CodingKeys: String, CodingKey {
+            case sidebarDensity = "sidebar_density"
+            case sidebarFontSize = "sidebar_font_size"
             case sidebarShade = "sidebar_shade"
+            case tabBar = "tab_bar"
             case unfocusedShift = "unfocused_shift"
         }
     }

@@ -49,6 +49,24 @@ final class SidebarShadow: NSView {
     }
 }
 
+final class TitleStrip: NSView {
+    var title = "" { didSet { needsDisplay = true } }
+    override func draw(_ dirtyRect: NSRect) {
+        let text = NSAttributedString(string: title, attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: { let style = NSMutableParagraphStyle(); style.alignment = .center; style.lineBreakMode = .byTruncatingMiddle; return style }()])
+        let height = text.size().height
+        text.draw(in: NSRect(x: 0, y: (bounds.height - height) / 2, width: bounds.width, height: height))
+    }
+    override var mouseDownCanMoveWindow: Bool { true }
+    override func mouseDown(with event: NSEvent) {
+        guard event.clickCount == 2 else { return window?.performDrag(with: event) ?? () }
+        switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+        case "None": break
+        case "Minimize": window?.performMiniaturize(nil)
+        default: window?.performZoom(nil)
+        }
+    }
+}
+
 final class Sidebar: NSSplitViewController, NSToolbarDelegate, NSMenuItemValidation {
     private final class ToolbarButtonCell: NSButtonCell {
         override func hitTest(for event: NSEvent, in cellFrame: NSRect, of controlView: NSView) -> NSCell.HitResult {
@@ -78,11 +96,29 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate, NSMenuItemValidat
     let list = SidebarView()
     let content = NSView()
     let tabs = WindowTabs()
+    private var tabBar = true
+    var toolbar: NSToolbar?
+    lazy var dockToggle: MouseButton = {
+        let button = toolbarButton("sidebar.left", label: "Toggle Sidebar", toolTip: "Toggle Sidebar", target: self, action: #selector(NSSplitViewController.toggleSidebar(_:)))
+        dock.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.trailingAnchor.constraint(equalTo: dock.trailingAnchor, constant: -8),
+            button.centerYAnchor.constraint(equalTo: strip.centerYAnchor),
+        ])
+        return button
+    }()
+    let strip: TitleStrip = {
+        let strip = TitleStrip()
+        strip.translatesAutoresizingMaskIntoConstraints = false
+        return strip
+    }()
+    private var titleObservation: NSKeyValueObservation?
     private var lastTabActivity = false
     let terminalHost = NSView()
     private let dock = NSView()
     private(set) var isFloating = false
     private var leading: NSLayoutConstraint!
+    private var top: NSLayoutConstraint!
     private var dockedGlass: NSGlassEffectView? {
         var parent = dock.superview
         while let view = parent {
@@ -131,11 +167,29 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate, NSMenuItemValidat
     func updateAppearance(runtime: GhosttyRuntime) {
         let background = runtime.background
         tabs.theme = (runtime.unfocusedPaper, NSAppearance(named: background.isDark ? .darkAqua : .aqua))
+        tabBar = runtime.values.window.tabBar
+        applyToolbar()
         let shade = background.shifted(runtime.sidebarShade)
         listBackground = shade
         separatorColor = runtime.sidebarSeparator
         list.appearance = NSAppearance(named: shade.luminance < 0.179 ? .darkAqua : .aqua)
         list.terminalDark = background.isDark
+        list.fontSize = CGFloat(runtime.values.window.sidebarFontSize)
+        list.compact = runtime.values.window.sidebarDensity == .compact
+    }
+
+    func applyToolbar() {
+        view.window?.toolbar = tabBar ? toolbar : nil
+        dockToggle.isHidden = tabBar
+        top.isActive = false
+        top = tabBar ? content.topAnchor.constraint(equalTo: terminalHost.safeAreaLayoutGuide.topAnchor) : content.topAnchor.constraint(equalTo: strip.bottomAnchor)
+        top.isActive = true
+        strip.isHidden = tabBar
+        if let window = view.window, titleObservation == nil {
+            titleObservation = window.observe(\.title, options: [.initial, .new]) { [weak self] window, _ in
+                MainActor.assumeIsolated { self?.strip.title = window.title }
+            }
+        }
     }
 
     init() {
@@ -161,12 +215,20 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate, NSMenuItemValidat
         addSplitViewItem(sidebarItem)
         let terminal = NSViewController()
         terminalHost.addSubview(content)
+        terminalHost.addSubview(strip)
         content.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            strip.topAnchor.constraint(equalTo: terminalHost.topAnchor),
+            strip.bottomAnchor.constraint(equalTo: terminalHost.safeAreaLayoutGuide.topAnchor),
+            strip.leadingAnchor.constraint(equalTo: terminalHost.leadingAnchor, constant: 120),
+            strip.trailingAnchor.constraint(equalTo: terminalHost.trailingAnchor, constant: -120),
+        ])
         leading = content.leadingAnchor.constraint(equalTo: terminalHost.safeAreaLayoutGuide.leadingAnchor)
+        top = content.topAnchor.constraint(equalTo: terminalHost.safeAreaLayoutGuide.topAnchor)
         NSLayoutConstraint.activate([
             leading,
+            top,
             content.trailingAnchor.constraint(equalTo: terminalHost.trailingAnchor),
-            content.topAnchor.constraint(equalTo: terminalHost.safeAreaLayoutGuide.topAnchor),
             content.bottomAnchor.constraint(equalTo: terminalHost.bottomAnchor),
         ])
         terminal.view = terminalHost

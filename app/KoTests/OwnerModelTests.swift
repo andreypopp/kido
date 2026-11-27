@@ -60,6 +60,14 @@ import XCTest
         XCTAssertEqual(owner.navigation.windows.map(\.name), ["first", "second"], "the window keeps its name")
     }
 
+    func testACompactPaneRowIsShorterThanARegularOneAtTheSameFontSize() throws {
+        let (_, owner) = try shown(#"[{"name":"w","tree":\#(shell(cat))}]"#)
+        let row = try XCTUnwrap(sidebarRows(owner.snapshot).first { $0.target != nil })
+        XCTAssertEqual(SidebarFonts(size: 12).height(row), 37)
+        XCTAssertEqual(SidebarFonts(size: 12, compact: true).height(row), 23)
+        XCTAssertEqual(SidebarFonts(size: 13, compact: true).height(row), 25)
+    }
+
     func testAnOutcomeShownByOneAttendedWindowIsSeenInEveryWindowOfTheHost() throws {
         let failing = "while [ ! -e \"$HOME/go\" ]; do sleep 0.02; done; printf '\\033]133;C;cmdline_url=false\\007\\033]133;D;1\\007\\033]133;A\\007'; " + cat
         let (dir, first) = try shown(#"[{"name":"w","tree":\#(shell(failing))}]"#)

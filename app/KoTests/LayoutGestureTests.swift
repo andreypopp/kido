@@ -41,6 +41,22 @@ import XCTest
         windows(client).flatMap { Layout($0).root.panes }
     }
 
+    func testSplitUpMenuItemOpensAndSelectsAPaneAboveTheFocusedOne() throws {
+        let item = try XCTUnwrap(PaneCommand.menu.submenu?.items.first { $0.title == "Split Up" })
+        XCTAssertEqual(item.keyEquivalent, "")
+        guard case .split(.up)? = item.representedObject as? PaneCommand else { return XCTFail("Split Up runs split up") }
+
+        let (owner, client) = try shown(#"[{"name":"s","windows":[{"name":"w","tree":\#(sleep)}]}]"#)
+        let session = try XCTUnwrap(owner.testSession)
+        session.paneCommand(.split(.up), PaneID(number: 1))
+        wait("a second pane above the first") {
+            let panes = self.panes(client)
+            guard panes.count == 2, let old = panes.first(where: { $0.id.number == 1 }), let new = panes.first(where: { $0.id.number == 2 }) else { return false }
+            return new.geometry.x == old.geometry.x && new.geometry.y < old.geometry.y
+        }
+        wait("the split selects its new pane") { (try? client.model())?.selection.pane == PaneID(number: 2) }
+    }
+
     func testPaneCommandsSplitZoomEqualizeAndSelect() throws {
         let (owner, client) = try shown(#"[{"name":"s","windows":[{"name":"w","tree":{"split":"h","children":[\#(sleep),\#(sleep)]}}]}]"#)
         let session = try XCTUnwrap(owner.testSession)

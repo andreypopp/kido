@@ -18,7 +18,7 @@ import XCTest
         XCTAssertEqual(ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv), GHOSTTY_SUCCESS)
         let file = try fixture("""
         app:
-          font: {family: Menlo, size: 15, features: [ss13, -ss17, +liga], thicken: true, line_height: 12}
+          font: {family: Menlo, size: 15, features: [ss13, -ss17, +liga], thicken: true, line_height: 12, blending: linear_corrected, style: {regular: Light, bold: Semibold, italic: Light Italic, bold_italic: Semibold Italic}}
           keyboard: {option_as_alt: left}
           mouse: {scroll_multiplier: {precision: 2, discrete: 4}, hide_while_typing: true}
           clipboard: {read: allow, write: deny, copy_on_select: true, paste_protection: false, trim_trailing_spaces: false}
@@ -30,7 +30,7 @@ import XCTest
         defer { ghostty_config_free(loaded.config) }
         let paths = ThemePaths(light: ThemePaths.path("solarized-light", configFile: file), dark: ThemePaths.path("solarized-dark", configFile: file))
         XCTAssertEqual(loaded.text, """
-        alpha-blending = linear
+        alpha-blending = linear-corrected
         cursor-style-blink = false
         keybind = super+k=unbind
         keybind = super+j=unbind
@@ -41,6 +41,10 @@ import XCTest
         font-feature = ss13
         font-feature = -ss17
         font-feature = +liga
+        font-style = Light
+        font-style-bold = Semibold
+        font-style-italic = Light Italic
+        font-style-bold-italic = Semibold Italic
         font-thicken = true
         adjust-cell-height = 12.0%
         macos-option-as-alt = left
@@ -225,6 +229,101 @@ import XCTest
         reload("")
         XCTAssertNil(runtime.configError)
         XCTAssertEqual(runtime.values.font.size, 13)
+    }
+
+    func testTabBarFalseHasAThinTitleStripAboveTheTerminalAtLaunchAndReload() throws {
+        let file = try fixture("app: {window: {tab_bar: false}}\n")
+        let board = NSPasteboard(name: .init(UUID().uuidString))
+        let runtime = try XCTUnwrap(GhosttyRuntime(configFile: file, pasteboard: board))
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        addTeardownBlock { @MainActor in owner.close(); board.releaseGlobally() }
+        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 1), font: 13))
+        addTeardownBlock { @MainActor in pane.dispose() }
+        owner.sidebar.content.addSubview(pane)
+        pane.autoresizingMask = [.width, .height]
+        func gap() -> CGFloat {
+            owner.window.contentView?.layoutSubtreeIfNeeded()
+            let area = owner.sidebar.content.convert(owner.sidebar.content.bounds, to: nil)
+            return owner.window.frame.height - owner.window.convertToScreen(area).maxY + owner.window.frame.minY
+        }
+        func titlebar() -> CGFloat { owner.window.frame.height - owner.window.contentLayoutRect.maxY }
+        func centerY(_ view: NSView) -> CGFloat { view.convert(view.bounds, to: nil).midY }
+        func frame() -> NSView { owner.window.contentView!.superview! }
+        func hit(_ view: NSView, y: CGFloat) -> NSView? {
+            owner.window.contentView?.layoutSubtreeIfNeeded()
+            return frame().hitTest(frame().convert(NSPoint(x: view.bounds.midX, y: y), from: view))
+        }
+        func topRow() -> NSView? {
+            pane.frame = owner.sidebar.content.bounds
+            return hit(pane, y: pane.bounds.maxY - 3)
+        }
+        XCTAssertNil(owner.window.toolbar)
+        for collapsed in [false, true, false] {
+            owner.sidebar.isCollapsed = collapsed
+            let strip = owner.sidebar.strip
+            XCTAssertEqual(gap(), titlebar(), accuracy: 0.5)
+            XCTAssertGreaterThan(titlebar(), 0)
+            XCTAssertEqual(strip.convert(strip.bounds, to: nil).height, titlebar(), accuracy: 0.5)
+            let lights = centerY(try XCTUnwrap(owner.window.standardWindowButton(.closeButton)))
+            XCTAssertEqual(centerY(strip), lights, accuracy: 0.5)
+            XCTAssertEqual(centerY(owner.sidebar.dockToggle), lights, accuracy: 0.5)
+            XCTAssertEqual(strip.convert(strip.bounds, to: nil).minY, owner.sidebar.content.convert(owner.sidebar.content.bounds, to: nil).maxY, accuracy: 0.5)
+            XCTAssertEqual(strip.title, owner.window.title)
+            XCTAssertTrue(topRow() === pane)
+            XCTAssertFalse(try XCTUnwrap(topRow()).mouseDownCanMoveWindow)
+            XCTAssertTrue(hit(strip, y: strip.bounds.midY) === strip)
+            XCTAssertTrue(strip.mouseDownCanMoveWindow)
+            XCTAssertFalse(owner.window.standardWindowButton(.closeButton)?.isHidden ?? true)
+        }
+        for (text, tabs) in [("app: {window: {tab_bar: true}}\n", true), ("app: {window: {tab_bar: false}}\n", false), ("", true)] {
+            let changed = expectation(description: "config load")
+            runtime.onConfigChange = { owner.updateAppearance(); changed.fulfill() }
+            try text.write(toFile: file, atomically: true, encoding: .utf8)
+            wait(for: [changed], timeout: 5)
+            runtime.onConfigChange = {}
+            XCTAssertEqual(owner.window.toolbar != nil, tabs)
+            XCTAssertEqual(owner.sidebar.strip.isHidden, tabs)
+            if tabs { XCTAssertGreaterThan(gap(), 40) } else { XCTAssertEqual(gap(), titlebar(), accuracy: 0.5) }
+            XCTAssertFalse(try XCTUnwrap(topRow()).mouseDownCanMoveWindow)
+        }
+    }
+
+    func testSidebarFontSizeScalesTheFontsAndRowsAtLaunchAndReload() throws {
+        let file = try fixture("app: {window: {sidebar_font_size: 11}}\n")
+        let board = NSPasteboard(name: .init(UUID().uuidString))
+        let runtime = try XCTUnwrap(GhosttyRuntime(configFile: file, pasteboard: board))
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        addTeardownBlock { @MainActor in owner.close(); board.releaseGlobally() }
+        let list = owner.sidebar.list
+        XCTAssertEqual(list.fonts.regular.pointSize, 11)
+        XCTAssertEqual(list.fonts.scale * 43, 43 * 11 / 14, accuracy: 0.001)
+        for (text, size) in [("app: {window: {sidebar_font_size: 20}}\n", 20), ("", 14)] {
+            let changed = expectation(description: "config load")
+            runtime.onConfigChange = { owner.updateAppearance(); changed.fulfill() }
+            try text.write(toFile: file, atomically: true, encoding: .utf8)
+            wait(for: [changed], timeout: 5)
+            runtime.onConfigChange = {}
+            XCTAssertEqual(list.fonts.regular.pointSize, CGFloat(size))
+            XCTAssertEqual(list.fonts.clock.pointSize, 10 * CGFloat(size) / 14, accuracy: 0.001)
+        }
+        XCTAssertEqual(list.fonts.scale, 1)
+    }
+
+    func testCompactSidebarDensityGivesSmallerRowsAtTheSameFontSizeAtLaunchAndReload() throws {
+        let file = try fixture("app: {window: {sidebar_font_size: 12, sidebar_density: compact}}\n")
+        let board = NSPasteboard(name: .init(UUID().uuidString))
+        let runtime = try XCTUnwrap(GhosttyRuntime(configFile: file, pasteboard: board))
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        addTeardownBlock { @MainActor in owner.close(); board.releaseGlobally() }
+        let list = owner.sidebar.list
+        XCTAssertEqual(list.fonts.regular.pointSize, 12)
+        XCTAssertTrue(list.fonts.compact)
+        let changed = expectation(description: "config load")
+        runtime.onConfigChange = { owner.updateAppearance(); changed.fulfill() }
+        try "app: {window: {sidebar_font_size: 12}}\n".write(toFile: file, atomically: true, encoding: .utf8)
+        wait(for: [changed], timeout: 5)
+        runtime.onConfigChange = {}
+        XCTAssertFalse(list.fonts.compact)
     }
 
     func testConfigNoticeKeepsGeometryAndStaysAboveLinkFailure() throws {

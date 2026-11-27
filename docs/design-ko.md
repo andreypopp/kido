@@ -1100,8 +1100,22 @@ binding maps a `Trigger` (Ghostty's `modifier+key`, kept in one
 canonical spelling) to an `Action` of the few that Kido names. A
 trigger of the app's own menus (`ko_config::keys::MENU_OWNED`) is
 refused, in any spelling. An absent `font.family` is the system's
-monospaced font, which the app resolves. The server decodes `app:` and
-does not use it.
+monospaced font, which the app resolves. `font.style` names the face
+of each of `regular`, `bold`, `italic` and `bold_italic` (Ghostty's
+`font-style` keys), such as `Light` or `Semibold Italic`; an absent
+name is the family's default. `font.blending` is `native`, `linear`
+(the default) or `linear_corrected`: Ghostty's `alpha-blending`.
+`webview.font_scale` is a number from 0.5 to 3, 1 by default: it
+multiplies the font size of HTML pages and leaves the terminal panes as
+they are.
+`window.sidebar_font_size` is the sidebar's row font in points, 6 to 40,
+14 by default. The row heights, the insets, the heading, the second
+line and the status marks scale with it (see docs/design-app.md).
+`window.sidebar_density` is `regular` (the default) or `compact`:
+`compact` gives a row without a second line the height of its text, and
+a heading less space (see docs/design-app.md).
+`window.tab_bar` is a bool, `true` by default: `false` hides the window
+tabs. The server decodes `app:` and does not use it.
 
 **The C ABI.** Kido.app reads the file through `ko_client`, because
 the app must work without a server. `ko_config_defaults` returns the

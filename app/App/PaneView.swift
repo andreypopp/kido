@@ -44,6 +44,7 @@ struct SurfaceGeometry {
 }
 
 final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValidation {
+    override var mouseDownCanMoveWindow: Bool { false }
     func validateMenuItem(_ item: NSMenuItem) -> Bool { acceptsKeyInput && canPerformMenuItem(item) }
 
     func canPerformMenuItem(_ item: NSMenuItem) -> Bool {

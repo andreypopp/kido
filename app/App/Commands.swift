@@ -97,6 +97,7 @@ enum PaneCommand {
         func arrow(_ key: Int) -> String { String(UnicodeScalar(key)!) }
         add("Split Right", .split(.right), "d")
         add("Split Down", .split(.down), "D")
+        add("Split Up", .split(.up), "")
         add("Close Pane", .close, "w")
         menu.addItem(.separator())
         add("Zoom Pane", .zoom, "\r", [.command, .shift])

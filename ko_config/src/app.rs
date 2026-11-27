@@ -5,7 +5,9 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::keys::{Action, Trigger};
-use crate::values::{FontFamily, FontFeature, HiddenPages, ThemeName, ranged, word_or_map};
+use crate::values::{
+    FontFamily, FontFeature, FontStyleName, HiddenPages, ThemeName, ranged, word_or_map,
+};
 
 /// Kido.app's settings.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -24,7 +26,7 @@ pub struct App {
     pub keys: BTreeMap<Trigger, Action>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct WebviewSettings {
     /// Render HTML pages over the pane's terminal content.
@@ -33,6 +35,8 @@ pub struct WebviewSettings {
     pub inspector: bool,
     /// The number of hidden pages that stay live in each native window.
     pub keep_hidden: HiddenPages,
+    /// The scale of the font size in HTML pages. Terminal panes do not change.
+    pub font_scale: FontScale,
 }
 
 impl Default for WebviewSettings {
@@ -41,6 +45,7 @@ impl Default for WebviewSettings {
             enabled: true,
             inspector: false,
             keep_hidden: HiddenPages::default(),
+            font_scale: FontScale::default(),
         }
     }
 }
@@ -100,7 +105,9 @@ impl<'de> Deserialize<'de> for Theme {
 
 ranged!(FontSize, 4.0..=72.0, 13.0);
 ranged!(LineHeight, -50.0..=100.0, 0.0);
+ranged!(FontScale, 0.5..=3.0, 1.0);
 ranged!(SidebarShade, -100.0..=100.0, 5.0);
+ranged!(SidebarFontSize, 6.0..=40.0, 14.0);
 ranged!(UnfocusedShift, -100.0..=100.0, 3.0);
 ranged!(PrecisionScroll, 0.01..=100.0, 1.0);
 ranged!(DiscreteScroll, 0.01..=100.0, 3.0);
@@ -119,6 +126,40 @@ pub struct Font {
     pub thicken: bool,
     /// The change of the cell height in percent.
     pub line_height: LineHeight,
+    /// The font style name of each face. Absent means the family's default.
+    pub style: FontStyles,
+    /// How glyph edges blend with the background.
+    pub blending: AlphaBlending,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct FontStyles {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub regular: Option<FontStyleName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bold: Option<FontStyleName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub italic: Option<FontStyleName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bold_italic: Option<FontStyleName>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AlphaBlending {
+    Native,
+    #[default]
+    Linear,
+    LinearCorrected,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SidebarDensity {
+    #[default]
+    Regular,
+    Compact,
 }
 
 /// Whether the option key acts as alt: off, on, or the left or right one only.
@@ -196,13 +237,31 @@ impl Default for Clipboard {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct WindowSettings {
     /// The shade of the sidebar in percent. The sign follows the theme.
     pub sidebar_shade: SidebarShade,
     /// The shift of the background of an unfocused pane in percent.
     pub unfocused_shift: UnfocusedShift,
+    /// Show the row of window tabs at the top of the terminal area.
+    pub tab_bar: bool,
+    /// The font size of the sidebar in points. Its rows scale with it.
+    pub sidebar_font_size: SidebarFontSize,
+    /// The height of the sidebar rows: `compact` drops the spare space above and below the text.
+    pub sidebar_density: SidebarDensity,
+}
+
+impl Default for WindowSettings {
+    fn default() -> WindowSettings {
+        WindowSettings {
+            sidebar_shade: SidebarShade::default(),
+            unfocused_shift: UnfocusedShift::default(),
+            tab_bar: true,
+            sidebar_font_size: SidebarFontSize::default(),
+            sidebar_density: SidebarDensity::default(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -215,10 +274,13 @@ mod tests {
 
     #[test]
     fn webview_settings_are_checked() {
-        let found = app("app: {webview: {enabled: false, inspector: true, keep_hidden: 16}}\n");
+        let found = app(
+            "app: {webview: {enabled: false, inspector: true, keep_hidden: 16, font_scale: 1.5}}\n",
+        );
         assert!(!found.webview.enabled);
         assert!(found.webview.inspector);
         assert_eq!(u8::from(found.webview.keep_hidden), 16);
+        assert_eq!(f64::from(found.webview.font_scale), 1.5);
         assert_eq!(
             u8::from(
                 app("app: {webview: {keep_hidden: 0}}\n")
@@ -241,12 +303,12 @@ mod tests {
             serde_json::to_value(&found).unwrap(),
             serde_json::json!({
                 "theme": {"light": "kido-light", "dark": "kido-dark"},
-                "font": {"size": 13.0, "features": [], "thicken": false, "line_height": 0.0},
+                "font": {"size": 13.0, "features": [], "thicken": false, "line_height": 0.0, "style": {}, "blending": "linear"},
                 "keyboard": {"option_as_alt": "off"},
                 "mouse": {"scroll_multiplier": {"precision": 1.0, "discrete": 3.0}, "hide_while_typing": false},
                 "clipboard": {"read": "ask", "write": "allow", "copy_on_select": false, "paste_protection": true, "trim_trailing_spaces": true},
-                "window": {"sidebar_shade": 5.0, "unfocused_shift": 3.0},
-                "webview": {"enabled": true, "inspector": false, "keep_hidden": 4},
+                "window": {"sidebar_shade": 5.0, "unfocused_shift": 3.0, "tab_bar": true, "sidebar_font_size": 14.0, "sidebar_density": "regular"},
+                "webview": {"enabled": true, "inspector": false, "keep_hidden": 4, "font_scale": 1.0},
                 "keys": {}
             })
         );
@@ -263,6 +325,8 @@ app:
     features: [ss13, -ss17, +liga, '0123']
     thicken: true
     line_height: -5.5
+    style: {regular: Light, bold: Semibold, italic: Light Italic, bold_italic: Semibold Italic}
+    blending: linear_corrected
   keyboard: {option_as_alt: left}
   mouse:
     scroll_multiplier: {precision: 0.5, discrete: 10}
@@ -273,7 +337,7 @@ app:
     copy_on_select: true
     paste_protection: false
     trim_trailing_spaces: false
-  window: {sidebar_shade: -10, unfocused_shift: 0}
+  window: {sidebar_shade: -10, unfocused_shift: 0, tab_bar: false, sidebar_font_size: 11, sidebar_density: compact}
   keys:
     super+e: text:X
     ctrl+shift+arrow_up: csi:1;5A
@@ -284,12 +348,12 @@ app:
             json,
             serde_json::json!({
                 "theme": {"light": "a", "dark": "b"},
-                "font": {"family": "PragmataPro Mono Liga", "size": 16.0, "features": ["ss13", "-ss17", "+liga", "0123"], "thicken": true, "line_height": -5.5},
+                "font": {"family": "PragmataPro Mono Liga", "size": 16.0, "features": ["ss13", "-ss17", "+liga", "0123"], "thicken": true, "line_height": -5.5, "style": {"regular": "Light", "bold": "Semibold", "italic": "Light Italic", "bold_italic": "Semibold Italic"}, "blending": "linear_corrected"},
                 "keyboard": {"option_as_alt": "left"},
                 "mouse": {"scroll_multiplier": {"precision": 0.5, "discrete": 10.0}, "hide_while_typing": true},
                 "clipboard": {"read": "deny", "write": "deny", "copy_on_select": true, "paste_protection": false, "trim_trailing_spaces": false},
-                "window": {"sidebar_shade": -10.0, "unfocused_shift": 0.0},
-                "webview": {"enabled": true, "inspector": false, "keep_hidden": 4},
+                "window": {"sidebar_shade": -10.0, "unfocused_shift": 0.0, "tab_bar": false, "sidebar_font_size": 11.0, "sidebar_density": "compact"},
+                "webview": {"enabled": true, "inspector": false, "keep_hidden": 4, "font_scale": 1.0},
                 "keys": {"alt+k": "unbind", "ctrl+shift+arrow_up": "csi:1;5A", "super+e": "text:X"}
             })
         );
@@ -352,6 +416,8 @@ app:
             ("font: {line_height: ", -50.0, 100.0),
             ("window: {sidebar_shade: ", -100.0, 100.0),
             ("window: {unfocused_shift: ", -100.0, 100.0),
+            ("window: {sidebar_font_size: ", 6.0, 40.0),
+            ("webview: {font_scale: ", 0.5, 3.0),
             ("mouse: {scroll_multiplier: {precision: ", 0.01, 100.0),
             ("mouse: {scroll_multiplier: {discrete: ", 0.01, 100.0),
         ] {
@@ -397,6 +463,22 @@ app:
         for bad in ["''", "\"a\\nb\""] {
             assert!(
                 parse(&format!("app:\n  font: {{family: {bad}}}\n")).is_err(),
+                "{bad}"
+            );
+            assert!(
+                parse(&format!("app:\n  font: {{style: {{bold: {bad}}}}}\n")).is_err(),
+                "{bad}"
+            );
+        }
+        for bad in ["beam", "on", "Linear"] {
+            assert!(
+                parse(&format!("app:\n  font: {{blending: {bad}}}\n")).is_err(),
+                "{bad}"
+            );
+        }
+        for bad in ["dense", "Compact", "1"] {
+            assert!(
+                parse(&format!("app:\n  window: {{sidebar_density: {bad}}}\n")).is_err(),
                 "{bad}"
             );
         }
@@ -483,7 +565,7 @@ app:
             ),
             (
                 "app:\n  font: {colour: red}\n",
-                "app: font: unknown field `colour`, expected one of `family`, `size`, `features`, `thicken`, `line_height` at line 2 column 10",
+                "app: font: unknown field `colour`, expected one of `family`, `size`, `features`, `thicken`, `line_height`, `style`, `blending` at line 2 column 10",
             ),
             (
                 "app:\n  mouse: {scroll_multiplier: {rows: 3}}\n",
@@ -491,7 +573,7 @@ app:
             ),
             (
                 "app:\n  window: {sidebar: 1}\n",
-                "app: window: unknown field `sidebar`, expected `sidebar_shade` or `unfocused_shift` at line 2 column 12",
+                "app: window: unknown field `sidebar`, expected one of `sidebar_shade`, `unfocused_shift`, `tab_bar`, `sidebar_font_size`, `sidebar_density` at line 2 column 12",
             ),
             (
                 "app: [a]\n",

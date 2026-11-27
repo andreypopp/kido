@@ -650,6 +650,8 @@ stderr, and the tests fail on it. An absent `font.family` is the
 system's monospaced font: the family name of
 `NSFont.monospacedSystemFont` (`.AppleSystemUIFontMonospaced`), which
 Ghostty's CoreText discovery resolves to its Regular face.
+`font.style` writes one `font-style*` line for each name that is set,
+and `font.blending` writes `alpha-blending`, with `_` as `-`.
 `copy_on_select` is a bool: Ghostty's `primary` has no effect on macOS,
 so `true` is `clipboard` and `false` is `none`, Ghostty's macOS default.
 `app.keys` becomes one `keybind` line for each binding; the visual
@@ -2056,7 +2058,9 @@ a page. While the page has focus,
 which runs a chord of the Ghostty triggers of `increase_font_size:1`,
 `decrease_font_size:1` and `reset_font_size` on its own surface (only
 when the chord is a Ghostty binding), so the font keys change the
-session's font and the page's `--ko-font-size` as in a terminal pane;
+session's font and the page's `--ko-font-size` as in a terminal pane
+(`--ko-font-size` is the pane's font times `webview.font_scale`, 1 by
+default, so a page can be larger than the terminal);
 Ghostty's C API gives one trigger for each exact action, so a binding
 with another amount does not act in a page. Then it offers a Command
 key to the main menu before WebKit sees it, so Kido's menu keys win;
@@ -2320,6 +2324,61 @@ right; its buttons send their action to the responder chain, which ends
 at the window's `WindowOwner`. When the sidebar collapses, New Session
 hides but keeps its slot.
 
+`window.sidebar_font_size` (14 pt by default) sets the sidebar's size.
+`SidebarFonts(size:)` derives every font from it, and its `scale`
+(size / 14) multiplies each length that `SidebarCell` and
+`SidebarChildren` draw or lay out: the row height (43 pt pane row, 26 pt
+heading, rounded to a whole point), the paddings, the tree indent, the
+selection radius, the second line, the clock, the status mark and the
+buttons' slots. `Sidebar.updateAppearance` sets `SidebarView.fontSize` on
+every reload, and a changed size reloads the rows. At 14 pt the scale is
+1 and the drawing is the same as before.
+
+A pane row is 43 pt because it always holds two lines: the title line
+(5 pt padding, 19 pt) and, from 24 pt, the tail line of 14 pt for the
+second line and the folded children, whether or not the row has a tail.
+`window.sidebar_density: compact` makes the row follow its content
+(`SidebarRow.compactHeight`, from `showsTail`, scaled and rounded by
+`SidebarFonts.height`): a pane row without a tail is 27 pt (23 pt at
+12 pt, 25 pt at 13 pt), a row with a tail is 40 pt with the tail line at
+23 pt, and a heading is 22 pt. The title keeps its 5 pt offset, so the
+status mark stays centered on the text. The selection radius is 5 pt
+instead of 7 pt, and the group slices of a block use the same radius, so
+the hierarchy guides stay continuous. `regular` (the default) keeps the
+sizes above. `Sidebar.updateAppearance` sets `SidebarView.compact` on
+every reload. A row changes height when its tail appears or goes, as the
+caption debounce decides.
+
+`window.tab_bar: false` removes the window's `NSToolbar` (`window.toolbar =
+nil`; `Sidebar.applyToolbar` runs at launch and in `Sidebar.updateAppearance`,
+so a reload applies it, and the `WindowOwner` keeps the toolbar for the next
+`true`). The window then has a title strip, `Sidebar.strip`, at the top of the
+terminal column. Its height is the native titlebar height: its bottom is the
+top of `terminalHost`'s safe area, which AppKit sets to the titlebar. The
+height is not a constant (32 pt on the current macOS; the
+tests compare it with `window.frame.height - contentLayoutRect.maxY`). AppKit
+centers the standard window buttons in that same height, so the buttons, the
+title and the sidebar toggle share one centerline and the app moves no button.
+The strip shows the window title (`NSWindow.title`, the same text as the native
+title) centered in 12 pt medium type. The sidebar keeps the full window height
+beside it. The terminal starts at the bottom of the strip (`content.top` is
+`strip.bottom`), so no terminal row is in the titlebar region and every click
+on the terminal reaches the pane. `PaneView`, `WindowView` and `SessionView`
+return `false` from `mouseDownCanMoveWindow`: a non-opaque `NSView` returns
+`true` by default, and AppKit then moves the window from a mouse-down in the
+transparent titlebar region. A mouse-down on the strip drags the window
+(`performDrag`). A double-click does the system action of
+`AppleActionOnDoubleClick` (zoom, or minimize, or none).
+
+The lights are over the sidebar while it is shown and at the left of the strip
+while it is hidden. The strip's title view starts 120 pt from the left edge of
+the column, so it never overlaps them. The Back, Forward and New Window buttons
+go with the toolbar; their menu items and shortcuts remain. The sidebar toggle
+is a button in the top right of the sidebar's dock (`Sidebar.dockToggle`),
+centered on the strip's centerline; while the sidebar is hidden it is available
+from the menu and its shortcut. The remote user@host label is part of the tabs
+and goes with them.
+
 Titlebar tabs and the remote user@host label occupy a flexible native
 `NSToolbarItem` after `sidebarTrackingSeparator`, not a content overlay.
 They follow the native separator when the floating sidebar opens.
@@ -2346,6 +2405,10 @@ Next Window and Previous Window (Command-} and Command-{, the menu, the
 palette and Ghostty's tab actions) step through the tabs with
 `ko_client_switch`, the server's window switch, which visits every
 window in document order, across sessions.
+
+The Window menu also has the standard Zoom item (`performZoom:`, no key in
+code). A user App Shortcut for the title "Zoom" works on it. Zoom Pane has a
+different title. The palette does not list it.
 
 Tabs project the current session's windows from the snapshot, and the
 client's current window is the active tab. Each title is
@@ -2901,6 +2964,12 @@ enabled from the same state. The mouse's back and forward buttons
 while the palette or a sheet is up: `OwnerWindow.sendEvent` takes both
 their press and release before a terminal can receive them. On a float
 they do nothing: the history is the main window's. The actions are `navigateHistoryBack:` and `navigateHistoryForward:`, not `goBack:` and `goForward:`, because a focused webview implements those two itself and takes a responder-chain action of that name. ko_tui has no history.
+
+The Shell menu's Split Up item opens a pane above the focused pane and
+selects it, as Split Down does below. It has no key equivalent, so the user
+can assign one in System Settings, Keyboard Shortcuts, App Shortcuts by its
+title "Split Up". It is not a palette command; Ghostty's split-up action runs
+the same command.
 
 ## Command palette
 

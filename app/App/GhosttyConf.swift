@@ -18,10 +18,18 @@ enum GhosttyConf {
         case .left: "left"
         case .right: "right"
         }
-        var lines = ["alpha-blending = linear", "cursor-style-blink = false",
+        let blending: String = switch app.font.blending {
+        case .native: "native"
+        case .linear: "linear"
+        case .linearCorrected: "linear-corrected"
+        }
+        var lines = ["alpha-blending = \(blending)", "cursor-style-blink = false",
                      "keybind = super+k=unbind", "keybind = super+j=unbind", "keybind = super+s=unbind", "keybind = super+shift+s=unbind",
                      "font-family = \(app.font.family ?? systemFont)", "font-size = \(app.font.size)"]
         lines += app.font.features.map { "font-feature = \($0)" }
+        let styles = app.font.style
+        lines += [("font-style", styles.regular), ("font-style-bold", styles.bold), ("font-style-italic", styles.italic), ("font-style-bold-italic", styles.boldItalic)]
+            .compactMap { key, name in name.map { "\(key) = \($0)" } }
         lines += ["font-thicken = \(bool(app.font.thicken))", "adjust-cell-height = \(app.font.lineHeight)%",
                   "macos-option-as-alt = \(option)",
                   "mouse-scroll-multiplier = precision:\(app.mouse.scrollMultiplier.precision),discrete:\(app.mouse.scrollMultiplier.discrete)",
