@@ -26,7 +26,7 @@ pub struct App {
     pub keys: BTreeMap<Trigger, Action>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct WebviewSettings {
     /// Render HTML pages over the pane's terminal content.
@@ -35,6 +35,8 @@ pub struct WebviewSettings {
     pub inspector: bool,
     /// The number of hidden pages that stay live in each native window.
     pub keep_hidden: HiddenPages,
+    /// The scale of the font size in HTML pages. Terminal panes do not change.
+    pub font_scale: FontScale,
 }
 
 impl Default for WebviewSettings {
@@ -43,6 +45,7 @@ impl Default for WebviewSettings {
             enabled: true,
             inspector: false,
             keep_hidden: HiddenPages::default(),
+            font_scale: FontScale::default(),
         }
     }
 }
@@ -102,6 +105,7 @@ impl<'de> Deserialize<'de> for Theme {
 
 ranged!(FontSize, 4.0..=72.0, 13.0);
 ranged!(LineHeight, -50.0..=100.0, 0.0);
+ranged!(FontScale, 0.5..=3.0, 1.0);
 ranged!(SidebarShade, -100.0..=100.0, 5.0);
 ranged!(SidebarFontSize, 6.0..=40.0, 14.0);
 ranged!(UnfocusedShift, -100.0..=100.0, 3.0);
@@ -270,10 +274,13 @@ mod tests {
 
     #[test]
     fn webview_settings_are_checked() {
-        let found = app("app: {webview: {enabled: false, inspector: true, keep_hidden: 16}}\n");
+        let found = app(
+            "app: {webview: {enabled: false, inspector: true, keep_hidden: 16, font_scale: 1.5}}\n",
+        );
         assert!(!found.webview.enabled);
         assert!(found.webview.inspector);
         assert_eq!(u8::from(found.webview.keep_hidden), 16);
+        assert_eq!(f64::from(found.webview.font_scale), 1.5);
         assert_eq!(
             u8::from(
                 app("app: {webview: {keep_hidden: 0}}\n")
@@ -301,7 +308,7 @@ mod tests {
                 "mouse": {"scroll_multiplier": {"precision": 1.0, "discrete": 3.0}, "hide_while_typing": false},
                 "clipboard": {"read": "ask", "write": "allow", "copy_on_select": false, "paste_protection": true, "trim_trailing_spaces": true},
                 "window": {"sidebar_shade": 5.0, "unfocused_shift": 3.0, "tab_bar": true, "sidebar_font_size": 14.0, "sidebar_density": "regular"},
-                "webview": {"enabled": true, "inspector": false, "keep_hidden": 4},
+                "webview": {"enabled": true, "inspector": false, "keep_hidden": 4, "font_scale": 1.0},
                 "keys": {}
             })
         );
@@ -346,7 +353,7 @@ app:
                 "mouse": {"scroll_multiplier": {"precision": 0.5, "discrete": 10.0}, "hide_while_typing": true},
                 "clipboard": {"read": "deny", "write": "deny", "copy_on_select": true, "paste_protection": false, "trim_trailing_spaces": false},
                 "window": {"sidebar_shade": -10.0, "unfocused_shift": 0.0, "tab_bar": false, "sidebar_font_size": 11.0, "sidebar_density": "compact"},
-                "webview": {"enabled": true, "inspector": false, "keep_hidden": 4},
+                "webview": {"enabled": true, "inspector": false, "keep_hidden": 4, "font_scale": 1.0},
                 "keys": {"alt+k": "unbind", "ctrl+shift+arrow_up": "csi:1;5A", "super+e": "text:X"}
             })
         );
@@ -410,6 +417,7 @@ app:
             ("window: {sidebar_shade: ", -100.0, 100.0),
             ("window: {unfocused_shift: ", -100.0, 100.0),
             ("window: {sidebar_font_size: ", 6.0, 40.0),
+            ("webview: {font_scale: ", 0.5, 3.0),
             ("mouse: {scroll_multiplier: {precision: ", 0.01, 100.0),
             ("mouse: {scroll_multiplier: {discrete: ", 0.01, 100.0),
         ] {

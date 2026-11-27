@@ -1006,6 +1006,8 @@ public enum KoSchema {
 
     public typealias FontFeature = String
 
+    public typealias FontScale = Double
+
     public typealias FontSize = Double
 
     public typealias FontStyleName = String
@@ -2344,22 +2346,26 @@ public enum KoSchema {
 
     public struct WebviewSettings: Codable, Equatable, Sendable {
         public var enabled: Bool
+        public var fontScale: FontScale
         public var inspector: Bool
         public var keepHidden: HiddenPages
-        public init(enabled: Bool, inspector: Bool, keepHidden: HiddenPages) {
+        public init(enabled: Bool, fontScale: FontScale, inspector: Bool, keepHidden: HiddenPages) {
             self.enabled = enabled
+            self.fontScale = fontScale
             self.inspector = inspector
             self.keepHidden = keepHidden
         }
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.enabled = try container.decode(Bool.self, forKey: .enabled)
+            self.fontScale = try container.decode(FontScale.self, forKey: .fontScale)
             self.inspector = try container.decode(Bool.self, forKey: .inspector)
             self.keepHidden = try container.decode(HiddenPages.self, forKey: .keepHidden)
             guard 0 <= self.keepHidden, self.keepHidden <= 16 else { throw DecodingError.dataCorruptedError(forKey: .keepHidden, in: container, debugDescription: "keep_hidden is 0...16, not \(self.keepHidden)") }
         }
         private enum CodingKeys: String, CodingKey {
             case enabled
+            case fontScale = "font_scale"
             case inspector
             case keepHidden = "keep_hidden"
         }

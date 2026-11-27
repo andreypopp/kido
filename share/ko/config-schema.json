@@ -40,6 +40,7 @@
         },
         "webview": {
           "enabled": true,
+          "font_scale": 1.0,
           "inspector": false,
           "keep_hidden": 4
         },
@@ -168,6 +169,7 @@
           "$ref": "#/$defs/WebviewSettings",
           "default": {
             "enabled": true,
+            "font_scale": 1.0,
             "inspector": false,
             "keep_hidden": 4
           }
@@ -434,6 +436,12 @@
       "description": "an OpenType feature tag with an optional + or -",
       "type": "string",
       "pattern": "^[+-]?[a-zA-Z0-9]{4}$"
+    },
+    "FontScale": {
+      "description": "A number of at least 0.5 and at most 3.",
+      "type": "number",
+      "maximum": 3.0,
+      "minimum": 0.5
     },
     "FontSize": {
       "description": "A number of at least 4 and at most 72.",
@@ -1115,6 +1123,11 @@
           "description": "Render HTML pages over the pane's terminal content.",
           "type": "boolean",
           "default": true
+        },
+        "font_scale": {
+          "description": "The scale of the font size in HTML pages. Terminal panes do not change.",
+          "$ref": "#/$defs/FontScale",
+          "default": 1.0
         },
         "inspector": {
           "description": "Allow WebKit's inspector for HTML pages.",

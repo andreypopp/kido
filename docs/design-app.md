@@ -2058,7 +2058,9 @@ a page. While the page has focus,
 which runs a chord of the Ghostty triggers of `increase_font_size:1`,
 `decrease_font_size:1` and `reset_font_size` on its own surface (only
 when the chord is a Ghostty binding), so the font keys change the
-session's font and the page's `--ko-font-size` as in a terminal pane;
+session's font and the page's `--ko-font-size` as in a terminal pane
+(`--ko-font-size` is the pane's font times `webview.font_scale`, 1 by
+default, so a page can be larger than the terminal);
 Ghostty's C API gives one trigger for each exact action, so a binding
 with another amount does not act in a page. Then it offers a Command
 key to the main menu before WebKit sees it, so Kido's menu keys win;

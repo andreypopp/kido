@@ -342,7 +342,7 @@ extension NSColor {
         guard let loaded = Self.makeConfig(values, file: configFile, override: overrideValue, error: nil) else { return }
         diagnostics = loaded.diagnostics
         setConfigError(loaded.error)
-        let changed = loadedText != loaded.text || loadedTheme != overrideValue || themeFiles != loaded.themeFiles
+        let changed = loadedText != loaded.text || loadedTheme != overrideValue || themeFiles != loaded.themeFiles || values.webview != loaded.values.webview
         #if KIDO_VISUAL
         if loadedTheme != overrideValue { visualThemeApplies += 1 }
         #endif

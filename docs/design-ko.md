@@ -1105,6 +1105,9 @@ of each of `regular`, `bold`, `italic` and `bold_italic` (Ghostty's
 `font-style` keys), such as `Light` or `Semibold Italic`; an absent
 name is the family's default. `font.blending` is `native`, `linear`
 (the default) or `linear_corrected`: Ghostty's `alpha-blending`.
+`webview.font_scale` is a number from 0.5 to 3, 1 by default: it
+multiplies the font size of HTML pages and leaves the terminal panes as
+they are.
 `window.sidebar_font_size` is the sidebar's row font in points, 6 to 40,
 14 by default. The row heights, the insets, the heading, the second
 line and the status marks scale with it (see docs/design-app.md).
