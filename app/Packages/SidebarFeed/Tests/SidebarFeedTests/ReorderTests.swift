@@ -8,9 +8,8 @@ private func w(_ n: UInt32) -> WindowID { WindowID(number: n) }
 
 private func tree(instance: Int = 12345, sessions: [Int] = [0, 1], client: Int = 0) -> Snapshot {
     makeSnapshot([
-        pane(0, records: [.working(.init(id: "task", msg: "step", progress: 10, title: "Task"))], serial: 1,
-             children: [pane(1, children: [pane(2)])]),
-        group(3, [pane(3, children: [pane(5)]), pane(4, window: 3)]),
+        pane(0, records: [.working(.init(id: "task", msg: "step", progress: 10, title: "Task"))], serial: 1),
+        group(3, [pane(3), pane(4, window: 3)]),
         pane(6),
     ], client: client, sessions: sessions, instance: "\(instance)/1780000000")
 }
@@ -26,14 +25,14 @@ private func tree(instance: Int = 12345, sessions: [Int] = [0, 1], client: Int =
     #expect(ReorderMove.placing("x", at: 0, in: ids) == nil)
 }
 
-@Test func rootMovesWithItsWholeSubtree() throws {
-    let snapshot = tree(client: 2)
+@Test func windowMovesWithItsPaneRecords() throws {
+    let snapshot = tree(client: 0)
     let rows = renderedRows(snapshot).filter { $0.id.session == s0 }
     let moved = try #require(snapshot.reordered(.window(s0, w(0), relativeTo: w(6), .after)))
     let after = renderedRows(moved).filter { $0.id.session == s0 }
     func block(_ rows: [SidebarRow], _ root: UInt32) -> [SidebarRow] { rows.filter { $0.root == w(root) } }
-    #expect(block(rows, 0).count == 4, "pane, its program record, and two nested runs")
-    #expect(block(rows, 3).count == 2, "both group panes, the nested run folded")
+    #expect(block(rows, 0).count == 2, "pane and its program record")
+    #expect(block(rows, 3).count == 2, "both group panes")
     #expect(after.count == rows.count)
     #expect(after.first == rows.first)
     #expect(after.last == rows.last)
@@ -116,9 +115,9 @@ private func tree(instance: Int = 12345, sessions: [Int] = [0, 1], client: Int =
     #expect(state.pending == nil)
 
     #expect(state.submit(move, to: snapshot) != nil)
-    let reparented = makeSnapshot([pane(6, children: [pane(0)])], sessions: [0, 1])
+    let reparented = makeSnapshot([pane(6)], sessions: [0, 1])
     state.observe(reparented)
-    #expect(state.project(reparented) == reparented, "a source that is no longer a root cancels the projection")
+    #expect(state.project(reparented) == reparented, "a missing source cancels the projection")
     #expect(state.pending != nil)
     #expect(state.submit(move, to: snapshot) == nil)
     state.reset()
@@ -131,7 +130,7 @@ private func tree(instance: Int = 12345, sessions: [Int] = [0, 1], client: Int =
     let projection = sidebarWindows(snapshot, projection: PaneProjection(snapshot), session: s0, surviving: Set(([0, 1, 2, 3, 6, 8] as [UInt32]).map(w)))
     #expect(projection.order == [w(0), w(3), w(6)])
     var orphaned = snapshot
-    orphaned.sessions[0].nodes = [snapshot.sessions[0].nodes[0].children[0], snapshot.sessions[0].nodes[2]]
+    orphaned.sessions[0].nodes = [pane(1, parent: 0), snapshot.sessions[0].nodes[2]]
     let orphan = sidebarWindows(orphaned, projection: PaneProjection(orphaned), session: s0, surviving: [w(1), w(6)])
     #expect(orphan.order == [w(1), w(6)], "an orphaned run is ordered where its subtree sits")
     #expect(arranged([w(6), w(8), w(3), w(0)], by: projection.order, \.self) == [w(0), w(8), w(3), w(6)],

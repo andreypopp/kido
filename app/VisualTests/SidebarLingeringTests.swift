@@ -5,12 +5,9 @@ import XCTest
 @testable import Kido
 
 @MainActor final class SidebarLingeringTests: VisualTestCase {
-    func testJobRecordsAlignWithSubagent() throws {
+    func testJobRecords() throws {
         SidebarView.visualNow = 3720_000_000_000
         defer { SidebarView.visualNow = nil }
-        var child = fixtureItem(2, "subagent", piLifecycle(.running(.init())), mark: .running)
-        child.pane.started = 3708_000_000_000
-        child.pane.parent = .init(number: 1)
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 292, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         defer { window.close() }
@@ -22,9 +19,7 @@ import XCTest
                 .done(.init(id: "job/43", started: 0, title: "Run tests")),
                 .blocked(.init(id: "review", started: 0, title: "Review")),
                 .blocked(.init(id: "review/missing/check", started: 3710_000_000_000, title: "Check guides")),
-            ], serial: 1, mark: .running, children: [
-                .item(child),
-            ])),
+            ], serial: 1, mark: .running)),
         ])]))
         for dark in [false, true] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
@@ -38,7 +33,7 @@ import XCTest
         child.pane.started = 0
         child.pane.parent = .init(number: 1)
         let snapshot = fixtureSnapshot(window: 1, pane: 1, [("main", [
-            fixtureNode(1, "parent", piLifecycle(), children: [.item(child)]),
+            fixtureNode(1, "parent", piLifecycle()), .item(child),
         ])])
         let row = try XCTUnwrap(sidebarRows(snapshot).first { $0.started != nil })
         let cell = SidebarCell(SidebarFonts())
@@ -48,7 +43,7 @@ import XCTest
             cell.configure(row, now: SidebarView.visualNow!)
             SidebarView.visualNow = after * 1_000_000_000
             cell.updateClock(now: SidebarView.visualNow!)
-            XCTAssertEqual(cell.visualClockDirtyRect.minX, 20)
+            XCTAssertEqual(cell.visualClockDirtyRect.minX, 5)
             XCTAssertEqual(cell.visualClockDirtyRect.minY, 5)
         }
         SidebarView.visualNow = 11_000_000_000
@@ -66,7 +61,7 @@ import XCTest
         let list = SidebarView()
         window.contentView = list
         list.show(fixtureSnapshot(window: 1, pane: 1, [("main", [
-            fixtureNode(1, "parent", piLifecycle(), children: [fixtureNode(2, "helper", shellLifecycle())]),
+            fixtureNode(1, "parent", piLifecycle()), fixtureNode(2, "helper", shellLifecycle()),
             fixtureNode(3, "exit 0, on_exit", .lingering(.exited(.init(code: 0)))),
             fixtureNode(4, "exit 2, on_exit", .lingering(.exited(.init(code: 2)))),
             fixtureNode(5, "signal, on_exit", .lingering(.signaled(.init(signal: 9)))),
@@ -74,7 +69,7 @@ import XCTest
             fixtureNode(7, "exit 2, keep", .ended(.exited(.init(code: 2)))),
         ])]))
         let rows = list.visualRows.filter { $0.target != nil }
-        XCTAssertEqual(rows.map(\.indent), [0, 1, 0, 0, 0, 0, 0])
+        XCTAssertEqual(rows.map(\.indent), [0, 0, 0, 0, 0, 0, 0])
         XCTAssertEqual(rows.map(\.status), [.quiet, .quiet, .endedClean, .endedFailed, .endedFailed, .done, .error])
         XCTAssertEqual(rows.map(\.indicatorDescription).suffix(5),
                        ["gone, exited", "gone, exited with code 2", "gone, killed by signal 9", "gone, completed", "gone, exited with code 2"])

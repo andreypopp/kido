@@ -73,11 +73,8 @@ public struct NotifierState: Equatable, Sendable {
         // Visit the client's session first so linked panes get its click target and subtitle.
         let sessions = snapshot.sessions.filter { $0.id == snapshot.client.session }
             + snapshot.sessions.filter { $0.id != snapshot.client.session }
-        func visit(_ node: Node, session: SessionNodes) {
-            defer {
-                node.children.forEach { visit($0, session: session) }
-            }
-            guard case .item(let item) = node, present.insert(item.id).inserted else { return }
+        func visit(_ item: Item, session: SessionNodes) {
+            guard present.insert(item.id).inserted else { return }
             let key = NoticeKey(owner: owner, pane: item.id)
             let status = item.indicator.status
             let reason: Reason? = switch (item.lifecycle, item.pane.mark) {
@@ -112,7 +109,7 @@ public struct NotifierState: Equatable, Sendable {
                 title: item.rowTitle, subtitle: subtitle, body: body))
             state.entries[item.id] = .posted(reason)
         }
-        for session in sessions { session.nodes.forEach { visit($0, session: session) } }
+        for session in sessions { session.nodes.flatMap(\.items).forEach { visit($0, session: session) } }
         for pane in state.entries.keys.sorted(by: { $0.number < $1.number }) where !present.contains(pane) {
             if case .posted = state.entries[pane] { effects.withdraw.append(NoticeKey(owner: owner, pane: pane)) }
             state.entries[pane] = nil

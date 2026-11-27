@@ -187,49 +187,41 @@
       "type" : "session"
     },
     {
-      "depth" : 0,
       "id" : "pane_1",
       "type" : "pane",
       "window" : "window_1"
     },
     {
-      "depth" : 0,
       "id" : "pane_2",
       "type" : "pane",
       "window" : "window_1"
     },
     {
-      "depth" : 0,
       "id" : "pane_3",
       "type" : "pane",
       "window" : "window_2"
     },
     {
-      "depth" : 0,
       "id" : "pane_4",
       "type" : "pane",
       "window" : "window_3"
     },
     {
-      "depth" : 0,
       "id" : "pane_5",
       "type" : "pane",
       "window" : "window_4"
     },
     {
-      "depth" : 0,
       "id" : "pane_7",
       "type" : "pane",
       "window" : "window_6"
     },
     {
-      "depth" : 0,
       "id" : "pane_8",
       "type" : "pane",
       "window" : "window_7"
     },
     {
-      "depth" : 0,
       "id" : "pane_9",
       "type" : "pane",
       "window" : "window_8"
@@ -240,7 +232,6 @@
       "type" : "session"
     },
     {
-      "depth" : 0,
       "id" : "pane_6",
       "type" : "pane",
       "window" : "window_5"

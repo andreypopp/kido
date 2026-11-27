@@ -1043,25 +1043,11 @@ public enum KoSchema {
     }
 
     public struct ItemPane: Codable, Equatable, Sendable {
-        public var depth: Int
         public var id: PaneId
         public var window: WindowId
-        public init(depth: Int, id: PaneId, window: WindowId) {
-            self.depth = depth
+        public init(id: PaneId, window: WindowId) {
             self.id = id
             self.window = window
-        }
-        public init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            self.depth = try container.decode(Int.self, forKey: .depth)
-            self.id = try container.decode(PaneId.self, forKey: .id)
-            self.window = try container.decode(WindowId.self, forKey: .window)
-            guard 0 <= self.depth else { throw DecodingError.dataCorruptedError(forKey: .depth, in: container, debugDescription: "depth is at least 0, not \(self.depth)") }
-        }
-        private enum CodingKeys: String, CodingKey {
-            case depth
-            case id
-            case window
         }
     }
 

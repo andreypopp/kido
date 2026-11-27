@@ -73,8 +73,8 @@ import XCTest
                 case .directoryNarrow: ("directory-narrow-circles", false, 150)
                 case .singleLong: ("single-long-name", false, 236)
                 case .narrowNine: ("narrow-nine-hidden", false, 80)
-                case .countOnly: ("deep-count-only", false, 96)
-                case .summaryAbsent: ("deep-summary-absent", false, 56)
+                case .countOnly: ("root-count-only", false, 52)
+                case .summaryAbsent: ("root-summary-absent", false, 20)
                 case .paneWaitFolded: ("pane-wait-folded", false, 292)
                 case .paneWaitExpanded: ("pane-wait-expanded", false, 292)
                 case .recordWaitFolded: ("record-wait-folded", true, 292)
@@ -109,15 +109,14 @@ import XCTest
                     snapshot.client = .init(session: .init(number: 0), window: .init(number: 458), pane: .init(number: 936))
                 case .sixPlus, .singleIdle:
                     let count = scenario == .singleIdle ? 1 : 8
-                    let children = (1...count).map { index in fixtureNode(UInt32(index), "child-\(index)", piLifecycle(index == 1 ? .idle(.init()) : .running(.init())), mark: index == 1 ? .none_ : .running) }
-                    snapshot = fixtureSnapshot(window: 99, pane: 99, [("main", [fixtureNode(0, "Parent", piLifecycle(), children: children)])])
+                    let records: [KoSchema.ProgramRecord] = (1...count).map { index in
+                        index == 1 ? .idle(.init(id: "child-\(index)", title: "child-\(index)")) : .working(.init(id: "child-\(index)", title: "child-\(index)"))
+                    }
+                    snapshot = fixtureSnapshot(window: 99, pane: 99, [("main", [.item(fixtureItem(0, "Parent", piLifecycle(), records: records))])])
                 case .singleLong, .narrowNine, .countOnly, .summaryAbsent:
                     let count = scenario == .singleLong ? 1 : 9
-                    let children = (1...count).map { fixtureNode(UInt32($0), "A very long hidden child name that must ellipsize", piLifecycle(.running(.init())), mark: .running) }
-                    snapshot = fixtureSnapshot(window: 99, pane: 99, [("main", [fixtureNode(0, "Parent", piLifecycle(.running(.init()), msg: "A very long activity caption that must ellipsize before the circles"), mark: .running, children: children)])])
-                    if scenario == .countOnly || scenario == .summaryAbsent {
-                        snapshot = fixtureSnapshot(window: 101, pane: 101, [("main", [fixtureNode(100, "Root", piLifecycle(), children: [fixtureNode(101, "Ancestor", piLifecycle(), children: snapshot.sessions[0].nodes)])])])
-                    }
+                    let records: [KoSchema.ProgramRecord] = (1...count).map { .working(.init(id: "child-\($0)", title: "A very long hidden child name that must ellipsize")) }
+                    snapshot = fixtureSnapshot(window: 99, pane: 99, [("main", [.item(fixtureItem(0, "Parent", piLifecycle(.running(.init()), msg: "A very long activity caption that must ellipsize before the circles"), records: records, mark: .running))])])
                 case .directories:
                     let ssh = Lifecycle.live(.ssh(.init(destination: "dev@devbox", foreground: 1, pane: .terminal(.init(interactive: true, status: .init(phase: .idle(.init())))))))
                     snapshot = fixtureSnapshot(window: 99, pane: 99, [("main", [
@@ -128,13 +127,13 @@ import XCTest
                         .item(fixtureItem(5, cwd: "/etc", "Ended", .ended(.exited(.init(code: 2))))),
                     ])])
                 case .directoryNarrow:
-                    let children = (1...3).map { fixtureNode(UInt32($0), "Child \($0)", piLifecycle(.running(.init())), mark: .running) }
-                    snapshot = fixtureSnapshot(window: 99, pane: 99, [("main", [.item(fixtureItem(0, cwd: "/Users/dev/Workspace/kido/app/Packages/SidebarFeed", "Terminal", shellLifecycle(), children: children))])])
+                    let records: [KoSchema.ProgramRecord] = (1...3).map { .working(.init(id: "child-\($0)", title: "Child \($0)")) }
+                    snapshot = fixtureSnapshot(window: 99, pane: 99, [("main", [.item(fixtureItem(0, cwd: "/Users/dev/Workspace/kido/app/Packages/SidebarFeed", "Terminal", shellLifecycle(), records: records))])])
                 case .ellipsis:
                     snapshot.mapItems { if $0.id.number == 940 { $0.fixtureLifecycle = piLifecycle(.waiting(.init()), msg: "Allow running make test in the worktree before continuing?") } }
                     snapshot.client = .init(session: .init(number: 0), window: .init(number: 458), pane: .init(number: 936))
                 case .paneWaitFolded, .paneWaitExpanded:
-                    snapshot = fixtureSnapshot(window: 0, pane: scenario == .paneWaitExpanded ? 0 : 99, [("main", [fixtureNode(0, "Parent", piLifecycle(), children: [fixtureNode(1, "Waiting child", piLifecycle(.waiting(.init(kind: .permission))), mark: .waiting)])])])
+                    snapshot = fixtureSnapshot(window: 0, pane: scenario == .paneWaitExpanded ? 0 : 99, [("main", [fixtureNode(0, "Parent", piLifecycle()), fixtureNode(1, "Waiting child", piLifecycle(.waiting(.init(kind: .permission))), mark: .waiting)])])
                 case .recordWaitFolded, .recordWaitExpanded:
                     snapshot = fixtureSnapshot(window: 0, pane: scenario == .recordWaitExpanded ? 0 : 99, [("main", [.item(fixtureItem(0, "Claude Code", agentLifecycle(.running(.init())), records: [
                         .working(.init(id: "a", msg: "Working", title: "Record parent")),
@@ -165,6 +164,7 @@ import XCTest
                     let cell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell)
                     cell.layoutSubtreeIfNeeded()
                     XCTAssertEqual(cell.children.isHidden, scenario == .summaryAbsent, "row width \(cell.bounds.width), leading \(list.visualRows[index].leading), children \(cell.children.frame)")
+                    if scenario == .countOnly { XCTAssertEqual(cell.children.circleCount, 0) }
                     XCTAssertLessThanOrEqual(cell.children.frame.maxX, cell.bounds.width - 5)
                 default: break
                 }
@@ -260,11 +260,12 @@ import XCTest
                 var snapshot = sidebarChildrenFixture(records: name == "records-and-children")
                 if name == "single" { snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", [fixtureNode(0, "One pane", piLifecycle())])]) }
                 if name == "records-and-children" {
-                    var first = snapshot.sessions[0].nodes[0].item
-                    first.children.append(.item(fixtureItem(3002, parent: 3000, "Child agent", piLifecycle())))
+                    let first = snapshot.sessions[0].nodes[0].item
                     snapshot.sessions[0].nodes[0] = .window(.init(id: .init(number: 3000), children: [
                         first, fixtureItem(3001, window: 3000, "Second pane", shellLifecycle()),
+                        fixtureItem(3002, window: 3000, parent: 3000, "Child agent", piLifecycle()),
                     ]))
+                    snapshot.sessions[0].nodes[0].group.children[2].pane.started = sidebarChildrenNow - 368_000_000_000
                 }
                 if name == "records-and-children" { snapshot.client = .init(session: .init(number: 0), window: .init(number: 3000), pane: .init(number: 3000)) }
                 if name == "scroll-clipped" { snapshot.client = .init(session: .init(number: 0), window: .init(number: 458), pane: .init(number: 936)) }
@@ -318,26 +319,22 @@ import XCTest
         XCTAssertEqual(owner.testModel?.selection.pane, root, "a new child does not take the selection")
     }
 
-    func testFoldedDoneUsesIdleDotAndSubtreeUsesRunningCircle() throws {
-        let rows = sidebarRows(sidebarChildrenFixture())
-        let parent = try XCTUnwrap(rows.first { $0.target?.pane == PaneID(number: 502) })
-        let waiting = try XCTUnwrap(rows.first { $0.target?.pane == PaneID(number: 940) })
-        XCTAssertEqual(parent.hidden.map(\.status), [.running, .quiet])
-        XCTAssertEqual(waiting.hidden.map(\.status), [.running, .quiet])
-        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 44, height: 12), styleMask: [], backing: .buffered, defer: false)
+    func testFoldedRecordsUseRunningAndIdleCircles() throws {
+        let snapshot = fixtureSnapshot(window: 99, pane: 99, [("main", [.item(fixtureItem(0, "Agent", piLifecycle(), records: [
+            .working(.init(id: "running")), .done(.init(id: "done"))
+        ]))])])
+        let row = try XCTUnwrap(sidebarRows(snapshot).first { $0.target != nil })
+        XCTAssertEqual(row.hidden.map(\.status), [.running, .quiet])
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 20, height: 12), styleMask: [], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: .aqua)
         defer { window.close() }
-        let host = NSView(frame: NSRect(x: 0, y: 0, width: 44, height: 12))
-        window.contentView = host
-        for (index, hidden) in [parent.hidden, waiting.hidden].enumerated() {
-            let control = SidebarChildren(SidebarFonts())
-            control.content = hidden
-            control.frame = NSRect(x: index * 24, y: 0, width: 20, height: 12)
-            host.addSubview(control)
-        }
-        host.displayIfNeeded()
-        checkSnapshot { verifySnapshot(of: host, as: .pixels, named: "subtree-running-and-idle-dots", record: $0) }
+        let control = SidebarChildren(SidebarFonts())
+        control.content = row.hidden
+        control.frame = NSRect(x: 0, y: 0, width: 20, height: 12)
+        window.contentView = control
+        control.displayIfNeeded()
+        checkSnapshot { verifySnapshot(of: control, as: .pixels, named: "running-and-idle-dots", record: $0) }
     }
 
     private func click(_ control: NSView) throws {

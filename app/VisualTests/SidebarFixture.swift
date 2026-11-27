@@ -3,8 +3,6 @@ import KoModel
 @testable import SidebarFeed
 import PaneGeometry
 
-// The sidebar tree of a live session list: five sessions, nested child panes, window groups.
-
 let fixtureHome = "/Users/dev"
 
 let fixtureSince = 1_791_131_000_000_000_000
@@ -45,7 +43,7 @@ extension Item {
 }
 
 func fixtureItem(_ id: UInt32, window: UInt32? = nil, parent: UInt32? = nil, cwd: String = "", _ title: String, _ lifecycle: Lifecycle,
-                 records: [KoSchema.ProgramRecord] = [], serial: Int = 0, mark: KoSchema.Mark = .none_, children: [SidebarFeed.Node] = []) -> Item {
+                 records: [KoSchema.ProgramRecord] = [], serial: Int = 0, mark: KoSchema.Mark = .none_) -> Item {
     let live: KoSchema.Live?
     let dead: KoSchema.Dead?
     let close: KoSchema.Close?
@@ -58,12 +56,12 @@ func fixtureItem(_ id: UInt32, window: UInt32? = nil, parent: UInt32? = nil, cwd
     return Item(pane: .init(close: close, command: [], cwd: cwd, dead: dead, id: PaneID(number: id), inbox: pi,
                            label: title, mark: mark, parent: parent.map(PaneID.init(number:)), recordsSeen: false, started: 0,
                            status: live.map { .init(kind: $0, programStatus: .init(records: records, serial: serial), since: 0, title: title) },
-                           title: title, vars: [:]), window: WindowID(number: window ?? id), children: children)
+                           title: title, vars: [:]), window: WindowID(number: window ?? id))
 }
 
 func fixtureNode(_ pane: UInt32, window: UInt32? = nil, _ title: String, _ lifecycle: Lifecycle,
-                 mark: KoSchema.Mark = .none_, children: [SidebarFeed.Node] = []) -> SidebarFeed.Node {
-    .item(fixtureItem(pane, window: window, title, lifecycle, mark: mark, children: children))
+                 mark: KoSchema.Mark = .none_) -> SidebarFeed.Node {
+    .item(fixtureItem(pane, window: window, title, lifecycle, mark: mark))
 }
 
 // A snapshot whose client is the given pane; the first session is the current one.
@@ -85,22 +83,20 @@ func sidebarFixture(_ edit: (inout Snapshot) -> Void = { _ in }) -> Snapshot {
         serverInstance: ServerInstance("4242/1791000000"),
         sessions: [
             session(0, "main", [
-                fixtureNode(0, "working-on-kido", piLifecycle(session: "session-0"), children: [
-                    fixtureNode(892, window: 786, "main-watch",
-                                shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "main-watch", startedAt: 1_791_098_646_000_000_000))))),
-                                mark: .running),
-                ]),
-                .window(.init(id: WindowID(number: 458), children: [
-                    fixtureItem(502, window: 458, "kido-app", piLifecycle(session: "session-502"), children: [
-                        fixtureNode(936, window: 824, "sidebar-mockup", piLifecycle(.running(.init()), session: "session-936"),
-                                    mark: .running),
-                    ]),
-                    fixtureItem(937, window: 458, "make -C ../kido-app/app demo", shellLifecycle()),
+                .window(.init(id: .init(number: 0), children: [
+                    fixtureItem(0, window: 0, "working-on-kido", piLifecycle(session: "session-0")),
+                    fixtureItem(892, window: 0, "main-watch",
+                                shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "main-watch", startedAt: 1_791_098_646_000_000_000))))), mark: .running),
                 ])),
-                fixtureNode(905, window: 797, "pi-ui", piLifecycle(session: "session-905"), children: [
-                    fixtureNode(934, window: 822, "pi-ui-perf", piLifecycle(.running(.init()), session: "session-934"),
-                                mark: .running),
-                ]),
+                .window(.init(id: WindowID(number: 458), children: [
+                    fixtureItem(502, window: 458, "kido-app", piLifecycle(session: "session-502")),
+                    fixtureItem(937, window: 458, "make -C ../kido-app/app demo", shellLifecycle()),
+                    fixtureItem(936, window: 458, "sidebar-mockup", piLifecycle(.running(.init()), session: "session-936"), mark: .running),
+                ])),
+                .window(.init(id: .init(number: 797), children: [
+                    fixtureItem(905, window: 797, "pi-ui", piLifecycle(session: "session-905")),
+                    fixtureItem(934, window: 797, "pi-ui-perf", piLifecycle(.running(.init()), session: "session-934"), mark: .running),
+                ])),
             ]),
             session(1, "visa", [fixtureNode(11, "main", piLifecycle(session: "session-11"))]),
             session(2, "pi", [fixtureNode(23, window: 17, "main", piLifecycle(session: "session-23"))]),
@@ -112,16 +108,6 @@ func sidebarFixture(_ edit: (inout Snapshot) -> Void = { _ in }) -> Snapshot {
             ]),
             session(4, "umbrella", [fixtureNode(193, window: 166, "household", piLifecycle(session: "session-193"))]),
         ])
-    snapshot.sessions = snapshot.sessions.map { session in
-        var session = session
-        session.nodes = session.nodes.map { node in
-            switch node {
-            case .item(let item): .item(inheritingWindow(item))
-            case .window(var group): { group.children = group.children.map(inheritingWindow); return .window(group) }()
-            }
-        }
-        return session
-    }
     edit(&snapshot)
     snapshot.fillCwds()
     snapshot.mapItems { item in
@@ -150,7 +136,6 @@ extension Snapshot {
             func item(_ item: Item) -> Item {
                 var item = item
                 edit(session.name, &item)
-                item.children = item.children.map(node)
                 return item
             }
             func node(_ node: SidebarFeed.Node) -> SidebarFeed.Node {
@@ -184,40 +169,28 @@ extension Snapshot {
 
 let sidebarChildrenNow = 2_951_768_000_000_000
 
-private func inheritingWindow(_ item: Item) -> Item {
-    var item = item
-    item.children = item.children.map { node in
-        guard case .item(var child) = node else { return node }
-        child.window = item.window
-        return .item(inheritingWindow(child))
-    }
-    return item
-}
-
 func sidebarChildrenFixture(records: Bool = false) -> Snapshot {
     var snapshot = sidebarFixture()
     snapshot.client = .init(session: .init(number: 0), window: .init(number: 458), pane: .init(number: 937))
-    snapshot.sessions[0].nodes[0].item.pane.mark = .done
-    var parent = snapshot.sessions[0].nodes[1].group.children[0]
-    parent.fixtureLifecycle = piLifecycle(.running(.init()), msg: "Refining the native sidebar")
-    parent.pane.mark = .running
-    parent.children[0].item.fixtureLifecycle = piLifecycle(.running(.init()), msg: "Designing session cards and pane states")
-    parent.children[0].item.pane.parent = parent.id
-    parent.children[0].item.pane.started = 184_000_000_000
-    var notes = fixtureItem(941, parent: 940, "review-notes", .ended(.exited(.init(code: 0))), mark: .done, children: [
-        .item(fixtureItem(942, parent: 941, "lint", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "lint", startedAt: 0))))), mark: .running)),
-        .item(fixtureItem(943, parent: 941, "zsh", shellLifecycle())),
-    ])
-    notes.pane.started = 0
-    var tests = fixtureItem(940, parent: 502, "sidebar-tests", piLifecycle(.waiting(.init()), msg: "Allow running make test?"), mark: .waiting, children: [
-        .item(notes), .item(fixtureItem(944, parent: 940, "perf-notes", agentLifecycle(.idle(.init()), name: "pi"))),
-    ])
+    snapshot.sessions[0].nodes[0].group.children[0].pane.mark = .done
+    snapshot.sessions[0].nodes[1].group.children[0].fixtureLifecycle = piLifecycle(.running(.init()), msg: "Refining the native sidebar")
+    snapshot.sessions[0].nodes[1].group.children[0].pane.mark = .running
+    snapshot.sessions[0].nodes[1].group.children[2].fixtureLifecycle = piLifecycle(.running(.init()), msg: "Designing session cards and pane states")
+    snapshot.sessions[0].nodes[1].group.children[2].pane.parent = .init(number: 502)
+    snapshot.sessions[0].nodes[1].group.children[2].pane.started = 184_000_000_000
+    var tests = fixtureItem(940, window: 458, parent: 502, "sidebar-tests", piLifecycle(.waiting(.init()), msg: "Allow running make test?"), mark: .waiting)
     tests.pane.started = 41_000_000_000
-    parent.children += [.item(tests), .item(fixtureItem(945, parent: 502, "make test", .ended(.exited(.init(code: 0))), mark: .done))]
-    snapshot.sessions[0].nodes[1].group.children[0] = inheritingWindow(parent)
+    snapshot.sessions[0].nodes[1].group.children += [
+        tests,
+        fixtureItem(941, window: 458, parent: 940, "review-notes", .ended(.exited(.init(code: 0))), mark: .done),
+        fixtureItem(942, window: 458, parent: 941, "lint", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "lint", startedAt: 0))))), mark: .running),
+        fixtureItem(943, window: 458, parent: 941, "zsh", shellLifecycle()),
+        fixtureItem(944, window: 458, parent: 940, "perf-notes", agentLifecycle(.idle(.init()), name: "pi")),
+        fixtureItem(945, window: 458, parent: 502, "make test", .ended(.exited(.init(code: 0))), mark: .done),
+    ]
     snapshot.sessions[0].nodes[1].group.children[1].pane.mark = .done
-    snapshot.sessions[0].nodes[2].item.children[0].item.fixtureLifecycle = piLifecycle(.idle(.init(outcome: .init(result: .failure, serial: 1))), msg: "Profiling long sidebar updates")
-    snapshot.sessions[0].nodes[2].item.children[0].item.pane.mark = .failed
+    snapshot.sessions[0].nodes[2].group.children[1].fixtureLifecycle = piLifecycle(.idle(.init(outcome: .init(result: .failure, serial: 1))), msg: "Profiling long sidebar updates")
+    snapshot.sessions[0].nodes[2].group.children[1].pane.mark = .failed
     snapshot.sessions[1].name = "work"
     snapshot.sessions[1].nodes = [
         .window(.init(id: .init(number: 2000), children: [
@@ -228,9 +201,8 @@ func sidebarChildrenFixture(records: Bool = false) -> Snapshot {
         .item(fixtureItem(2004, "review the sidebar implementation and accessibility changes", piLifecycle(.waiting(.init()), msg: "Needs your review before continuing"), mark: .waiting)),
     ]
     snapshot.mapItems { $0.pane.started += sidebarChildrenNow - 368_000_000_000 }
-    snapshot.sessions[0].nodes[2].item.children[0].item.pane.parent = PaneID(number: 905)
-    snapshot.sessions[0].nodes[2].item.children[0].item.pane.started = 368_000_000_000
-    snapshot.sessions[0].nodes[2].item = inheritingWindow(snapshot.sessions[0].nodes[2].item)
+    snapshot.sessions[0].nodes[2].group.children[1].pane.parent = .init(number: 905)
+    snapshot.sessions[0].nodes[2].group.children[1].pane.started = sidebarChildrenNow - 368_000_000_000
     snapshot.sessions[1].nodes[2].item.pane.parent = PaneID(number: 502)
     snapshot.sessions[1].nodes[2].item.pane.started = sidebarChildrenNow - 143_000_000_000
     if records {

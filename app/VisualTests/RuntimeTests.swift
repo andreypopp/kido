@@ -65,13 +65,11 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
         let tree: [SidebarFeed.Node] = [
             fixtureNode(1, "Terminal", shellLifecycle()),
             marked(fixtureNode(2, "make verify", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "make verify", startedAt: fixtureSince))))), mark: .running), buildbox),
-            marked(fixtureNode(3, "kido-app", piLifecycle(session: "s3"), children: [
-                marked(fixtureNode(4, "make test", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "make test", startedAt: fixtureSince))))), mark: .running), buildbox),
-                marked(fixtureNode(5, "pi-review", piLifecycle(session: "s5"), children: [
-                    marked(fixtureNode(11, "pi-review-notes", piLifecycle(session: "s11")), routed),
-                ]), routed),
-                marked(fixtureNode(6, "pytest -x", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "pytest -x", startedAt: fixtureSince))))), mark: .running), py311),
-            ]), routed),
+            marked(fixtureNode(3, "kido-app", piLifecycle(session: "s3")), routed),
+            marked(fixtureNode(4, "make test", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "make test", startedAt: fixtureSince))))), mark: .running), buildbox),
+            marked(fixtureNode(5, "pi-review", piLifecycle(session: "s5")), routed),
+            marked(fixtureNode(11, "pi-review-notes", piLifecycle(session: "s11")), routed),
+            marked(fixtureNode(6, "pytest -x", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "pytest -x", startedAt: fixtureSince))))), mark: .running), py311),
             marked(fixtureNode(7, "trainer", piLifecycle(session: "s7")), runtimeMark("py311", routed: true)),
             marked(fixtureNode(8, "nvidia-smi", shellLifecycle(shellExit(1, command: "nvidia-smi")), mark: .failed), runtimeMark("gpu-1", .failed(.init(message: runtimeGapWithMessage)))),
             marked(fixtureNode(9, "Terminal", shellLifecycle()), runtimeMark("e2e", .starting, kind: .command)),

@@ -13,7 +13,6 @@ pub mod remote;
 pub mod runtimes;
 pub mod schema;
 pub mod status;
-mod tree;
 #[cfg(not(target_os = "ios"))]
 pub mod visit;
 pub mod webview;

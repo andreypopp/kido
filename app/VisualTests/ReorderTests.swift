@@ -287,7 +287,7 @@ import PaneGeometry
     func testWindowDragCarriesAndHidesItsWholeGroup() async throws {
         let snapshot = sidebarFixture { snapshot in
             var extra = snapshot.sessions[0].nodes[1].group.children[1]
-            extra.pane.id = PaneID(number: 1458); extra.children = []
+            extra.pane.id = PaneID(number: 1458)
             snapshot.sessions[0].nodes[1].group.children.append(extra)
         }
         let owner = try owner(snapshot)

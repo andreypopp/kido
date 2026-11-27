@@ -3,7 +3,7 @@ import Testing
 
 @Test func captionDebounceHoldsTheSecondLine() {
     func rows(_ text: String) -> [SidebarRow] {
-        sidebarRows(makeSnapshot([group(0, [pane(0, cwd: "/work", lifecycle: agent(working(), msg: text), mark: .running, children: [pane(1, parent: 0)]), pane(2, window: 0)])], client: 99))
+        sidebarRows(makeSnapshot([group(0, [pane(0, cwd: "/work", lifecycle: agent(working(), msg: text), mark: .running), pane(1, window: 0, parent: 0), pane(2, window: 0)])], client: 99))
     }
     var captions = SidebarCaptions()
     #expect(captions.apply(rows("busy"), now: 0, delay: 1)[1].second == .activity("busy"))

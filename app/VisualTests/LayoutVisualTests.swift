@@ -166,7 +166,7 @@ import XCTest
         activate()
         owner.window.makeKeyAndOrderFront(nil)
         owner.window.makeFirstResponder(first.webviewView?.browser ?? first)
-        if viaPage, let position = owner.projection.placements[float]?.position {
+        if viaPage, let position = owner.projection.placements[float] {
             owner.perform(.jump(position))
         } else {
             host.makeKeyAndOrderFront(nil)

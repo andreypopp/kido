@@ -357,7 +357,7 @@ import XCTest
 
     func testCaptionDisplayDelay() async throws {
         func fixture(_ caption: String) -> Snapshot {
-            sidebarFixture { $0.sessions[0].nodes[0].item.fixtureLifecycle = piLifecycle(.running(.init()), msg: caption); $0.sessions[0].nodes[0].item.pane.mark = .running }
+            sidebarFixture { $0.sessions[0].nodes[0].group.children[0].fixtureLifecycle = piLifecycle(.running(.init()), msg: caption); $0.sessions[0].nodes[0].group.children[0].pane.mark = .running }
         }
         let initial = fixture("")
         let changed = fixture("Delayed caption")
@@ -396,14 +396,14 @@ import XCTest
         XCTAssertEqual(list.visualRows[index].second, .activity("Reconnected caption"), "drag during reconnect must not seed old captions")
     }
 
-    func testNestedSidebarRowHeightsAndNavigation() throws {
+    func testFlatSidebarRowHeightsAndNavigation() throws {
         let live = sidebarFixture { snapshot in
-            var sibling = snapshot.sessions[0].nodes[0].item.children[0].item
+            var sibling = snapshot.sessions[0].nodes[0].group.children[1]
             sibling.pane.id = PaneID(number: 999); sibling.window = WindowID(number: 999)
-            snapshot.sessions[0].nodes[0].item.children.append(.item(sibling))
+            snapshot.sessions[0].nodes.append(.item(sibling))
         }
         let rows = sidebarDividers(sidebarRows(live))
-        XCTAssertTrue(rows.contains { $0.indent > 0 && $0.target != nil })
+        XCTAssertTrue(rows.filter { $0.target != nil }.allSatisfy { $0.indent == 0 })
         let invalid = rows.filter { $0.height <= 0 }
         XCTAssertTrue(invalid.isEmpty, "NSTableView requires positive row heights: \(invalid.map(\.id))")
         guard invalid.isEmpty else { return }
@@ -419,7 +419,7 @@ import XCTest
             XCTAssertGreaterThan(list.tableView(table, heightOfRow: index), 0)
             table.scrollRowToVisible(index)
         }
-        let nested = try XCTUnwrap(rows.lastIndex { $0.indent > 0 && $0.target != nil })
+        let nested = try XCTUnwrap(rows.lastIndex { $0.target != nil })
         let target = try XCTUnwrap(rows[nested].target)
         var changed = live
         changed.client = target
@@ -534,12 +534,11 @@ import XCTest
         list.captionDelay = 0
         window.contentView = list
         let live = sidebarFixture { snapshot in
-            var parent = snapshot.sessions[0].nodes[0].item
-            var floating = parent.children[0].item
+            let parent = snapshot.sessions[0].nodes[0].group.children[0]
+            var floating = snapshot.sessions[0].nodes[0].group.children[1]
             floating.placement = .floating
             floating.pane.title = "Draft for @ko"
-            parent.children = [.item(floating)]
-            snapshot.sessions[0].nodes = [.item(parent)]
+            snapshot.sessions[0].nodes = [.item(parent), .item(floating)]
             snapshot.sessions = [snapshot.sessions[0]]
             snapshot.client = .init(session: snapshot.sessions[0].id, window: floating.window, pane: floating.id)
         }
@@ -567,14 +566,14 @@ import XCTest
         }
         let nested = sidebarFixture { snapshot in
             snapshot.client = .init(session: SessionID(number: 0), window: WindowID(number: 458), pane: PaneID(number: 502))
-            snapshot.sessions[0].nodes[0].item.fixtureLifecycle = piLifecycle(.idle(.init(outcome: KoSchema.Outcome(result: .success, serial: 1))))
-            snapshot.sessions[0].nodes[0].item.pane.mark = .done
-            snapshot.sessions[0].nodes[0].item.children[0].item.fixtureLifecycle = .ended(.exited(.init(code: 0)))
+            snapshot.sessions[0].nodes[0].group.children[0].fixtureLifecycle = piLifecycle(.idle(.init(outcome: KoSchema.Outcome(result: .success, serial: 1))))
+            snapshot.sessions[0].nodes[0].group.children[0].pane.mark = .done
+            snapshot.sessions[0].nodes[0].group.children[1].fixtureLifecycle = .ended(.exited(.init(code: 0)))
             snapshot.sessions[0].nodes[1].group.children[0].fixtureLifecycle = piLifecycle(.waiting(.init()),
                                                                                   msg: "Rebuilding the sidebar cards and testing nested window corners")
             snapshot.sessions[0].nodes[1].group.children[0].pane.mark = .waiting
-            snapshot.sessions[0].nodes[1].group.children[0].children[0].item.fixtureLifecycle = piLifecycle(.idle(.init(outcome: KoSchema.Outcome(result: .failure, serial: 1))))
-            snapshot.sessions[0].nodes[1].group.children[0].children[0].item.pane.mark = .failed
+            snapshot.sessions[0].nodes[1].group.children[2].fixtureLifecycle = piLifecycle(.idle(.init(outcome: KoSchema.Outcome(result: .failure, serial: 1))))
+            snapshot.sessions[0].nodes[1].group.children[2].pane.mark = .failed
             snapshot.sessions[0].nodes[1].group.children[1].fixtureLifecycle = shellLifecycle(shellExit(0, command: "make -C ../kido-app/app demo"))
             snapshot.sessions[0].nodes[1].group.children[1].pane.mark = .done
         }
@@ -589,11 +588,9 @@ import XCTest
         sidebarSnapshot(list, "child-active-light")
         let subtree = sidebarFixture { snapshot in
             let zsh = fixtureNode(1991, "zsh", shellLifecycle(shellExit(0)), mark: .done)
-            let notes = fixtureNode(1990, "review-notes", piLifecycle(.running(.init()), msg: "Checking nested activity"),
-                                    mark: .running, children: [zsh])
-            var child = snapshot.sessions[0].nodes[1].group.children[0].children[0].item
-            child.children = [notes]
-            snapshot.sessions[0].nodes[1].group.children[0].children[0] = .item(child)
+            let notes = fixtureNode(1990, "review-notes", piLifecycle(.running(.init()), msg: "Checking pane activity"), mark: .running)
+            let child = snapshot.sessions[0].nodes[1].group.children[2]
+            snapshot.sessions[0].nodes += [notes, zsh]
             snapshot.client = .init(session: SessionID(number: 0), window: child.window, pane: child.id)
         }
         list.show(subtree)
@@ -602,11 +599,11 @@ import XCTest
         sidebarSnapshot(list, "focused-child-subtree-dark")
         window.appearance = NSAppearance(named: .aqua)
         let grouped = sidebarFixture { snapshot in
-            let first = snapshot.sessions[0].nodes[0].item
+            let first = snapshot.sessions[0].nodes[0].group.children[0]
             var second = snapshot.sessions[0].nodes[1].group.children[0], third = first
             second.window = first.window
             second.fixtureLifecycle = piLifecycle(msg: "Grouped pane activity")
-            third.pane.id = PaneID(number: 999); third.children = []; third.pane.label = "terminal"; third.fixtureLifecycle = shellLifecycle()
+            third.pane.id = PaneID(number: 999); third.pane.label = "terminal"; third.fixtureLifecycle = shellLifecycle()
             snapshot.sessions[0].nodes = [.window(.init(id: first.window, children: [first, second, third]))]
             snapshot.client = .init(session: SessionID(number: 0), window: first.window, pane: first.id)
         }

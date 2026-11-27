@@ -209,26 +209,22 @@ See [design-koa.md](design-koa.md#the-registry-and-reporting) for reports, stops
 
 ## The sidebar tree
 
-Both clients build the tree from the layout document and the pane
-rows (`ko_client/src/model.rs`, with the walk of
-`ko_client/src/tree.rs`). A subagent of koa is no pane: it is a status
-record of koa's pane, and Kido.app draws it as a record row under the
-pane row (design-koa.md, "Status records and signals"). A child pane
-follows the pane that created it, one level deeper, not after the
-whole parent window. The edge is the row's immutable `parent`, which
-the server sets at create. The tree nests a pane under its parent
-only when both are in the same window: a child in its parent's
-window, such as koa's editor, floating or docked beside it, nests
-under its parent. A child in another window, or under a parent in
-another session, is a root of its window, and its window is an
-ordinary window of its session, with its own tab, which the
+Both clients build the list from the layout document
+(`outline` in `ko_client/src/model.rs`): each session, then the
+panes of its windows in layout order. Every pane is a top-level row;
+the pane's `parent` decides only its lifetime (a removal of the
+parent takes the child, in any window), never its place in the
+sidebar. A child pane, such as koa's editor docked beside it, is a row
+of its window like any other pane, and a child in another window is
+in an ordinary window of its session, with its own tab, which the
 server's window switch (protocol.md, section 3) visits like any
-other. The edge still decides the lifetime: a removal of the parent
-takes the child, in any window.
+other. Only status records nest: a subagent of koa is no pane but a
+status record of koa's pane, and Kido.app draws it as a record row
+under the pane row (design-koa.md, "Status records and signals").
 
-The terminal client draws the list as session headers and pane rows,
-indented by depth (`ko_tui/src/sidebar.rs`); its chooser (`C-a s`)
-visits every row in that order. Kido.app draws its tree with
+The terminal client draws the list as session headers and pane rows
+(`ko_tui/src/sidebar.rs`); its chooser (`C-a s`) visits every row
+in that order. Kido.app draws its tree with
 indentation and folded children (design-app.md, "Sidebar").
 
 Below the tree, pinned to the bottom of the sidebar, both clients
@@ -241,13 +237,6 @@ a mirror; `ko api` is its start and stop. It does not show the
 configuration error. The tree does not scroll, so the rows appear only
 when the whole tree fits above them; a longer tree takes the column,
 and the chooser never selects a row that the footer hides.
-
-The walk uses parent-first ordering and emits every item exactly once,
-with or without a tree. A parent edge can form a cycle in a
-document that a client did not get from the server; the walk emits
-missed items afterward as roots, so an invalid
-edge loses only the item's tree position. A self-edge means "no
-parent". Siblings retain arrival order.
 
 ## Priming a remote shell
 

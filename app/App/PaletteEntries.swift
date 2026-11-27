@@ -47,22 +47,17 @@ struct PaletteEntry {
             return owner
         }
         let reachable = Set(snapshot.promptPanes.filter(\.agent).map(\.pane))
-        let roots = Set(snapshot.tiledSessions.flatMap { session in session.nodes.flatMap { node -> [PaneID] in
-            switch node { case .window(let group): group.children.map(\.id); case .item(let item): [item.id] }
-        } })
         var entries: [PaletteEntry] = []
         func visit(_ nodes: [SidebarFeed.Node], session: SessionNodes) {
             for node in nodes {
                 let items: [Item] = switch node { case .window(let group): group.children; case .item(let item): [item] }
                 for item in items {
-                    let offered = switch item.placement { case .tiled: roots.contains(item.id); case .floating: true }
-                    if offered, let target = owner.projection.placements[item.id]?.position {
+                    if let target = owner.projection.placements[item.id] {
                         let pane = target.pane
                         let window = owner.windowName(item.window)
                         let detail = host + [session.name] + (item.placement == .floating ? [window] : [])
-                        entries.append(PaletteEntry(id: .pane(target), title: item.rowTitle, detail: detail.joined(separator: " › "), status: item.indicator.0, agent: reachable.contains(item.id), promptable: reachable.contains(item.id), check: { resolve(pane) == nil ? "That pane is gone" : nil }, operation: .run { guard let owner = resolve(pane), let target = owner.projection.placements[pane]?.position else { return }; owner.reveal(); owner.perform(.jump(target)) }))
+                        entries.append(PaletteEntry(id: .pane(target), title: item.rowTitle, detail: detail.joined(separator: " › "), status: item.indicator.0, agent: reachable.contains(item.id), promptable: reachable.contains(item.id), check: { resolve(pane) == nil ? "That pane is gone" : nil }, operation: .run { guard let owner = resolve(pane), let target = owner.projection.placements[pane] else { return }; owner.reveal(); owner.perform(.jump(target)) }))
                     }
-                    visit(item.children, session: session)
                 }
             }
         }
@@ -132,7 +127,7 @@ struct PaletteEntry {
             else if action == #selector(SessionMenus.renameItem), let owner, let session = owner.currentSession, let instance = owner.snapshot?.serverInstance {
                 operation = .enter(.sessionName(owner, instance, .rename(session.id, original: session.name)))
             } else if action == #selector(PaneView.promptSelectionItem(_:)), let owner, let pane = livePane(owner, responder), pane.webviewView?.composerAction == nil,
-                      let position = owner.projection.placements[pane.pane]?.position,
+                      let position = owner.projection.placements[pane.pane],
                       let source = owner.promptSource(position, quote: pane.selectionQuote) {
                 operation = .enter(.prompt(source))
             } else { operation = .run { NSApp.sendAction(action, to: item.target, from: item) } }

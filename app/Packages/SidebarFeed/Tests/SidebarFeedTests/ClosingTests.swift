@@ -5,7 +5,7 @@ import KoModel
 
 @Test func closingFollowsRawParentsAcrossSessions() {
     var snapshot = makeSnapshot([pane(0)])
-    snapshot.sessions.append(SessionNodes(id: SessionID(number: 1), name: "other", nodes: [pane(1, parent: 0, children: [pane(2, parent: 1, lifecycle: agent(working()))])]))
+    snapshot.sessions.append(SessionNodes(id: SessionID(number: 1), name: "other", nodes: [pane(1, parent: 0), pane(2, parent: 1, lifecycle: agent(working()))]))
     #expect(closeScope(PaneProjection(snapshot), target: .pane(PaneID(number: 0))).ask)
     #expect(closeScope(PaneProjection(snapshot), target: .pane(PaneID(number: 1))).ask)
     #expect(closeScope(PaneProjection(snapshot), target: .session(SessionID(number: 0))).ask)
@@ -17,7 +17,7 @@ import KoModel
 
 @Test(arguments: [false, true]) func closingPaneIncludesDescendants(_ waitingState: Bool) throws {
     let child = pane(2, parent: 1, lifecycle: agent(waitingState ? waiting() : working()), mark: waitingState ? .waiting : .running)
-    let snapshot: Snapshot = makeSnapshot([pane(0, children: [pane(1, parent: 0, children: [child])]), pane(3)])
+    let snapshot: Snapshot = makeSnapshot([pane(0), pane(1, parent: 0), child, pane(3)])
     #expect(closeScope(PaneProjection(snapshot), target: .pane(PaneID(number: 0))).ask)
     #expect(closeScope(PaneProjection(snapshot), target: .pane(PaneID(number: 1))).ask)
     #expect(!closeScope(PaneProjection(snapshot), target: .pane(PaneID(number: 3))).ask)
@@ -26,7 +26,7 @@ import KoModel
 }
 
 @Test func closingWindowIncludesEveryPaneAndDescendants() throws {
-    let window = group(0, [pane(0), pane(1, window: 0, children: [pane(2, parent: 1, lifecycle: agent(waiting()), mark: .waiting)])])
+    let window = group(0, [pane(0), pane(1, window: 0), pane(2, parent: 1, lifecycle: agent(waiting()), mark: .waiting)])
     let snapshot = makeSnapshot([window, pane(3)])
     #expect(closeScope(PaneProjection(snapshot), target: .window(WindowID(number: 0))).ask)
     #expect(!closeScope(PaneProjection(snapshot), target: .pane(PaneID(number: 0))).ask)
@@ -112,8 +112,8 @@ private func fixed(_ node: Node, title: String? = nil, confirm: KoSchema.CloseCo
     let running = terminal(running("nvim", fullscreen: true))
     let never = fixed(pane(1, lifecycle: running), confirm: .never)
     let ordinary = pane(2, lifecycle: running)
-    let parent = fixed(pane(3, lifecycle: running, children: [pane(4, parent: 3, lifecycle: agent(working()), mark: .running)]), confirm: .never)
-    let projection = PaneProjection(makeSnapshot([pane(0), never, ordinary, parent]))
+    let parent = fixed(pane(3, lifecycle: running), confirm: .never)
+    let projection = PaneProjection(makeSnapshot([pane(0), never, ordinary, parent, pane(4, parent: 3, lifecycle: agent(working()), mark: .running)]))
     #expect(!closeScope(projection, target: .pane(PaneID(number: 1))).ask)
     #expect(closeScope(projection, target: .pane(PaneID(number: 2))).ask)
     #expect(closeScope(projection, target: .pane(PaneID(number: 3))).ask)

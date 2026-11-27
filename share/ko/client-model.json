@@ -547,10 +547,6 @@
           },
           {
             "properties": {
-              "depth": {
-                "minimum": 0,
-                "type": "integer"
-              },
               "id": {
                 "$ref": "#/components/schemas/PaneId"
               },
@@ -565,8 +561,7 @@
             "required": [
               "type",
               "id",
-              "window",
-              "depth"
+              "window"
             ],
             "type": "object"
           }

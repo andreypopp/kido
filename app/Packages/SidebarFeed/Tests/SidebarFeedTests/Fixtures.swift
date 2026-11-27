@@ -32,7 +32,7 @@ func remote(_ pane: KoSchema.Remote, user: String = "alice", host: String = "dev
 }
 
 func pane(_ id: Int, window: Int? = nil, parent: Int? = nil, title: String = "", cwd: String = "", lifecycle: Lifecycle = terminal(),
-          records: [KoSchema.ProgramRecord] = [], serial: Int = 0, recordsSeen: Bool = false, mark: KoSchema.Mark = .none_, children: [Node] = []) -> Node {
+          records: [KoSchema.ProgramRecord] = [], serial: Int = 0, recordsSeen: Bool = false, mark: KoSchema.Mark = .none_) -> Node {
     let live: KoSchema.Live?
     let dead: KoSchema.Dead?
     let close: KoSchema.Close?
@@ -45,7 +45,7 @@ func pane(_ id: Int, window: Int? = nil, parent: Int? = nil, title: String = "",
     return .item(Item(pane: .init(close: close, command: [], cwd: cwd, dead: dead, id: PaneID(number: UInt32(id)), inbox: pi,
                                  label: title, mark: mark, parent: parent.map { PaneID(number: UInt32($0)) }, recordsSeen: recordsSeen, started: 0,
                                  status: live.map { .init(kind: $0, programStatus: .init(records: records, serial: serial), since: 0, title: title) },
-                                 title: title, vars: [:]), window: WindowID(number: UInt32(window ?? id)), children: children))
+                                 title: title, vars: [:]), window: WindowID(number: UInt32(window ?? id))))
 }
 
 func renderedRows(_ snapshot: Snapshot?) -> [SidebarRow] {
@@ -68,7 +68,6 @@ func makeSnapshot(_ nodes: [Node], client: Int = 0, window: Int? = nil, clientSe
 func markedSeen(_ snapshot: Snapshot) -> Snapshot {
     func item(_ item: Item) -> Item {
         var item = item
-        item.children = item.children.map(node)
         if [.done, .failed].contains(item.pane.mark) { item.pane.mark = .none_ }
         item.pane.recordsSeen = true
         return item
@@ -86,6 +85,6 @@ func markedSeen(_ snapshot: Snapshot) -> Snapshot {
 
 func focusing(_ pane: Int, in snapshot: Snapshot) -> Snapshot {
     var snapshot = snapshot
-    snapshot.client = PaneProjection(snapshot).placements[PaneID(number: UInt32(pane))]!.position
+    snapshot.client = PaneProjection(snapshot).placements[PaneID(number: UInt32(pane))]!
     return snapshot
 }

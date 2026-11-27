@@ -102,10 +102,9 @@ typealias AppWindow = StressWindow
             NSApp.terminate(nil)
             return
         }
-        var nodes = owner.stressState.3?.sessions.flatMap(\.nodes) ?? []
-        while let node = nodes.popLast() {
-            nodes += node.children
-            if case .item(let item) = node, item.placement == .tiled, let parent = item.pane.parent,
+        let items = owner.stressState.3?.sessions.flatMap { $0.nodes.flatMap(\.items) } ?? []
+        for item in items {
+            if item.placement == .tiled, let parent = item.pane.parent,
                let parentWindow = owner.stressModel?.layout.layout.locate(parent)?.window.id,
                parentWindow != item.window, case .live(let kind) = item.lifecycle,
                case .terminal = kind.local, childWindows.insert(item.window).inserted {

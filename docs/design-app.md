@@ -2260,13 +2260,12 @@ the renderer stay.
 The sidebar tree is a projection of the core's model:
 `Snapshot(model:)` in `SidebarFeed/Projection.swift`. Sessions are
 source-list sections. A window with one pane is a pane item, a window with
-more panes is a group. A pane nests under its `parent` only when both
-are in the same window, as koa's editor float does; a child in another
-window is an ordinary window. The order and the parent edges
-are the core's `outline` (each item carries its window; design.md, "The
+more panes is a group. Every pane is a row of its window: a pane's
+`parent` decides only its lifetime, never nesting. The order is the
+core's `outline` (each item carries its window; design.md, "The
 sidebar tree"); the app only groups it by window. A pane item holds the
 core's pane record as decoded and adds only what the app derives: its
-window group, its children, its runtime mark and its lifecycle, which
+window group, its runtime mark and its lifecycle, which
 comes from the pane's status and, for a dead pane, its `close` (below).
 A live pane without a status is a terminal of the host in an unknown
 phase. The title is the core's label, the indicator its seen mark, and
@@ -2293,9 +2292,7 @@ A pane row of a runtime pane or a routed pi has a suffix after its
 title ([Runtime marks](#runtime-marks)): 6pt gap, a 6pt swatch, 4pt
 gap and the name in secondary colour, then ` · starting`, or
 ` · failed` in red with the message as the tooltip. The title
-truncates first; the suffix keeps 96pt. A nested row omits the suffix
-when its runtime equals that of the nearest ancestor pane row, so a
-routed pi's runs and children in its runtime show none.
+truncates first; the suffix keeps 96pt.
 
 `Sidebar` is an `NSSplitViewController` with a sidebar item, which
 supplies the floating glass, collapse animation and saved width
@@ -2373,15 +2370,14 @@ Command-T; with Option, as File → New Agent.
 `SidebarFeed/Rows.swift`. Sessions have noninteractive 26pt headers with
 11pt semibold secondary labels and an always-visible, separately accessible
 new-window plus; hovering brightens only its icon. Sessions do not fold.
-Each pane's children in its window immediately follow that pane, before
-its next sibling; drawn order and navigation share the row-model traversal.
-The rows under a pane show only while the pane or one of its descendants is focused ([Folded children](#folded-children)).
-Non-root status records (OSC 7501 or the status route) follow their pane before its child panes, ordered
+Drawn order and navigation share the row-model traversal. The rows under
+a pane show only while the pane is focused ([Folded children](#folded-children)).
+Non-root status records (OSC 7501 or the status route) follow their pane, ordered
 by slash components in UTF-8 byte order. A record row is indented one level
 under its pane, plus one level for each ancestor id (a slash prefix) that is
 present among the pane's non-root records. Thus
-koa's `jobs/<id>` rows, which have no `jobs` record, align with child-pane
-rows. Each record is mapped to a program
+koa's `jobs/<id>` rows, which have no `jobs` record, are one level under
+the pane. Each record is mapped to a program
 row (title or full id, message as the second line, state mapped
 working→running, blocked→waiting, error→failed, done→done, idle after the
 parent's seen suppression for done/error) and drawn through the same row
@@ -2525,13 +2521,13 @@ after the header, after the last window, or inside a window. The visible
 window of the client's current session (the client's window) is one block: a
 `quaternarySystemFill` rounded rectangle (labelColor at about 2.7% in
 both appearances), 7pt corners, behind every row of that window, its
-descendants and records included. The row model gives each of those
+records included. The row model gives each of those
 rows its place in the block (`SidebarRow.Block`: first, middle or last,
 in `sidebarRows`), and each cell fills its own slice and clips its other
 fills to it, so a row's fill never leaves the block and a change of the
 visible window reloads only the rows whose place changed. Only a window
-with two or more panes of its own gets the block. A one-pane window gets
-none, also with its children or records shown, so a change of focus never
+with two or more panes gets the block. A one-pane window gets
+none, also with its records shown, so a change of focus never
 adds or removes the block: its row fill is the window. The divider rows come
 from one pass over the finished rows, after the captions and after a
 window drag removes the dragged rows. The focused row has a
@@ -2792,22 +2788,17 @@ The rows of a window are its tiled panes (design:
 with its `Item.Placement`, taken from the same layout as the outline, so
 the tab's status aggregate, the notifications, the close scope and the
 history still see floats. `Snapshot.tiledSessions` is the one
-projection of the rows: it walks each session's tree in preorder, drops
-every float, keeps a parent edge only when the immediate parent is
-tiled, and makes a tiled child of a float a root at depth 0 at its
-preorder position. The rows and their folded children come from it, so
-a float's OSC 7501 records and its circles have no row, and the circles
-of a folded pane count only its tiled children. Rows and layout change
-in the same snapshot. While the active pane is a float, no row has the
-focus fill (`visibleSidebarRow` does not climb from a float to its
-parent), and the sidebar keeps its keyboard selection and scroll.
+projection of the rows: it drops every float and keeps the tiled panes
+in layout order. The rows and their folded records come from it, so a
+float's OSC 7501 records have no row. Rows and layout change in the
+same snapshot. While the active pane is a float, no row has the focus
+fill, and the sidebar keeps its keyboard selection and scroll.
 
 ### Folded children
 
-Focus alone decides which children (child panes of the window and OSC
-7501 child records alike) show. A pane row is open when it is the focused pane or
-an ancestor of the focused pane, so a focused child keeps its path open;
-an open row shows every child. Its top-level records show as rows, and
+Focus alone decides which children (OSC 7501 child records; panes have
+no children in the sidebar) show. A pane row is open when it is the
+focused pane; an open row's top-level records show as rows, and
 each of them is folded unless it is the record that the focused pane
 shows (the viewed subagent, the marked row) or an ancestor of it: a
 record row opens along the marked record as a pane row opens along the
@@ -2826,18 +2817,16 @@ error, then running, then idle; children of one status keep their
 sidebar order. The order applies always, before the cut to `+N`, so
 the line summarises the progress of the work and a running or failed
 child never hides in `+N` behind idle ones. A circle summarises the
-child's whole subtree: the child, its descendant panes at any depth and
-the program records of all of them, reduced by the order error > running
-> idle (`SidebarRow.Status.folded`). A circle has no done: a clean end
-(done, or a lingering exit 0) is idle, the row indicator's gray dot; a
-failed end is error. So an idle or dead child with a running grandchild
-shows a running circle. A record row's circles reduce over the record and
-its descendant records in the same way. Only the circles summarise; a
+child record's whole subtree: the record and its descendant records,
+reduced by the order error > running > idle
+(`SidebarRow.Status.folded`). A circle has no done: a clean end
+(done) is idle, the row indicator's gray dot; a failed end is error. So
+an idle child with a running grandchild shows a running circle. Only the circles summarise; a
 row's own indicator is its own status.
 After six, the line shows `+N` in 10pt muted tabular digits, 4pt after the
 last circle; its right edge, like the last circle's, is the indicator's
-right edge. With exactly one hidden child that is an agent (a pane with a
-live agent of any kind, or a program record), its title comes first, in the
+right edge. With exactly one hidden child that is an agent (a program
+record), its title comes first, in the
 caption's style, ending in an ellipsis 4pt before its circle. A single hidden
 job (a run, a stream monitor, a subagent whose agent is gone) is a circle
 alone, as in a line of several. The second line keeps the rest of the line and ends in an ellipsis 6pt
@@ -2850,7 +2839,7 @@ row, which focuses a pane and so opens it; a record row stays
 display-only.
 
 A wait also opens a path: a folded row whose descendant waits for input
-(a live agent, or a blocked record) shows that descendant's row and the
+(a blocked record) shows that descendant's row and the
 rows on the path to it, and its circles list only the children that do
 not show as rows. When the wait clears, the rows fold back unless focus
 keeps them open. A failure or a completion opens nothing: its circle
@@ -2944,13 +2933,13 @@ open palette draws a hollow cursor ([Focus treatment](#focus-treatment)).
 
 The root list is built from live state, in this order:
 
-- The top-level panes of the anchor only, in sidebar order, and every
-  float of the anchor, also one whose parent is a tiled pane. Thus, the palette
+- The panes of the anchor only: its tiled panes in sidebar order, and every
+  float of the anchor. Thus, the palette
   never jumps to another owner: not from Local to a remote host, not between
   hosts, and not to another window of the same host. With no anchor, there are
-  no pane rows. A top-level pane is a root of `Snapshot.tiledSessions`
-  ([Sidebar rows of floats](#sidebar-rows-of-floats)): a child pane that the snapshot nests under a pane of its window is
-  not in the list, and neither is an OSC 7501 program record row. The
+  no pane rows. The tiled panes are those of `Snapshot.tiledSessions`
+  ([Sidebar rows of floats](#sidebar-rows-of-floats)), child panes too;
+  an OSC 7501 program record row is not in the list. The
   entries come from the snapshot, not from the sidebar's rows, and resolve
   their pane's current position when they run. A float's detail adds its
   window's name.

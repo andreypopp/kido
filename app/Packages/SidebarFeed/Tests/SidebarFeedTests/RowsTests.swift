@@ -6,64 +6,31 @@ private let away = 99
 private func numbers(_ rows: [SidebarRow]) -> [UInt32] { rows.compactMap { $0.target?.pane.number } }
 private func programs(_ rows: [SidebarRow]) -> [String] { rows.filter { if case .program = $0.id { true } else { false } }.map(\.title) }
 
-@Test func floatsHaveNoRowsOrRecordsAndTheirTiledChildrenBecomeRoots() {
-    guard case .item(var floating) = pane(1, window: 0, records: [.blocked(.init(id: "float/task"))], children: [pane(2, window: 0, children: [pane(3, window: 0)])]) else { return }
+@Test func tiledChildrenStayVisibleAtRootDepthAndFloatsHaveNoRows() {
+    guard case .item(var floating) = pane(2, window: 0, parent: 0, records: [.blocked(.init(id: "float/task"))]) else { return }
     floating.placement = .floating
-    let snapshot = makeSnapshot([pane(0, children: [.item(floating), pane(4, window: 0)])], client: 1, window: 0)
-    let rows = sidebarRows(snapshot)
-    #expect(numbers(rows) == [0, 2])
-    #expect(programs(rows).isEmpty)
-    #expect(rows.allSatisfy { !$0.focused })
-    #expect(rows[1].hidden.count == 1)
-    #expect(rows[2].indent == 0)
-    #expect(visibleSidebarRow(for: floating.id, in: rows, projection: PaneProjection(snapshot)) == nil)
-    let focused = sidebarRows(makeSnapshot([.item(floating)], client: 2, window: 0))
-    #expect(numbers(focused) == [2, 3])
-    #expect(focused[1].indent == 0)
-    #expect(focused[2].indent == 1)
+    let nodes = [group(0, [pane(1, window: 0, parent: 0), pane(0), .item(floating), pane(3, window: 0, parent: 2)])]
+    for focus in [away, 0, 1, 2, 3] {
+        let snapshot = makeSnapshot(nodes, client: focus, window: 0)
+        let rows = sidebarRows(snapshot)
+        #expect(numbers(rows) == [1, 0, 3])
+        #expect(rows.filter { $0.target != nil }.map(\.indent) == [0, 0, 0])
+        #expect(rows.allSatisfy { $0.hidden.isEmpty })
+        #expect(programs(rows).isEmpty)
+        #expect(visibleSidebarRow(for: floating.id, in: rows, projection: PaneProjection(snapshot)) == nil)
+    }
 }
 
-@Test func tiledRootsKeepPreorderAcrossFloatingAncestorsAndLaterWindows() {
-    guard case .item(var inner) = pane(3, window: 0, children: [pane(4, window: 0, children: [pane(5, window: 0)])]),
-          case .item(var outer) = pane(1, window: 0) else { return }
-    inner.placement = .floating
-    outer.placement = .floating
-    outer.children = [pane(2, window: 0, children: [.item(inner)])]
-    let snapshot = makeSnapshot([pane(0, children: [.item(outer)]), pane(9)], client: 5, window: 0)
-    let rows = sidebarRows(snapshot)
-    #expect(numbers(rows) == [0, 2, 4, 5, 9])
-    #expect(rows.filter { $0.target != nil }.map(\.indent) == [0, 0, 0, 1, 0])
-    #expect(rows.filter { $0.target?.window == WindowID(number: 0) }.map(\.block) == [.first, .middle, .middle, .last])
-}
 
-@Test func focusOpensChildrenAndKeepsItsPathOpen() {
-    let tree = [pane(0, children: [pane(1, children: [pane(2)]), pane(3)])]
-    #expect(numbers(sidebarRows(makeSnapshot(tree, client: away))) == [0])
-    #expect(numbers(sidebarRows(makeSnapshot(tree, client: 0))) == [0, 1, 3])
-    #expect(numbers(sidebarRows(makeSnapshot(tree, client: 1))) == [0, 1, 2, 3])
-    #expect(numbers(sidebarRows(makeSnapshot(tree, client: 2))) == [0, 1, 2, 3])
-    let sibling = sidebarRows(makeSnapshot(tree, client: 3))
-    #expect(numbers(sibling) == [0, 1, 3])
-    #expect(sibling[2].hidden == [.init(title: nil, status: .quiet)])
-    #expect(sibling[1].hidden.isEmpty)
-    #expect(sibling[3].hidden.isEmpty)
-}
 
-@Test func waitingPathsStayOpenWithoutFocus() {
-    let waitingTree = [pane(0, children: [pane(1, children: [pane(2, lifecycle: agent(waiting()), mark: .waiting)]), pane(3, lifecycle: agent(idle(outcome(1, .failure))), mark: .failed)])]
-    let rows = sidebarRows(makeSnapshot(waitingTree, client: away))
-    #expect(numbers(rows) == [0, 1, 2])
-    #expect(rows[1].hidden.map(\.status) == [.error])
-    #expect(rows[2].hidden.isEmpty)
-    #expect(numbers(sidebarRows(makeSnapshot(waitingTree, client: 0))) == [0, 1, 2, 3])
-}
+
 
 @Test func recordsFollowTheirPaneFocus() {
     let records: [KoSchema.ProgramRecord] = [.working(.init(id: "a")), .done(.init(id: "a/b"))]
-    let tree = [pane(0, records: records, children: [pane(1)])]
+    let tree = [pane(0, records: records), pane(1, parent: 0)]
     #expect(programs(sidebarRows(makeSnapshot(tree, client: away))) == [])
     #expect(programs(sidebarRows(makeSnapshot(tree, client: 0))) == ["a"])
-    #expect(programs(sidebarRows(makeSnapshot(tree, client: 1))) == ["a"])
+    #expect(programs(sidebarRows(makeSnapshot(tree, client: 1))).isEmpty)
     let blocked = [pane(0, records: [.working(.init(id: "a")), .blocked(.init(id: "a/b"))])]
     let rows = sidebarRows(makeSnapshot(blocked, client: away))
     #expect(programs(rows) == ["a", "a/b"])
@@ -71,11 +38,11 @@ private func programs(_ rows: [SidebarRow]) -> [String] { rows.filter { if case 
 }
 
 @Test func paneAndProgramRowsAreTwoLines() {
-    let tree = [pane(0, lifecycle: agent(working(), msg: "busy"), records: [.working(.init(id: "a"))], children: [pane(1)])]
+    let tree = [pane(0, lifecycle: agent(working(), msg: "busy"), records: [.working(.init(id: "a"))]), pane(1, parent: 0)]
     let rows = sidebarRows(makeSnapshot(tree, client: 0))
     let content = rows.filter { $0.height == 43 }
     #expect(content.count == 3)
-    #expect(content.map(\.leading) == [5, 20, 20])
+    #expect(content.map(\.leading) == [5, 20, 5])
 }
 
 @Test func secondLineIsActivityElseNone() {
@@ -105,74 +72,9 @@ private func programs(_ rows: [SidebarRow]) -> [String] { rows.filter { if case 
     #expect(rows[2].second == .record(msg: nil))
 }
 
-@Test(arguments: [0, 1, 6, 7]) func foldedCountsAndIdleSpace(_ count: Int) {
-    let snapshot = makeSnapshot([pane(0, children: (1...max(1, count)).prefix(count).map { pane($0) })], client: away)
-    let row = sidebarRows(snapshot)[1]
-    if count == 0 { #expect(row.hidden.isEmpty) }
-    else {
-        let hidden = row.hidden
-        #expect(hidden.count == count)
-        #expect(hidden.allSatisfy { $0.status == .quiet })
-        #expect(row.height == 43)
-    }
-}
 
-@Test func foldedSingleChildNamesOnlyAgents() {
-    for (lifecycle, title) in [(agent(working()), Optional("child")), (terminal(), nil)] {
-        let snapshot = makeSnapshot([pane(0, children: [pane(1, title: "child", lifecycle: lifecycle, mark: .running)])], client: away)
-        let row = sidebarRows(snapshot)[1]
-        let hidden = row.hidden
-        #expect(hidden.count == 1)
-        #expect(hidden.first?.title == title)
-    }
-}
 
-@Test func foldedCirclesOrderReducedStatusesAndKeepSidebarTies() {
-    let children = (1...6).map { pane($0, title: "idle-\($0)", lifecycle: agent(idle())) } + [
-        pane(7, title: "running-7", lifecycle: agent(working()), mark: .running),
-        pane(8, title: "error-8", lifecycle: agent(idle(outcome(1, .failure))), mark: .failed),
-        pane(9, title: "running-9", lifecycle: agent(working()), mark: .running)
-    ]
-    let row = sidebarRows(makeSnapshot([pane(0, children: children)], client: away))[1]
-    #expect(row.hidden == ([
-        .init(title: "error-8", status: .error),
-        .init(title: "running-7", status: .running),
-        .init(title: "running-9", status: .running),
-        .init(title: "idle-1", status: .quiet),
-        .init(title: "idle-2", status: .quiet),
-        .init(title: "idle-3", status: .quiet),
-        .init(title: "idle-4", status: .quiet),
-        .init(title: "idle-5", status: .quiet),
-        .init(title: "idle-6", status: .quiet)
-    ]))
-}
 
-@Test func foldedCirclesSummarizePaneSubtrees() {
-    func runningChild(_ id: Int) -> Node { pane(id, lifecycle: agent(working()), mark: .running) }
-    let children = [
-        pane(1, title: "done", lifecycle: agent(idle(outcome(1, .success))), mark: .done),
-        pane(2, title: "failed", lifecycle: .lingering(.exited(.init(code: 2)))),
-        pane(3, title: "live subtree", lifecycle: agent(idle()), children: [runningChild(30)]),
-        pane(4, title: "ended subtree", lifecycle: .ended(.exited(.init(code: 0))), children: [runningChild(40)]),
-        pane(5, title: "lingering subtree", lifecycle: .lingering(.exited(.init(code: 0))), children: [runningChild(50)]),
-        pane(6, title: "working record", lifecycle: agent(idle()), records: [.working(.init(id: "task"))]),
-        pane(7, title: "failed subtree", lifecycle: agent(idle()), children: [runningChild(70), pane(10, lifecycle: agent(idle(outcome(1, .failure))), mark: .failed)]),
-        pane(8, title: "seen record", lifecycle: agent(idle()), records: [.error(.init(id: "seen"))], recordsSeen: true)
-    ]
-    let row = sidebarRows(makeSnapshot([pane(0, children: children)], client: away))[1]
-    let hidden = row.hidden
-    #expect(hidden == [
-        .init(title: nil, status: .error),
-        .init(title: "failed subtree", status: .error),
-        .init(title: "live subtree", status: .running),
-        .init(title: nil, status: .running),
-        .init(title: nil, status: .running),
-        .init(title: "working record", status: .running),
-        .init(title: "done", status: .quiet),
-        .init(title: "seen record", status: .quiet)
-    ])
-    #expect(row.status == .quiet)
-}
 
 @Test func foldedRecordCirclesSummarizeDescendantRecords() {
     let snapshot = makeSnapshot([pane(0, records: [
@@ -204,7 +106,7 @@ private func programs(_ rows: [SidebarRow]) -> [String] { rows.filter { if case 
     #expect(programs(blocked) == ["a", "a/b"])
 
     let nested: [KoSchema.ProgramRecord] = [.working(.init(id: "a", selection: .selected)), .working(.init(id: "a/b")), .working(.init(id: "a/b/c"))]
-    let child = sidebarRows(makeSnapshot([pane(0, children: [pane(1, records: nested)])], client: 1))
+    let child = sidebarRows(makeSnapshot([pane(0), pane(1, parent: 0, records: nested)], client: 1))
     #expect(numbers(child) == [0, 1])
     #expect(programs(child) == ["a", "a/b"])
     #expect(child[4].hidden == [.init(title: "a/b/c", status: .running)])
@@ -222,33 +124,30 @@ private func programs(_ rows: [SidebarRow]) -> [String] { rows.filter { if case 
     #expect(visibleSidebarRow(replacing: leaf, in: sidebarRows(elsewhere), projection: PaneProjection(elsewhere)) == 1)
 }
 
-@Test func aHiddenSelectionUsesItsNearestVisibleAncestor() {
-    let snapshot = makeSnapshot([pane(0, children: [pane(1, children: [pane(2)])])], client: 2)
+@Test func aPaneSelectionNeverUsesItsLifetimeParent() {
+    let snapshot = makeSnapshot([pane(0), pane(1, parent: 0), pane(2, parent: 1)], client: 2)
     let projection = PaneProjection(snapshot)
     let rows = sidebarRows(snapshot)
     #expect(visibleSidebarRow(for: PaneID(number: 2), in: rows, projection: projection) == 3)
-    #expect(visibleSidebarRow(for: PaneID(number: 2), in: Array(rows.prefix(3)), projection: projection) == 2)
+    #expect(visibleSidebarRow(for: PaneID(number: 2), in: Array(rows.prefix(3)), projection: projection) == nil)
     #expect(visibleSidebarRow(for: PaneID(number: 99), in: rows, projection: projection) == nil)
 }
 
 @testable import SidebarFeed
 
 private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = false, descendants: Bool = false, records: [KoSchema.ProgramRecord] = [], serial: Int = 7) -> Snapshot {
-    func item(_ id: Int, _ window: Int, tail: String = "", lifecycle: Lifecycle? = nil, children: [Node] = []) -> Node {
+    func item(_ id: Int, _ window: Int, tail: String = "", lifecycle: Lifecycle? = nil) -> Node {
         let lifecycle = lifecycle ?? agent(id == 2 ? waiting() : working(), msg: tail.isEmpty ? nil : tail)
         return pane(id, window: window, title: "pane-\(id)", lifecycle: lifecycle,
-                    records: id == 0 ? records : [], serial: serial, children: children)
+                    records: id == 0 ? records : [], serial: serial)
     }
-    let children = [item(1, 1, tail: "working", lifecycle: koaAgent(working(), msg: "working"),
-                         children: [item(2, 2, lifecycle: terminal(running(), report: report(waiting())))]),
-                    item(3, 3, lifecycle: terminal(running())),
-                    item(4, 4, lifecycle: terminal(running()))]
     let nodes: [Node] = grouped
         ? [group(0, descendants
-            ? [item(0, 0, children: [item(1, 0, tail: "child", children: [item(2, 0)])]),
-               item(5, 0, tail: "parent", children: [item(3, 0)]), item(6, 0)]
+            ? [item(0, 0), item(1, 0, tail: "child"), item(2, 0), item(5, 0, tail: "parent"), item(3, 0), item(6, 0)]
             : [item(0, 0), item(5, 0)])]
-        : [item(0, 0), item(5, 5, children: children)]
+        : [item(0, 0), item(5, 5), item(1, 1, tail: "working", lifecycle: koaAgent(working(), msg: "working")),
+           item(2, 2, lifecycle: terminal(running(), report: report(waiting()))), item(3, 3, lifecycle: terminal(running())),
+           item(4, 4, lifecycle: terminal(running()))]
     return makeSnapshot(nodes, client: client, window: grouped ? 0 : nil, sessions: sessions)
 }
 
@@ -261,9 +160,9 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
     #expect(block.first?.block == .first)
     #expect(block.last?.block == .last)
     #expect(block.dropFirst().dropLast().allSatisfy { $0.block == .middle })
-    #expect(block.contains { if case .program = $0.kind { true } else { false } })
+    #expect(!block.contains { if case .program = $0.kind { true } else { false } })
     #expect(rows.filter { $0.root == nil }.allSatisfy { $0.block == nil })
-    let parent = makeSnapshot([pane(0, children: [pane(1)])], client: 1)
+    let parent = makeSnapshot([pane(0), pane(1, parent: 0)], client: 1)
     let folded = sidebarRows(parent)
     #expect(folded.compactMap(\.block).isEmpty)
     #expect(renderedRows(parent).compactMap(\.block).isEmpty)
@@ -292,15 +191,15 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
     #expect(sidebarRows(snapshot).filter { $0.height == 9 }.isEmpty)
     let separate = fixture(sessions: [0, 1])
     let rows = renderedRows(separate)
-    #expect(rows.filter { $0.height == 9 }.count == 2)
+    #expect(rows.filter { $0.height == 9 }.count == 10)
     #expect(rows.filter { $0.height == 9 }.allSatisfy { $0.target == nil && $0.root == nil })
 }
 
-@Test func nestedWindowsAndExactSpacing() throws {
+@Test func layoutWindowsAndExactSpacing() throws {
     let rows = renderedRows(fixture(client: 2))
     let panes = rows.filter { $0.target != nil }
-    #expect(panes.map(\.indent) == [0, 0, 1, 2, 1, 1])
-    #expect(rows.map(\.height) == [26, 43, 9, 43, 43, 43, 43, 43, 10])
+    #expect(panes.map(\.indent) == [0, 0, 0, 0, 0, 0])
+    #expect(rows.map(\.height) == [26, 43, 9, 43, 9, 43, 9, 43, 9, 43, 9, 43, 10])
     #expect(panes.filter(\.focused).map(\.title) == ["pane-2"])
     #expect(renderedRows(fixture(client: 1)).filter(\.focused).map(\.title) == ["@pane-1"])
     #expect(renderedRows(fixture(client: 2)).filter(\.focused).map(\.title) == ["pane-2"])
@@ -313,14 +212,14 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
     #expect(rows.allSatisfy { $0.height > 0 })
 }
 
-@Test func eachPanesChildrenPrecedeItsNextSibling() throws {
+@Test func everyTiledPaneStaysVisibleInLayoutOrder() throws {
     let rows = renderedRows(fixture(client: 2, grouped: true, descendants: true))
     let panes = rows.filter { $0.target != nil }
-    #expect(panes.map { $0.target!.pane } == [0, 1, 2, 5, 6].map { PaneID(number: UInt32($0)) })
-    #expect(panes.map(\.indent) == [0, 1, 2, 0, 0])
+    #expect(panes.map { $0.target!.pane } == [0, 1, 2, 5, 3, 6].map { PaneID(number: UInt32($0)) })
+    #expect(panes.map(\.indent) == [0, 0, 0, 0, 0, 0])
     let sibling = renderedRows(fixture(client: 3, grouped: true, descendants: true)).filter { $0.target != nil }
-    #expect(sibling.map { $0.target!.pane } == [0, 5, 3, 6].map { PaneID(number: UInt32($0)) })
-    #expect(sibling.map(\.indent) == [0, 0, 1, 0])
+    #expect(sibling.map { $0.target!.pane } == [0, 1, 2, 5, 3, 6].map { PaneID(number: UInt32($0)) })
+    #expect(sibling.map(\.indent) == [0, 0, 0, 0, 0, 0])
     #expect(rows.filter(\.focused).count == 1)
     #expect(Set(rows.map(\.id)).count == rows.count)
 }
@@ -330,11 +229,11 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
     let lifecycle = agent(working())
     let leaf = pane(1, lifecycle: lifecycle)
     let node = multi ? group(1, [leaf, pane(2, window: 1, lifecycle: lifecycle)]) : leaf
-    let snapshot = makeSnapshot([nested ? pane(0, lifecycle: lifecycle, children: [node]) : node], client: 1)
+    let snapshot = makeSnapshot(nested ? [pane(0, lifecycle: lifecycle), node] : [node], client: 1)
     let row = try #require(renderedRows(snapshot).first { $0.target?.pane == PaneID(number: 1) })
     #expect(row.height == 43)
     #expect(row.padding == 5)
-    #expect(row.leading == (nested ? 20 : 5))
+    #expect(row.leading == 5)
     #expect(row.tailY == 24)
     #expect(row.focused)
     #expect(renderedRows(snapshot).filter(\.focused).count == 1)
@@ -433,7 +332,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
 @Test func navigationOrderAndFallback() throws {
     let snapshot = fixture(client: 2, sessions: [0, 1])
     let panes = renderedRows(snapshot).compactMap(\.target)
-    #expect(panes.map(\.pane) == [0, 5, 1, 2, 3, 4, 0, 5].map { PaneID(number: UInt32($0)) })
+    #expect(panes.map(\.pane) == [0, 5, 1, 2, 3, 4, 0, 5, 1, 2, 3, 4].map { PaneID(number: UInt32($0)) })
     #expect(panes.first == Snapshot.Position(session: SessionID(number: 0), window: WindowID(number: 0), pane: PaneID(number: 0)))
     #expect(renderedRows(fixture(sessions: [])).compactMap(\.target).isEmpty)
 }
@@ -460,16 +359,16 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
     #expect(rows[1].target?.pane == PaneID(number: 0))
     #expect(rows[9].target?.pane == PaneID(number: 1))
     #expect(Set(rows.map(\.id)).count == rows.count)
-    #expect(rows.compactMap(\.target).map(\.pane) == [0, 1, 5, 6].map { PaneID(number: UInt32($0)) })
+    #expect(rows.compactMap(\.target).map(\.pane) == [0, 1, 2, 5, 3, 6].map { PaneID(number: UInt32($0)) })
 }
 
 @Test func recordIndentsCountOnlyPresentAncestors() throws {
     let records = ["a/b/c", "a/b", "a", "a/d/e", "a/", "a//b", "/", "/b", "", "e\u{301}", "z", "\u{e9}/child"]
         .map { KoSchema.ProgramRecord.blocked(.init(id: $0)) }
-    let snapshot = makeSnapshot([pane(0, children: [pane(1, records: records)])], client: 1)
+    let snapshot = makeSnapshot([pane(0), pane(1, parent: 0, records: records)], client: 1)
     let rows = renderedRows(snapshot).filter { if case .program = $0.id { true } else { false } }
     #expect(rows.map(\.title) == ["/", "/b", "a", "a/", "a//b", "a/b", "a/b/c", "a/d/e", "e\u{301}", "z", "\u{e9}/child"])
-    #expect(rows.map(\.indent) == [2, 2, 2, 3, 4, 3, 4, 3, 2, 2, 2])
+    #expect(rows.map(\.indent) == [1, 1, 1, 2, 3, 2, 3, 2, 1, 1, 1])
 }
 
 @Test func programIDsOrderBySlashComponents() throws {
@@ -513,23 +412,21 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
     #expect(makeSnapshot([pane(0)]) != makeSnapshot([pane(0)], instance: "1/1780000000"))
 }
 
-@Test func aNestedRowOmitsItsRuntimeWhenItIsTheOneOfThePaneRowAboveAndTheTopLevelAlwaysShowsIt() {
+@Test func everyPaneRowShowsItsRuntime() {
     func mark(_ name: String, routed: Bool = false, state: KoSchema.LinkState = .up) -> RuntimeMark {
         RuntimeMark.known(.init(kind: .ssh, name: name, source: .config, state: state), routed: routed)
     }
-    func item(_ id: Int, _ runtime: RuntimeMark?, _ children: [Node] = []) -> Node {
-        guard case .item(var item) = pane(id, title: "pane-\(id)", children: children) else { preconditionFailure() }
+    func item(_ id: Int, _ runtime: RuntimeMark?) -> Node {
+        guard case .item(var item) = pane(id, title: "pane-\(id)") else { preconditionFailure() }
         item.runtime = runtime
         return .item(item)
     }
-    let tree = item(0, mark("buildbox"), [
-        item(1, mark("buildbox", routed: true)),
-        item(2, mark("py311"), [item(3, mark("py311")), item(4, nil, [item(5, mark("buildbox"))])]),
-        item(6, nil),
-    ])
-    let rows = renderedRows(makeSnapshot([tree, item(7, mark("buildbox", state: .starting))], client: 5)).filter { $0.target != nil }
+    let tree = [item(0, mark("buildbox")), item(1, mark("buildbox", routed: true)),
+                item(2, mark("py311")), item(3, mark("py311")), item(4, nil), item(5, mark("buildbox")), item(6, nil),
+                item(7, mark("buildbox", state: .starting))]
+    let rows = renderedRows(makeSnapshot(tree, client: 5)).filter { $0.target != nil }
     #expect(rows.map { $0.target?.pane.number } == Array(0...7))
-    #expect(rows.map { $0.runtime?.name } == ["buildbox", nil, "py311", nil, nil, "buildbox", nil, "buildbox"])
+    #expect(rows.map { $0.runtime?.name } == ["buildbox", "buildbox", "py311", "py311", nil, "buildbox", nil, "buildbox"])
     #expect(rows.last?.runtime?.state == .starting)
 }
 

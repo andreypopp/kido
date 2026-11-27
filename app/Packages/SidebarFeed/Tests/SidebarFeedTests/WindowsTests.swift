@@ -4,11 +4,11 @@ import KoModel
 @testable import SidebarFeed
 
 private func windowsFixture(_ state: KoSchema.AgentState = waiting(), mark: KoSchema.Mark = .waiting, group: Bool = false) -> Snapshot {
-    func item(_ n: Int, window: Int? = nil, children: [Node] = [], state: KoSchema.AgentState = idle(), mark: KoSchema.Mark = .none_) -> Node {
-        pane(n, window: window, title: "Pane \(n)", lifecycle: agent(state), mark: mark, children: children)
+    func item(_ n: Int, window: Int? = nil, state: KoSchema.AgentState = idle(), mark: KoSchema.Mark = .none_) -> Node {
+        pane(n, window: window, title: "Pane \(n)", lifecycle: agent(state), mark: mark )
     }
-    let parent = item(0, children: [item(1, window: 0, children: [item(2, window: 0, state: state, mark: mark)])])
-    let nodes: [Node] = group ? [SidebarFeedTests.group(0, [parent, item(3, window: 0)])] : [parent, item(3)]
+    let panes = [item(0), item(1, window: 0), item(2, window: 0, state: state, mark: mark)]
+    let nodes: [Node] = group ? [SidebarFeedTests.group(0, panes + [item(3, window: 0)])] : [SidebarFeedTests.group(0, panes), item(3)]
     return makeSnapshot(nodes, client: 2, window: 0)
 }
 
@@ -24,7 +24,7 @@ private func windowsFixture(_ state: KoSchema.AgentState = waiting(), mark: KoSc
 @Test func floatingAgentsStillMarkTheirWindowTab() throws {
     guard case .item(var floating) = pane(1, window: 0, lifecycle: agent(waiting()), mark: .waiting) else { return }
     floating.placement = .floating
-    let snapshot = makeSnapshot([pane(0, children: [.item(floating)])], client: 1, window: 0)
+    let snapshot = makeSnapshot([pane(0), .item(floating)], client: 1, window: 0)
     let projection = sidebarWindows(snapshot, projection: PaneProjection(snapshot), session: SessionID(number: 0), surviving: [WindowID(number: 0)])
     #expect(projection.statuses[WindowID(number: 0)] == .waiting)
     #expect(sidebarRows(snapshot).compactMap { $0.target?.pane.number } == [0])
@@ -86,15 +86,15 @@ private func windowsFixture(_ state: KoSchema.AgentState = waiting(), mark: KoSc
     #expect(sidebarWindows(snapshot, projection: PaneProjection(snapshot), session: SessionID(number: 9), surviving: [window], activePanes: [window: PaneID(number: 0)]).labels.isEmpty)
 }
 
-@Test func nestedTabStatusPrecedence() throws {
+@Test func tiledTabStatusPrecedence() throws {
     let states: [KoSchema.AgentState] = [idle(), idle(outcome(1, .success)), working(), waiting(), idle(outcome(1, .failure))]
     let marks: [KoSchema.Mark] = [.none_, .done, .running, .waiting, .failed]
     let expected: [SidebarRow.Status] = [.quiet, .done, .running, .waiting, .error]
     for first in states.indices {
         for second in states.indices {
             let child = pane(1, window: 0, lifecycle: agent(states[second]), mark: marks[second])
-            let parent = pane(0, lifecycle: agent(states[first]), mark: marks[first], children: [child])
-            let snapshot: Snapshot = makeSnapshot([parent])
+            let parent = pane(0, lifecycle: agent(states[first]), mark: marks[first])
+            let snapshot: Snapshot = makeSnapshot([parent, child])
             let projection = sidebarWindows(snapshot, projection: PaneProjection(snapshot), session: SessionID(number: 0), surviving: [WindowID(number: 0), WindowID(number: 1)])
             #expect(projection.statuses[WindowID(number: 0)] == expected[max(first, second)])
         }

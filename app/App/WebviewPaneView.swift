@@ -582,7 +582,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         guard pendingDocument == nil, let raw = data["pane"] as? String, let id = PaneID(ko: raw),
               let window, attended(window),
               let owner = window.delegate as? WindowOwner else { return }
-        guard let target = owner.projection.placements[id]?.position else { owner.jumpWhenPlaced(id); return }
+        guard let target = owner.projection.placements[id] else { owner.jumpWhenPlaced(id); return }
         #if KIDO_VISUAL
         if let visualFocus { visualFocus(target); return }
         #endif

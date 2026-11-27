@@ -109,6 +109,9 @@ import KoModel
     }
 
     func testRuntimeSectionStates() throws {
+        let previousNow = SidebarView.visualNow
+        SidebarView.visualNow = 368_000_000_000
+        defer { SidebarView.visualNow = previousNow }
         let defaults = UserDefaults.standard.object(forKey: "runtimesCollapsed")
         defer { if let defaults { UserDefaults.standard.set(defaults, forKey: "runtimesCollapsed") } else { UserDefaults.standard.removeObject(forKey: "runtimesCollapsed") } }
         let runtimes = [
@@ -141,10 +144,9 @@ import KoModel
                     .window(.init(id: WindowID(number: 1), children: [
                         fixtureItem(1, window: 1, "make verify", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "make verify", startedAt: fixtureSince))))), mark: .running),
                         fixtureItem(2, window: 1, "Terminal", shellLifecycle()),
-                        fixtureItem(3, window: 1, "kido-app", piLifecycle(session: "s3"), children: [
-                            fixtureNode(4, "make e2e", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "make e2e", startedAt: fixtureSince))))), mark: .running),
-                            fixtureNode(5, "pi-review", piLifecycle(.waiting(.init()), session: "s5"), mark: .waiting),
-                        ]),
+                        fixtureItem(3, window: 1, "kido-app", piLifecycle(session: "s3")),
+                        fixtureItem(4, window: 1, parent: 3, "make e2e", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "make e2e", startedAt: fixtureSince))))), mark: .running),
+                        fixtureItem(5, window: 1, parent: 3, "pi-review", piLifecycle(.waiting(.init()), session: "s5"), mark: .waiting),
                     ])),
                     fixtureNode(6, "nvidia-smi", shellLifecycle(.unknown), mark: .failed),
                     fixtureNode(7, "Terminal", shellLifecycle()),

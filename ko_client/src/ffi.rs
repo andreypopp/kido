@@ -3384,8 +3384,8 @@ mod tests {
             model["outline"],
             json!([
                 {"type": "session", "id": "session_1", "name": "s"},
-                {"type": "pane", "id": "pane_1", "window": "window_1", "depth": 0},
-                {"type": "pane", "id": "pane_2", "window": "window_1", "depth": 0},
+                {"type": "pane", "id": "pane_1", "window": "window_1"},
+                {"type": "pane", "id": "pane_2", "window": "window_1"},
             ])
         );
         assert_eq!(

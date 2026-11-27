@@ -607,7 +607,7 @@ ko_code ko_config_set_theme(const char *path, const char *light, const char *dar
  * selection, the layout document and its revision (GET /layout without its panes), every pane with
  * its label (the title to show), its seen mark ("none", "running", "waiting", "done" or "failed"),
  * its row (status, variables of the server and progress) and its variables, and the
- * outline (sessions and panes in tree order with depth). It is a
+ * outline (sessions and panes in layout order). It is a
  * snapshot: a later change needs a later call.
  * share/ko/client-model.json is the schema of the document (ModelJson); its
  * references name the components of share/ko/openapi.json.

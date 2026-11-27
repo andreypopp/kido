@@ -699,7 +699,7 @@ import SidebarFeed
     }
 
     func openPrompt(owner: WindowOwner, pane: PaneView, quote: String?, preselect: KoSchema.PromptTarget? = nil) {
-        guard let position = owner.projection.placements[pane.pane]?.position,
+        guard let position = owner.projection.placements[pane.pane],
               let source = owner.promptSource(position, quote: quote, preselect: preselect) else { return }
         resolvePrompt(source, panel: palettePanel, responder: pane)
     }

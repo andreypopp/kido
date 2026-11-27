@@ -955,7 +955,7 @@ import PaneGeometry
         defer { pane.onCommand = onCommand }
         try await wait("current session ready") { owner.currentSession != nil }
         let session = try XCTUnwrap(owner.currentSession)
-        let position = try XCTUnwrap(PaneProjection(owner.snapshot).placements[pane.pane]?.position)
+        let position = try XCTUnwrap(PaneProjection(owner.snapshot).placements[pane.pane])
         let source = try XCTUnwrap(owner.promptSource(position, quote: nil))
         let keyUp = try XCTUnwrap(NSEvent.keyEvent(with: .keyUp, location: .zero, modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: owner.window.windowNumber, context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0))
         XCTAssertTrue(keyUp.window === owner.window)
@@ -1335,8 +1335,8 @@ import PaneGeometry
         app.closePalette(.moved)
         XCTAssertEqual(app.promptDrafts.count, 1)
         let editor = sidebarFixture { snapshot in
-            snapshot.sessions[0].nodes[0].item.fixtureLifecycle = snapshot.sessions[0].nodes[1].group.children[1].lifecycle
-            snapshot.sessions[0].nodes[0].item.pane.mark = snapshot.sessions[0].nodes[1].group.children[1].pane.mark
+            snapshot.sessions[0].nodes[0].group.children[0].fixtureLifecycle = snapshot.sessions[0].nodes[1].group.children[1].lifecycle
+            snapshot.sessions[0].nodes[0].group.children[0].pane.mark = snapshot.sessions[0].nodes[1].group.children[1].pane.mark
         }
         owner.testReceive(editor)
         XCTAssertFalse(editor.promptPanes.first { $0.pane == candidate.target.pane }!.agent)
@@ -1346,7 +1346,7 @@ import PaneGeometry
         XCTAssertEqual(prompt.textView.string, "agent", "the draft returns when the same pane reports an agent again")
         app.closePalette()
         var removed = snapshot
-        removed.sessions[0].nodes.removeAll { if case .item(let item) = $0 { item.id == candidate.target.pane } else { false } }
+        removed.sessions[0].nodes[0].group.children.removeAll { $0.id == candidate.target.pane }
         owner.testReceive(removed)
         XCTAssertTrue(app.promptDrafts.isEmpty, "a killed agent pane drops its draft")
         owner.testReceive(snapshot)
@@ -1377,11 +1377,11 @@ import PaneGeometry
         let connecting = try XCTUnwrap(app.paletteEntries(owner: local, responder: nil).first { $0.title == "New Session…" })
         XCTAssertEqual(connecting.check(), "Not available now")
         let snapshot = sidebarFixture { snapshot in
-            snapshot.sessions[0].nodes[0].item.pane.status?.programStatus = .init(records: [
+            snapshot.sessions[0].nodes[0].group.children[0].pane.status?.programStatus = .init(records: [
                 .working(.init(app: "pi", id: "")), .working(.init(id: "review", title: "Review palette"))], serial: 1)
         }
         XCTAssertFalse(sidebarRows(snapshot).contains { $0.title == "Review palette" })
-        XCTAssertFalse(sidebarRows(snapshot).contains { $0.title == "main-watch" })
+        XCTAssertTrue(sidebarRows(snapshot).contains { $0.title == "main-watch" })
         XCTAssertNotNil(PaneProjection(snapshot).placements[PaneID(number: 936)])
         local.testReceive(snapshot)
         remote.testReceive(sidebarFixture { snapshot in
@@ -1392,15 +1392,15 @@ import PaneGeometry
         func panes(_ owner: WindowOwner?) -> [PaletteEntry] {
             app.paletteEntries(owner: owner, responder: nil).filter { if case .pane = $0.id { true } else { false } }
         }
-        XCTAssertEqual(panes(local).map(\.title), ["@working-on-kido", "@kido-app", "Terminal", "@pi-ui", "@main", "@main", "@video", "Terminal", "@household"])
+        XCTAssertEqual(panes(local).map(\.title), ["@working-on-kido", "main-watch", "@kido-app", "Terminal", "@sidebar-mockup", "@pi-ui", "@pi-ui-perf", "@main", "@main", "@video", "Terminal", "@household"])
         let entries = app.paletteEntries(owner: remote, responder: nil)
-        XCTAssertEqual(panes(remote).map(\.title), ["@working-on-kido", "@kido-app", "Terminal", "@pi-ui"])
-        XCTAssertEqual(panes(remote).map(\.detail), Array(repeating: "devbox › remote-main", count: 4))
+        XCTAssertEqual(panes(remote).map(\.title), ["@working-on-kido", "main-watch", "@kido-app", "Terminal", "@sidebar-mockup", "@pi-ui", "@pi-ui-perf"])
+        XCTAssertEqual(panes(remote).map(\.detail), Array(repeating: "devbox › remote-main", count: 7))
         XCTAssertEqual(panes(local).first?.detail, "main")
         XCTAssertEqual(panes(nil).map(\.title), [])
         XCTAssertEqual(entries.filter { $0.symbol == "globe" }.map(\.title), ["devbox-old"])
-        XCTAssertEqual(entries[4].id, .host(.remote("devbox-old")))
-        XCTAssertEqual(entries[5].title, "New Session…")
+        XCTAssertEqual(entries[7].id, .host(.remote("devbox-old")))
+        XCTAssertEqual(entries[8].title, "New Session…")
         XCTAssertTrue(entries.contains { $0.title == "Rename Session…" })
         XCTAssertTrue(entries.contains { $0.title == "Close Session" })
         let pane = try XCTUnwrap(panes(remote).first)

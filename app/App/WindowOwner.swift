@@ -1247,7 +1247,7 @@ private class AlertEscape: NSView {
         view.editing = { [weak self] in self?.editor?.holding == true }
         view.selectPane = { [weak self] pane in
             guard let self, accepts(generation), case .connected = link, koModel?.selection.pane != pane else { return }
-            if let position = projection.placements[pane]?.position {
+            if let position = projection.placements[pane] {
                 perform(.jump(position))
             } else {
                 jumpWhenPlaced(pane)
@@ -1341,7 +1341,7 @@ private class AlertEscape: NSView {
                 return
             }
             switch wait.cause {
-            case .user: if let position = pane.flatMap({ projection.placements[$0]?.position }) { history.push(position) }
+            case .user: if let position = pane.flatMap({ projection.placements[$0] }) { history.push(position) }
             case .history(let step, let target): history.go(step, to: target)
             case .automatic: break
             }
@@ -1427,7 +1427,7 @@ private class AlertEscape: NSView {
         let previous = self.snapshot
         let projection = PaneProjection(snapshot)
         let model = SessionModel(ko).navigation(snapshot).model
-        let previousMoved = previous.map { projection.placements[$0.client.pane]?.position != $0.client } ?? false
+        let previousMoved = previous.map { projection.placements[$0.client.pane] != $0.client } ?? false
         let interrupted = switch navigationPhase {
         case .idle: false
         case .selecting(let pane, _): projection.placements[pane] == nil
@@ -1439,11 +1439,11 @@ private class AlertEscape: NSView {
             return (tiled.contains(window.focus) ? window.focus : lastTiled[window.id].flatMap { tiled.contains($0) ? $0 : nil }).map { (window.id, $0) }
         })
         received = Received(ko: ko, model: model, snapshot: snapshot, projection: projection)
-        history.prune { projection.placements[$0]?.position }
+        history.prune { projection.placements[$0] }
         defer { editor?.layoutChanged(revision: ko.layout.revision) }
         if let wanted = pendingJump {
             if wanted.deadline < Date() { pendingJump = nil }
-            else if let position = projection.placements[wanted.pane]?.position {
+            else if let position = projection.placements[wanted.pane] {
                 pendingJump = nil
                 perform(.jump(position))
             }
@@ -1680,8 +1680,8 @@ private class AlertEscape: NSView {
 
     func newWindow(in target: SessionID? = nil, _ runtime: NewPaneRuntime = .inherit, from pane: PaneID? = nil, running program: NewPaneProgram = .shell) {
         let placement = pane.flatMap { projection.placements[$0] }
-        guard let id = target ?? placement?.position.session ?? model.session,
-              let edit = koModel?.newWindow(in: id, after: placement?.position.window ?? model.window, runtime, from: pane ?? koModel?.selection.pane,
+        guard let id = target ?? placement?.session ?? model.session,
+              let edit = koModel?.newWindow(in: id, after: placement?.window ?? model.window, runtime, from: pane ?? koModel?.selection.pane,
                                             running: program) else { return }
         create(edit)
     }
@@ -1906,7 +1906,7 @@ private class AlertEscape: NSView {
 
     private func seedHistory() {
         guard history.isEmpty, let active = model.window.flatMap({ session?.windows[$0]?.active }),
-              let position = projection.placements[active]?.position else { return }
+              let position = projection.placements[active] else { return }
         history.push(position)
     }
 
@@ -2026,8 +2026,8 @@ private class AlertEscape: NSView {
                     return
                 }
                 guard let placement = projection.placements[position.pane],
-                      model.session == placement.position.session, model.window == placement.position.window,
-                      session?.windows[placement.position.window]?.active == position.pane else { return }
+                      model.session == placement.session, model.window == placement.window,
+                      session?.windows[placement.window]?.active == position.pane else { return }
             case .window(let s, let w):
                 if let pane = session?.windows[w]?.active, koModel?.layout.layout.window(w)?.floats.contains(where: { $0.pane == pane }) == true {
                     focusTarget = nil

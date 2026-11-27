@@ -13,7 +13,6 @@ private func recordedNested() throws -> KoModel {
     model.outline = model.outline.map { entry in
         guard case .pane(var pane) = entry, [7, 8].contains(pane.id.number) else { return entry }
         pane.window = .init(number: 4)
-        pane.depth = Int(pane.id.number) - 6
         return .pane(pane)
     }
     return model
@@ -22,9 +21,9 @@ private func recordedNested() throws -> KoModel {
 private func shape(_ nodes: [SidebarFeed.Node]) -> [String] {
     nodes.map { node in
         switch node {
-        case .window(let group): "\(group.id.number)[\(group.children.map { shape([.item($0)])[0] }.joined(separator: ","))]"
+        case .window(let group): "\(group.id.number)[\(group.children.map { "\($0.id.number)" }.joined(separator: ","))]"
         case .item(let item):
-            item.children.isEmpty ? "\(item.id.number)" : "\(item.id.number)>\(shape(item.children).joined(separator: ","))"
+            "\(item.id.number)"
         }
     }
 }
@@ -35,7 +34,6 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
         for node in nodes {
             if case .item(let item) = node { found[item.id] = item }
             if case .window(let group) = node { group.children.forEach { found[$0.id] = $0 } }
-            walk(node.children)
         }
     }
     snapshot.sessions.forEach { walk($0.nodes) }
@@ -165,8 +163,7 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
     #expect(try item(5).lifecycle == .live(.host(.init(pane: .koaAgent(.init(session: "s1", status: try #require(item(5).agent)))))))
     #expect(try item(5).pane.label == "Worker")
     #expect(try item(6).shell?.phase == .unknown)
-    let child = try item(7)
-    #expect(shape(child.children) == ["8"])
+    #expect(try item(7).window == item(8).window)
     let ended = try item(9)
     #expect(ended.lifecycle == .ended(try #require(recorded().panes.first { $0.id.number == 9 }?.dead?.cause)))
     #expect(try [1, 2, 4].map { try item($0).pane.mark } == [.running, .waiting, .none_], "the core's mark; an exit before the connection is no news")
@@ -181,15 +178,15 @@ private func edited(_ number: UInt32, _ edit: (inout KoSchema.PaneJson) -> Void)
     return try #require(items(snapshot)[.init(number: number)])
 }
 
-@Test func aPaneWithAParentNestsUnderIt() throws {
+@Test func aPaneWithAParentStaysARootInOutlineOrder() throws {
     var model = try recorded()
     let at = try #require(model.panes.firstIndex { $0.id == .init(number: 4) })
     model.panes[at].parent = .init(number: 5)
     model.outline.removeAll { if case .pane(let pane) = $0 { pane.id.number == 4 } else { false } }
     let parent = try #require(model.outline.firstIndex { if case .pane(let pane) = $0 { pane.id.number == 5 } else { false } })
-    model.outline.insert(.pane(.init(depth: 1, id: .init(number: 4), window: .init(number: 4))), at: parent + 1)
+    model.outline.insert(.pane(.init(id: .init(number: 4), window: .init(number: 4))), at: parent + 1)
     let snapshot = try #require(Snapshot(model: model))
-    #expect(shape(snapshot.sessions[0].nodes) == ["1[1,2]", "3", "5>4", "7", "8", "9"])
+    #expect(shape(snapshot.sessions[0].nodes) == ["1[1,2]", "3", "4[5,4]", "7", "8", "9"])
 }
 
 @Test func theInboxDotReadsTheRow() throws {
@@ -213,10 +210,10 @@ private func edited(_ number: UInt32, _ edit: (inout KoSchema.PaneJson) -> Void)
     #expect(try edited(9) { $0.close = .onExit }.indicator == (.endedFailed, "gone, exited with code 3"))
 }
 
-@Test func theFocusedPathOpensAndTheRestFolds() throws {
+@Test func allPanesStayVisibleWhileRecordsFollowFocus() throws {
     let snapshot = try #require(Snapshot(model: recordedNested()))
     let rows = renderedRows(snapshot)
-    #expect(rows.filter { $0.target != nil }.count == 7)
+    #expect(rows.filter { $0.target != nil }.count == 9)
     #expect(renderedRows(focusing(8, in: snapshot)).filter { $0.target != nil }.count == 9)
     #expect(rows.filter(\.focused).map(\.title) == ["claude-code"])
 }

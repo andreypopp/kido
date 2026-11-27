@@ -409,7 +409,6 @@ let rawEchoScript = "while IFS= read -r -k 1 -u 0 byte; do printf '%s' \"$byte\"
                 updated.fixtureLifecycle = lifecycle
                 updated.pane.mark = mark
             }
-            updated.children = item.children.map(node)
             return updated
         }
         func node(_ node: SidebarFeed.Node) -> SidebarFeed.Node {

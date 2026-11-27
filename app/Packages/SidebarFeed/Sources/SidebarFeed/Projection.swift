@@ -24,14 +24,12 @@ private struct Projection {
         panes = Dictionary(model.panes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
-    // The outline lists each session and then its panes, a pane with a parent under that parent.
     func sessions() -> [SessionNodes] {
         var result: [SessionNodes] = []
         var outline: [KoSchema.ItemPane] = []
         func close() {
             guard let last = result.indices.last else { return }
-            var start = 0
-            result[last].nodes = nodes(outline, from: &start, depth: 0)
+            result[last].nodes = nodes(outline)
             outline = []
         }
         for entry in model.outline {
@@ -46,16 +44,11 @@ private struct Projection {
         return result
     }
 
-    // The entries at `depth` from `start` on, each with the deeper entries that follow it as its children.
-    // Neighbouring entries of one window form its group.
-    private func nodes(_ outline: [KoSchema.ItemPane], from start: inout Int, depth: Int) -> [Node] {
+    private func nodes(_ outline: [KoSchema.ItemPane]) -> [Node] {
         var nodes: [Node] = []
-        while start < outline.count, outline[start].depth >= depth {
-            let entry = outline[start]
-            start += 1
-            let children = self.nodes(outline, from: &start, depth: entry.depth + 1)
+        for entry in outline {
             guard let pane = panes[entry.id] else { continue }
-            let item = Item(pane: pane, window: entry.window, children: children, runtime: marks[entry.id], placement: floats.contains(entry.id) ? .floating : .tiled)
+            let item = Item(pane: pane, window: entry.window, runtime: marks[entry.id], placement: floats.contains(entry.id) ? .floating : .tiled)
             nodes.appendGrouped(item)
         }
         return nodes

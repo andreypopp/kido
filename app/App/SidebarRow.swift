@@ -66,6 +66,11 @@ final class SidebarChildren: NSView {
         }
         return 0
     }
+    var circleCount: Int {
+        var count = min(limit, content.count)
+        if name == nil { while count > 0 && width(showing: count) > bounds.width { count -= 1 } }
+        return count
+    }
     override func draw(_ dirtyRect: NSRect) {
         guard !content.isEmpty else { return }
         let paragraph = NSMutableParagraphStyle()
@@ -75,8 +80,7 @@ final class SidebarChildren: NSView {
             (text as NSString).draw(in: NSRect(x: x, y: -1, width: max(0, width), height: 14),
                                    withAttributes: [.font: font, .foregroundColor: Chrome.inkSecondary, .paragraphStyle: paragraph])
         }
-        var count = min(limit, content.count)
-        if name == nil { while count > 0 && width(showing: count) > bounds.width { count -= 1 } }
+        let count = circleCount
         for (index, child) in content.prefix(count).enumerated() {
             let center = NSPoint(x: name != nil ? bounds.width - 5 : CGFloat(5 + index * 10), y: 6)
             drawStatusMark(child.status, at: center, flipped: true)

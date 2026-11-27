@@ -115,27 +115,13 @@ func notificationWithdraws(cause: String) throws {
     #expect(effects.post.count == 1 && effects.post.first?.kind == .waiting)
 }
 
-@Test func notificationNestedPanePosts() throws {
-    var state = try notifier()
-    let parent = pane(0, lifecycle: koaAgent(working()), mark: .running, children: [pane(1, lifecycle: koaAgent(waiting()), mark: .waiting)])
-    #expect(try step(&state, [parent]).post.count == 1)
-}
-
-private func paneGroup() -> Node {
-    group(5, [pane(1, window: 5, lifecycle: koaAgent(waiting()), mark: .waiting), pane(2, window: 5, lifecycle: terminal())])
-}
 
 @Test func notificationTopLevelGroupPanePosts() throws {
     var state = try notifier()
-    let effects = try step(&state, [paneGroup()])
+    let effects = try step(&state, [group(5, [pane(1, window: 5, lifecycle: koaAgent(waiting()), mark: .waiting), pane(2, window: 5, lifecycle: terminal())])])
     #expect(effects.post.count == 1 && effects.post.first?.key.pane == PaneID(number: 1))
 }
 
-@Test func notificationNestedGroupPanePosts() throws {
-    var state = try notifier()
-    let parent = pane(0, lifecycle: koaAgent(working()), mark: .running, children: [paneGroup()])
-    #expect(try step(&state, [parent]).post.count == 1)
-}
 
 @Test func notificationNonFailuresNeverPost() throws {
     var state = try notifier()

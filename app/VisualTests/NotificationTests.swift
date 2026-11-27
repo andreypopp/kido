@@ -64,10 +64,9 @@ import XCTest
         XCTAssertEqual(poster.posts.last?.body, "Exit 2: make")
         try tty.write(contentsOf: Data("\u{1b}]133;C;cmdline_url=cancel\u{7}\u{1b}]133;D;130\u{7}".utf8))
         try await wait("interrupted command observed") {
-            var nodes = owner.snapshot?.sessions.flatMap(\.nodes) ?? []
-            while let node = nodes.popLast() {
-                nodes += node.children
-                if case .item(let item) = node, item.id == pane,
+            let items = owner.snapshot?.sessions.flatMap { $0.nodes.flatMap(\.items) } ?? []
+            for item in items {
+                if item.id == pane,
                    case .live(let kind) = item.lifecycle, case .terminal(let shell) = kind.local,
                    case .idle(let idle) = shell.phase, idle.last?.code == 130 { return true }
             }

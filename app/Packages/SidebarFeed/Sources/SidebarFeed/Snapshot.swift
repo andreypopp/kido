@@ -33,50 +33,19 @@ public struct Snapshot: Equatable, Sendable {
 
     public var tiledSessions: [SessionNodes] {
         sessions.map { session in
-            var preorder: [(Item, PaneID?)] = []
-            func visit(_ nodes: [Node], parent: PaneID?) {
-                for node in nodes {
-                    switch node {
-                    case .window(let group): group.children.forEach { visit([.item($0)], parent: parent) }
-                    case .item(let item):
-                        preorder.append((item, parent))
-                        visit(item.children, parent: item.id)
-                    }
-                }
+            var nodes: [Node] = []
+            for node in session.nodes {
+                let items: [Item] = switch node { case .window(let group): group.children; case .item(let item): [item] }
+                for item in items where item.placement == .tiled { nodes.appendGrouped(item) }
             }
-            visit(session.nodes, parent: nil)
-            let tiled: Set<PaneID> = Set(preorder.compactMap { item, _ in
-                switch item.placement { case .tiled: item.id; case .floating: nil }
-            })
-            var children: [PaneID?: [Item]] = [:]
-            for (item, parent) in preorder {
-                switch item.placement {
-                case .tiled: children[parent.flatMap { tiled.contains($0) ? $0 : nil }, default: []].append(item)
-                case .floating: break
-                }
-            }
-            func build(_ parent: PaneID?) -> [Node] {
-                var result: [Node] = []
-                for var item in children[parent] ?? [] {
-                    item.children = build(item.id)
-                    result.appendGrouped(item)
-                }
-                return result
-            }
-            return SessionNodes(id: session.id, name: session.name, nodes: build(nil))
+            return SessionNodes(id: session.id, name: session.name, nodes: nodes)
         }
     }
 
     public var promptPanes: [(session: SessionID, pane: PaneID, agent: Bool)] {
-        var items: [(SessionID, Item)] = []
-        func walk(_ nodes: [Node], session: SessionID) {
-            for node in nodes {
-                if case .item(let item) = node { items.append((session, item)) }
-                walk(node.children, session: session)
-            }
+        sessions.flatMap { session in
+            session.nodes.flatMap(\.items).map { (session: session.id, pane: $0.id, agent: $0.isAgent) }
         }
-        for session in sessions { walk(session.nodes, session: session.id) }
-        return items.map { (session: $0.0, pane: $0.1.id, agent: $0.1.isAgent) }
     }
 }
 
@@ -105,7 +74,7 @@ public struct SessionNodes: Equatable, Sendable {
     }
 }
 
-public indirect enum Node: Equatable, Sendable {
+public enum Node: Equatable, Sendable {
     case window(Window)
     case item(Item)
 
@@ -121,8 +90,8 @@ public indirect enum Node: Equatable, Sendable {
     public var id: String {
         switch self { case .window(let w): w.id.description; case .item(let i): i.id.description }
     }
-    public var children: [Node] {
-        switch self { case .window(let w): w.children.map(Node.item); case .item(let i): i.children }
+    public var items: [Item] {
+        switch self { case .window(let w): w.children; case .item(let i): [i] }
     }
 }
 
@@ -145,14 +114,12 @@ public struct Item: Equatable, Sendable {
     public var pane: KoSchema.PaneJson
     public var id: PaneID { pane.id }
     public var window: WindowID
-    public var children: [Node]
     public var runtime: RuntimeMark?
 
-    public init(pane: KoSchema.PaneJson, window: WindowID, children: [Node], runtime: RuntimeMark? = nil, placement: Placement = .tiled) {
+    public init(pane: KoSchema.PaneJson, window: WindowID, runtime: RuntimeMark? = nil, placement: Placement = .tiled) {
         self.placement = placement
         self.pane = pane
         self.window = window
-        self.children = children
         self.runtime = runtime
     }
 

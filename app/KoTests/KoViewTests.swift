@@ -183,7 +183,7 @@ final class Decoded: @unchecked Sendable {
         XCTAssertEqual(model.panes.map(\.id), [pane])
         XCTAssertEqual(model.panes.first?.mark, .none_)
         XCTAssertEqual(model.panes.first?.label, "sh")
-        XCTAssertEqual(model.outline, [.session(.init(id: session, name: "s")), .pane(.init(depth: 0, id: pane, window: window))])
+        XCTAssertEqual(model.outline, [.session(.init(id: session, name: "s")), .pane(.init(id: pane, window: window))])
 
         let request = try connection.select(KO_SELECT_WINDOW, window)
         wait("the selection") { recorder.events.contains(.selected(request: request, session: session, window: window, pane: pane)) }

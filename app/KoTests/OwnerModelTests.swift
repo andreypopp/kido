@@ -41,8 +41,8 @@ import XCTest
     private func items(_ owner: WindowOwner) -> [Item] {
         func items(_ node: SidebarFeed.Node) -> [Item] {
             switch node {
-            case .item(let item): [item] + item.children.flatMap(items)
-            case .window(let group): group.children.flatMap { [$0] + $0.children.flatMap(items) }
+            case .item(let item): [item]
+            case .window(let group): group.children
             }
         }
         return owner.snapshot?.sessions.flatMap { $0.nodes.flatMap(items) } ?? []

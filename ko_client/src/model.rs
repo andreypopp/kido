@@ -15,7 +15,6 @@ use serde_json::Value;
 #[cfg(all(target_vendor = "apple", feature = "tls"))]
 use crate::status;
 use crate::status::{Mark, Seen};
-use crate::tree;
 use crate::wire::{Link, Next, text};
 
 const KOA_RUNTIME: VarName = VarName::known("koa.runtime");
@@ -96,15 +95,8 @@ impl Place {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Item {
-    Session {
-        id: SessionId,
-        name: String,
-    },
-    Pane {
-        id: PaneId,
-        window: WindowId,
-        depth: usize,
-    },
+    Session { id: SessionId, name: String },
+    Pane { id: PaneId, window: WindowId },
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -596,35 +588,18 @@ impl Model {
     }
 
     pub fn outline(&self) -> Vec<Item> {
-        let parents: BTreeMap<PaneId, PaneId> = self
-            .panes
-            .iter()
-            .filter_map(|pane| Some((pane.row.id, pane.row.parent?)))
-            .collect();
         let mut items = Vec::new();
         for session in &self.layout.layout.sessions {
             items.push(Item::Session {
                 id: session.id,
                 name: String::from(session.name.clone()),
             });
-            let panes: Vec<(PaneId, WindowId)> = session
-                .windows
-                .iter()
-                .flat_map(|window| window.panes().into_iter().map(|pane| (pane, window.id)))
-                .collect();
-            let windows: BTreeMap<PaneId, WindowId> = panes.iter().copied().collect();
-            items.extend(
-                tree::order(
-                    panes,
-                    |(pane, _)| *pane,
-                    |(pane, window)| {
-                        let parent = *parents.get(pane)?;
-                        (windows.get(&parent) == Some(window)).then_some(parent)
-                    },
-                )
-                .into_iter()
-                .map(|((id, window), depth)| Item::Pane { id, window, depth }),
-            );
+            items.extend(session.windows.iter().flat_map(|window| {
+                window.panes().into_iter().map(|id| Item::Pane {
+                    id,
+                    window: window.id,
+                })
+            }));
         }
         items
     }
@@ -929,7 +904,7 @@ mod tests {
             .iter()
             .map(|item| match item {
                 Item::Session { id, name } => format!("{id} {name}"),
-                Item::Pane { id, depth, .. } => format!("{}{id}", " ".repeat(*depth)),
+                Item::Pane { id, .. } => id.to_string(),
             })
             .collect();
         assert_eq!(
@@ -960,7 +935,7 @@ mod tests {
             .outline()
             .iter()
             .filter_map(|item| match item {
-                Item::Pane { id, depth, .. } => Some(format!("{depth}{id}")),
+                Item::Pane { id, .. } => Some(id.to_string()),
                 Item::Session { .. } => None,
             })
             .collect()
@@ -981,20 +956,20 @@ mod tests {
         set_parent(&mut model, 2, Some(5));
         assert_eq!(
             outline_of(&model),
-            ["0pane_1", "0pane_2", "0pane_3", "0pane_4", "0pane_5"]
+            ["pane_1", "pane_2", "pane_3", "pane_4", "pane_5"]
         );
         assert_eq!(model.step(Some(pane(1)), 1), Some(pane(2)));
         assert_eq!(model.step(Some(pane(4)), 1), Some(pane(5)));
     }
 
     #[test]
-    fn a_tiled_child_beside_its_parent_nests_under_it_even_when_it_comes_first() {
+    fn a_tiled_child_beside_its_parent_stays_a_root_in_layout_order() {
         let windows = vec![(Shape::Split(true, vec![Shape::Leaf, Shape::Leaf]), 0)];
         let mut model = model(layout_of(&[windows, vec![(Shape::Leaf, 0)]]));
         model.panes = rows_of(&model.layout.layout);
         set_parent(&mut model, 1, Some(2));
-        assert_eq!(outline_of(&model), ["0pane_2", "1pane_1", "0pane_3"]);
-        assert_eq!(model.step(Some(pane(2)), 1), Some(pane(1)));
+        assert_eq!(outline_of(&model), ["pane_1", "pane_2", "pane_3"]);
+        assert_eq!(model.step(Some(pane(1)), 1), Some(pane(2)));
     }
 
     #[test]
@@ -1010,7 +985,7 @@ mod tests {
             layout: grown,
         };
         assert_eq!(model.apply(announced(snapshot, listings)), Applied::Layout);
-        assert_eq!(outline_of(&model), ["0pane_1", "0pane_2"]);
+        assert_eq!(outline_of(&model), ["pane_1", "pane_2"]);
     }
 
     #[test]
